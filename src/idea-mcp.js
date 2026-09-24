@@ -14,8 +14,12 @@
 //     project header succeeds when the project is open, and returns an MCP
 //     error (listing the currently open projects) when it is not.
 //
-// So the probe is: open the SSE stream for the project, initialize, call
-// get_project_modules, and check `result.isError`.
+// IMPORTANT: the server sends a `roots/list` request back to the client (it
+// asks for the workspace roots) before running many tools. A client that does
+// not answer it hangs forever. This client answers `roots/list` with the
+// project directory, mirroring what a real MCP client does.
+
+import { pathToFileURL } from 'node:url';
 
 export const PROJECT_HEADER = 'IJ_MCP_SERVER_PROJECT_PATH';
 
@@ -27,8 +31,7 @@ export const DEFAULT_PORTS = [64342, 6420, 6421, 63342];
 
 const PROBE_TOOL = 'get_project_modules';
 const PROTOCOL_VERSION = '2024-11-05';
-const PROBE_TIMEOUT_MS = 5000;
-const HANDSHAKE_TIMEOUT_MS = 3000;
+const CALL_TIMEOUT_MS = 15000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -63,47 +66,65 @@ export function parseSseBlock(block) {
 }
 
 /**
- * Find the first port whose IDE MCP server has `projectPath` open.
- * Returns the port, or `undefined` when none is available.
+ * Reply to a server -> client request. Only `roots/list` is expected; anything
+ * else is rejected so the server does not wait forever.
  *
+ * @param {{ method: string, id: unknown }} request
  * @param {string} projectPath
- * @param {number[]} ports
- * @param {typeof fetch} [fetchImpl]
- * @returns {Promise<number | undefined>}
+ * @returns {object}
  */
-export async function probeOpenProject(projectPath, ports, fetchImpl = fetch) {
-  for (const port of ports) {
-    const open = await probePort(port, projectPath, fetchImpl).catch(() => false);
-    if (open) return port;
+export function serverRequestResponse(request, projectPath) {
+  if (request.method === 'roots/list') {
+    return {
+      jsonrpc: '2.0',
+      id: request.id,
+      result: { roots: [{ uri: pathToFileURL(projectPath).href, name: projectPath.split('/').pop() }] },
+    };
   }
-  return undefined;
+  return { jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'Method not found' } };
 }
 
 /**
- * Probe a single IDE MCP port for `projectPath`.
+ * Run one MCP tool against the IDE, returning the raw tool result (with
+ * `isError`) or `undefined` on transport/connect failure.
  *
  * @param {number} port
  * @param {string} projectPath
+ * @param {string} name
+ * @param {object} [args]
  * @param {typeof fetch} [fetchImpl]
- * @returns {Promise<boolean>}
+ * @returns {Promise<{ isError?: boolean, content?: Array<{ type: string, text?: string }> } | undefined>}
  */
-export async function probePort(port, projectPath, fetchImpl = fetch) {
+export async function callTool(port, projectPath, name, args = {}, fetchImpl = fetch) {
   const base = `http://127.0.0.1:${port}`;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
   const pending = new Map();
   try {
     const response = await fetchImpl(`${base}/sse`, {
       headers: { [PROJECT_HEADER]: projectPath, Accept: 'text/event-stream' },
       signal: controller.signal,
     });
-    if (!response.ok || !response.body) return false;
+    if (!response.ok || !response.body) return undefined;
 
     let messageEndpoint;
     let markReady;
     const ready = new Promise((resolve) => {
       markReady = resolve;
     });
+
+    const post = (payload) =>
+      fetchImpl(new URL(messageEndpoint, base).toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', [PROJECT_HEADER]: projectPath },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      }).catch(() => undefined);
+    const rpc = (payload) =>
+      new Promise((resolve) => {
+        pending.set(payload.id, resolve);
+        void post(payload);
+      });
 
     readSse(response.body, (event, data) => {
       if (event === 'endpoint') {
@@ -118,6 +139,10 @@ export async function probePort(port, projectPath, fetchImpl = fetch) {
       } catch {
         return;
       }
+      if (message.method && message.id !== undefined) {
+        void post(serverRequestResponse(message, projectPath));
+        return;
+      }
       const resolve = pending.get(message.id);
       if (resolve) {
         pending.delete(message.id);
@@ -125,22 +150,8 @@ export async function probePort(port, projectPath, fetchImpl = fetch) {
       }
     });
 
-    await Promise.race([ready, sleep(HANDSHAKE_TIMEOUT_MS)]);
-    if (!messageEndpoint) return false;
-
-    const postUrl = new URL(messageEndpoint, base).toString();
-    const post = (payload) =>
-      fetchImpl(postUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', [PROJECT_HEADER]: projectPath },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      }).catch(() => undefined);
-    const rpc = (payload) =>
-      new Promise((resolve) => {
-        pending.set(payload.id, resolve);
-        void post(payload);
-      });
+    await Promise.race([ready, sleep(3000)]);
+    if (!messageEndpoint) return undefined;
 
     await rpc({
       jsonrpc: '2.0',
@@ -148,7 +159,7 @@ export async function probePort(port, projectPath, fetchImpl = fetch) {
       method: 'initialize',
       params: {
         protocolVersion: PROTOCOL_VERSION,
-        capabilities: {},
+        capabilities: { roots: { listChanged: true } },
         clientInfo: { name: 'opencode-jetbrains-mcp', version: '0.1.0' },
       },
     }).catch(() => undefined);
@@ -158,16 +169,47 @@ export async function probePort(port, projectPath, fetchImpl = fetch) {
       jsonrpc: '2.0',
       id: 2,
       method: 'tools/call',
-      params: { name: PROBE_TOOL, arguments: {} },
+      params: { name, arguments: args },
     }).catch(() => undefined);
 
-    return Boolean(call && !call.error && call.result && call.result.isError !== true);
+    if (!call || call.error) return undefined;
+    return call.result;
   } catch {
-    return false;
+    return undefined;
   } finally {
     clearTimeout(timer);
     controller.abort();
   }
+}
+
+/**
+ * Probe a single IDE MCP port for `projectPath`.
+ *
+ * @param {number} port
+ * @param {string} projectPath
+ * @param {typeof fetch} [fetchImpl]
+ * @returns {Promise<boolean>}
+ */
+export async function probePort(port, projectPath, fetchImpl = fetch) {
+  const result = await callTool(port, projectPath, PROBE_TOOL, {}, fetchImpl).catch(() => undefined);
+  return Boolean(result && result.isError !== true);
+}
+
+/**
+ * Find the first port whose IDE MCP server has `projectPath` open.
+ * Returns the port, or `undefined` when none is available.
+ *
+ * @param {string} projectPath
+ * @param {number[]} ports
+ * @param {typeof fetch} [fetchImpl]
+ * @returns {Promise<number | undefined>}
+ */
+export async function probeOpenProject(projectPath, ports, fetchImpl = fetch) {
+  for (const port of ports) {
+    const open = await probePort(port, projectPath, fetchImpl).catch(() => false);
+    if (open) return port;
+  }
+  return undefined;
 }
 
 async function readSse(body, onEvent) {

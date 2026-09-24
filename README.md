@@ -1,32 +1,57 @@
 # opencode-jetbrains-mcp
 
-OpenCode 插件:当**当前项目在 JetBrains IDE(IntelliJ IDEA / PyCharm / WebStorm 等)里打开**时,自动接入该 IDE 的 MCP 服务,并引导模型**优先使用 IDE 的工具**(编辑、构建、重构、调试、代码索引等);项目没打开时,保持 OpenCode 原生工具。
+OpenCode 插件,面向 JetBrains 项目(IntelliJ IDEA / PyCharm / WebStorm 等),做两件事:
+
+1. **注入项目 SDK 环境变量** —— 启动时检查 IDE 的项目配置(JDK / Python / Node / Go 的 SDK),把对应的环境变量(`JAVA_HOME` / `VIRTUAL_ENV` / `GOROOT` / ...)注入到 OpenCode 的 shell 环境里。
+2. **优先使用 IDE 工具** —— 当前项目在 IDE 里打开时,接入该 IDE 的 MCP 服务,并引导模型优先用 IDE 的工具(编辑、构建、重构、调试、代码索引等);项目没打开时回退 OpenCode 原生工具。
+
+非 JetBrains 项目完全不受影响。
 
 ## 工作原理
 
-1. 插件启动时,用当前项目路径去探测本地 JetBrains IDE MCP 服务。
-2. 探测成功(即当前项目确实在 IDE 里开着)→
-   - 把该 IDE MCP 注册给 OpenCode(header `IJ_MCP_SERVER_PROJECT_PATH` 锁定当前项目),
-   - 并把原生 `edit` / `write` / `patch` / `shell` 的描述改成「优先用 IDE 工具,不可用再回退」。
-3. 探测失败 → 什么都不做,OpenCode 继续用原生工具。
-4. 每 15 秒复探一次,跟随 IDE 的开/关自动切换。
+```text
+每次 reconcile:
+  1. 探测本地 JetBrains IDE MCP,判断当前项目是否已在 IDE 中打开
+  2. 是 JetBrains 项目 →
+       环境变量:
+         a. 读 .idea/*.iml + misc.xml  → 项目 SDK(VIRTUAL_ENV / JAVA_HOME / GOROOT ...)
+         b. IDE 可达时,execute_terminal_command printenv → IDE 终端环境(补全 SDK 变量)
+         c. 合并(.idea 优先),通过 shell create.before 钩子注入每个 shell
+       工具:
+         d. 注册 IDE MCP(header IJ_MCP_SERVER_PROJECT_PATH 锁定当前项目)
+         e. 把原生 edit / write / patch / shell 的描述改为「优先 IDE 工具,不可用再回退」
+  3. 非 JetBrains 项目 → 什么都不做
+每 15 秒复探一次,跟随 IDE 开/关自动切换。
+```
 
-### 为什么探测是一次「工具调用」而不是「连接测试」
+## 环境变量注入
 
-这一点很关键(实测结论):
+启动 / 复探时收集这些来源并合并(越靠后优先级越高):
 
-| 探测层                          | 能否判断「某项目在 IDE 里开着」                   |
-| ------------------------------- | ------------------------------------------------- |
-| SSE 连接 `GET /sse`             | ❌ 开/没开/垃圾路径都返回 `200 + sessionId`       |
-| `tools/list`                    | ❌ 都返回**同一套 60 个 IDE 全局工具**,不随项目变 |
-| **实际调用工具**(带项目 header) | ✅ 开着→成功;没开→`isError`,并列出当前打开的项目  |
+| 来源                             | 拿到什么                                                                         | 说明                      |
+| -------------------------------- | -------------------------------------------------------------------------------- | ------------------------- |
+| `.idea/*.iml` + `.idea/misc.xml` | **项目 SDK**(`jdkName`/`jdkType`)→ 映射成 `JAVA_HOME` / `VIRTUAL_ENV` / `GOROOT` | 静态配置,无需 IDE 运行    |
+| IDE 集成终端 `printenv`          | IDE 实际环境里的 SDK 变量(`JAVA_HOME`/`GOROOT`/`MAVEN_HOME`/`SDKMAN_DIR` 等)     | 需要 IDE MCP + Brave Mode |
 
-所以插件探测时会对 IDE MCP 发一次 `tools/call(get_project_modules)`,用返回的 `isError` 判定当前项目是否打开。详细验证过程见仓库提交历史 / `src/idea-mcp.js` 顶部注释。
+映射规则:
+
+| `jdkType` 含            | 环境变量      | PATH 前置   |
+| ----------------------- | ------------- | ----------- |
+| `Python` / `VirtualEnv` | `VIRTUAL_ENV` | `<sdk>/bin` |
+| `Java` / `JDK`          | `JAVA_HOME`   | `<sdk>/bin` |
+| `Go`                    | `GOROOT`      | `<sdk>/bin` |
+| `Node`                  | —             | `<sdk>/bin` |
+
+- `jdkName` 支持 `$PROJECT_DIR$` 和 `~` 展开;符号名(如 Java `17`)会尝试在 `~/.sdkman`、`~/.jdks`、`/Library/Java/JavaVirtualMachines` 解析。
+- 注入通过 V2 的 `shell` `create.before` 钩子:只补 SDK 变量 + 前置 PATH,不覆盖你原有的 PATH。
+
+> 与 [opencode-env-loader](https://github.com/syllr/opencode-env-loader) 的关系:两者独立。env-loader 负责 `.opencode/env-loader/*` 的**人工** KEY=VALUE 覆盖;本插件负责从 **IDE 配置自动推导** SDK 环境。可以同时使用。
 
 ## 前置条件
 
-1. JetBrains IDE 已开启 MCP 服务(IDE 设置里的 MCP Server / AI Assistant MCP)。
-2. IDE MCP 监听的**端口**。IDEA 会在项目配置里给出,常见形如:
+- JetBrains IDE 已开启 MCP 服务(IDE 设置里的 MCP Server / AI Assistant MCP)。
+- 要读 IDE 终端环境,需要在 IDE 里开启 **Brave Mode**(否则 `execute_terminal_command` 会等确认)。
+- IDE MCP 监听的**端口**,常见形如:
 
 ```jsonc
 {
@@ -36,11 +61,9 @@ OpenCode 插件:当**当前项目在 JetBrains IDE(IntelliJ IDEA / PyCharm / Web
 }
 ```
 
-插件会按 `ports` 依次探测;默认 `[64342, 6420, 6421, 63342]`。
+插件按 `ports` 依次探测;默认 `[64342, 6420, 6421, 63342]`。
 
 ## 安装
-
-在 `opencode.json` 中注册插件:
 
 ```json
 {
@@ -50,31 +73,30 @@ OpenCode 插件:当**当前项目在 JetBrains IDE(IntelliJ IDEA / PyCharm / Web
 
 ## 配置
 
-插件通过 OpenCode 的插件 `options` 接收参数:
-
 ```jsonc
 {
-  "plugin": [["opencode-jetbrains-mcp", { "ports": [64342], "pollMs": 15000 }]],
+  "plugin": [["opencode-jetbrains-mcp", { "ports": [64342], "pollMs": 15000, "injectEnv": true }]],
 }
 ```
 
-| 选项     | 类型       | 默认                         | 说明                    |
-| -------- | ---------- | ---------------------------- | ----------------------- |
-| `ports`  | `number[]` | `[64342, 6420, 6421, 63342]` | 依次探测的 IDE MCP 端口 |
-| `pollMs` | `number`   | `15000`                      | 复探间隔(毫秒)          |
+| 选项        | 类型       | 默认                         | 说明                      |
+| ----------- | ---------- | ---------------------------- | ------------------------- |
+| `ports`     | `number[]` | `[64342, 6420, 6421, 63342]` | 依次探测的 IDE MCP 端口   |
+| `pollMs`    | `number`   | `15000`                      | 复探间隔(毫秒)            |
+| `injectEnv` | `boolean`  | `true`                       | 是否注入项目 SDK 环境变量 |
 
 ## 行为
 
-- **项目在 IDE 里打开**:注册 IDE MCP + 原生编辑类工具描述变为「优先 IDE」。
-- **项目没打开**:不注册、不改描述,纯原生。
-- **IDE 中途关闭**:下一次复探自动撤销注册、还原描述。
-- 插件**从不** deny 原生工具(不是「只能」,而是「优先」),IDE 不可用时自动回退。
+- **JetBrains 项目**:注入 `.idea` 项目 SDK 环境;IDE 可达时再补终端环境 + 接入 IDE MCP + 优先 IDE 工具。
+- **非 JetBrains 项目**:不改环境、不注册、不改描述。
+- **IDE 中途关闭**:下次复探自动撤销 MCP 注册、还原工具描述(SDK 环境来自 `.idea`,继续有效)。
 
 ## 限制
 
-- 仅支持 **OpenCode V2** 插件 API(`ctx.tool` / `ctx.mcp` / `ctx.location`)。
-- IDE MCP 的端口/协议以 JetBrains 实现为准;不同 IDE 版本可能需要调整 `ports`。
-- 探测依赖 IDE MCP 的 `get_project_modules` 工具存在(当前 JetBrains MCP 均提供)。
+- 仅支持 **OpenCode V2** 插件 API(`ctx.tool` / `ctx.mcp` / `ctx.shell` / `ctx.location`)。
+- IDE 终端环境依赖 `execute_terminal_command` + Brave Mode;拿不到时只用 `.idea` 静态配置。
+- 符号型 SDK 名(如 Java `17`)若无法在常见位置解析,则跳过该 SDK。
+- 探测依赖 IDE MCP 的 `get_project_modules` 工具存在。
 
 ## 测试
 
@@ -82,7 +104,7 @@ OpenCode 插件:当**当前项目在 JetBrains IDE(IntelliJ IDEA / PyCharm / Web
 npm test
 ```
 
-使用 [Vitest](https://vitest.dev/),包含纯函数测试与「假 IDE MCP 服务」的端到端探测测试(`tests/e2e.test.js`)。
+使用 [Vitest](https://vitest.dev/),含纯函数测试、`.idea` 解析、环境合并,以及「假 IDE MCP 服务」的端到端探测测试。
 
 ## License
 
