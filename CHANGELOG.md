@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.4
+
+- **`/open-in-idea` 刷新工具列表**:在 `ctx.mcp.reload()` 之后显式调用 `ctx.tool.reload()`。之前只有 MCP 层重建目录,已经捕获过工具快照的会话仍然看不到新的 `idea_*` 原生工具;现在下一次模型请求即可用,无需重开会话。
+
 ## 0.0.3
 
 - **直接暴露 IDEA MCP 工具**:注册 MCP 服务器时设置 `codemode: false`,让 `idea_*` 工具直接出现在原生工具表(而非 Code Mode 的 `tools.idea.*`)。模型可以直接调用并看到完整参数 schema,不再需要先探索、也不会猜错参数名。
