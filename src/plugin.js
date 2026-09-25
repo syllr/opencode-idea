@@ -23,6 +23,7 @@ import {
   DEFAULT_PORTS,
   IDEA_SERVER_NAME,
   findIdePort,
+  probePort,
   serverConfig,
 } from './idea-mcp.js';
 import { readIdeTerminalEnv } from './ide-env.js';
@@ -43,10 +44,38 @@ const DEFAULT_LAUNCH_MAX_ATTEMPTS = 5;
 // MCP availability is a fast preflight. If it is not ready, fail fast and let
 // the user enable MCP + Brave Mode in IDEA before retrying the command.
 const DEFAULT_MCP_PROBE_TIMEOUT_MS = 1000;
+// A cold IDE can take tens of seconds before its bundled MCP server listens.
+// After `open -a`, poll for the endpoint instead of reporting failure once.
+const DEFAULT_MCP_START_TIMEOUT_MS = 60000;
+const MCP_START_POLL_MS = 1000;
+const DEFAULT_TOOL_REFRESH_TIMEOUT_MS = 5000;
+const TOOL_REFRESH_POLL_MS = 25;
+const IDEA_READY_TOOL_IDS = new Set(['idea_read_file', 'idea_apply_patch']);
+
+/**
+ * Remove IDEA MCP definitions from one request's tool record.
+ *
+ * @param {Record<string, unknown> | undefined} tools
+ */
+function removeIdeaToolDefinitions(tools) {
+  if (!tools || typeof tools !== 'object') return 0;
+  let removed = 0;
+  for (const name of Object.keys(tools)) {
+    if (!name.startsWith('idea_')) continue;
+    delete tools[name];
+    removed += 1;
+  }
+  return removed;
+}
+
+/** @param {ReadonlyArray<{ id?: string }> | undefined} tools */
+function toolIds(tools) {
+  return (tools ?? []).map((tool) => tool.id).filter((id) => typeof id === 'string').sort();
+}
 
 /**
  * @typedef {{
- *   status: 'connected' | 'mcp-unavailable' | 'launch-failed' | 'disabled',
+ *   status: 'connected' | 'tools-loading' | 'mcp-unavailable' | 'launch-failed' | 'disabled',
  *   port?: number,
  *   opened?: boolean,
  *   unavailableNoticeSent?: boolean
@@ -71,10 +100,12 @@ const asPositiveNumber = (value, fallback) =>
 export function ideFeedback(result) {
   switch (result?.status) {
     case 'connected':
-      return 'IDE MCP 已连接;IDE MCP 与项目环境已即时加载。';
+      return 'IDE MCP 已连接;IDEA 原生工具已注册并可用于后续请求。';
+    case 'tools-loading':
+      return 'IDE MCP 已连接,但原生 IDEA 工具列表尚未完成注册。请稍后再次执行 /open-in-idea。';
     case 'mcp-unavailable':
       return result?.opened
-        ? '已请求打开/激活 IntelliJ IDEA,但未检测到 MCP 服务。请在 IDEA 中开启 MCP 服务(Settings → MCP Server,需 2026.2+)并启用 Brave Mode,然后再次执行 /open-in-idea。'
+        ? '已请求打开/激活 IntelliJ IDEA 并等待 MCP 服务启动,但未检测到 MCP 服务。请在 IDEA 中开启 MCP 服务(Settings → MCP Server,需 2026.2+)并启用 Brave Mode,然后再次执行 /open-in-idea。'
         : '未检测到 IntelliJ IDEA 的 MCP 服务。请确认 IDEA 已打开,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后再次执行 /open-in-idea。';
     case 'launch-failed':
       return '无法拉起 IntelliJ IDEA(未找到应用或启动失败)。请确认已安装 IDEA,或手动打开后重试 /open-in-idea。';
@@ -112,6 +143,8 @@ export default {
    *     launchCooldownMs?: number,
    *     launchMaxAttempts?: number,
    *     mcpProbeTimeoutMs?: number,
+   *     mcpStartTimeoutMs?: number,
+   *     toolRefreshTimeoutMs?: number,
    *     feedback?: false | 'message',
    *   },
    *   command?: {
@@ -123,10 +156,21 @@ export default {
    *   },
    *   session?: {
    *     prompt: (input: { sessionID: string, text: string, delivery: unknown }) => Promise<unknown>,
-   *     hook: (name: string, cb: (event: { system?: unknown[] }) => void) => Promise<{ dispose: () => Promise<void> | void }>,
+   *     hook: (name: string, cb: (event: {
+   *       sessionID?: string,
+   *       agent?: string,
+   *       system?: unknown[],
+   *       tools?: Record<string, unknown>,
+   *     }) => void | Promise<void>) => Promise<{ dispose: () => Promise<void> | void }>,
    *   },
    *   tool?: {
+   *     list?: () => Promise<ReadonlyArray<{ id?: string }>>,
    *     reload?: () => Promise<void>,
+   *     hook?: (name: string, cb: (event: {
+   *       tool?: string,
+   *       status?: string,
+   *       error?: { message?: string },
+   *     }) => void | Promise<void>) => Promise<{ dispose: () => Promise<void> | void }>,
    *   },
    *   mcp: {
    *     transform: (cb: (editor: { set: (name: string, config: unknown) => void }) => void) => Promise<{ dispose: () => Promise<void> | void }>,
@@ -145,6 +189,8 @@ export default {
     const injectGuidance = options.injectGuidance !== false;
     const ideApp = resolveIdeApp(options.openInIde);
     const mcpProbeTimeoutMs = asPositiveNumber(options.mcpProbeTimeoutMs, DEFAULT_MCP_PROBE_TIMEOUT_MS);
+    const mcpStartTimeoutMs = asPositiveNumber(options.mcpStartTimeoutMs, DEFAULT_MCP_START_TIMEOUT_MS);
+    const toolRefreshTimeoutMs = asPositiveNumber(options.toolRefreshTimeoutMs, DEFAULT_TOOL_REFRESH_TIMEOUT_MS);
     // "message" (default) injects a clearly-labelled notification that the
     // model only acknowledges ("收到"); the user sees the clean notice via
     // metadata.displayText. false is silent.
@@ -153,9 +199,9 @@ export default {
       cooldownMs: asPositiveNumber(options.launchCooldownMs, DEFAULT_LAUNCH_COOLDOWN_MS),
       maxAttempts: asPositiveNumber(options.launchMaxAttempts, DEFAULT_LAUNCH_MAX_ATTEMPTS),
     });
-
     /** @type {number | undefined} */
     let activePort;
+    let activeToolsReady = false;
     let currentEnv = { env: {}, prependPath: [] };
 
     /** @type {Array<{ dispose: () => Promise<void> | void }>} */
@@ -166,10 +212,13 @@ export default {
     let sessionRegistration;
     /** @type {{ dispose: () => Promise<void> | void } | undefined} */
     let commandRegistration;
+    /** @type {{ dispose: () => Promise<void> | void } | undefined} */
+    let toolRegistration;
     let disposed = false;
 
     const deactivateIde = async () => {
       activePort = undefined;
+      activeToolsReady = false;
       const current = registrations.slice();
       registrations.length = 0;
       if (current.length === 0) return;
@@ -182,22 +231,73 @@ export default {
       }
     };
 
-    const activateIde = async (port) => {
-      const mcpRegistration = await ctx.mcp.transform((editor) => {
-        editor.set(IDEA_SERVER_NAME, serverConfig(port, projectPath));
-      });
-      registrations = [mcpRegistration];
-      activePort = port;
+    const waitForIdeaTools = async () => {
+      if (typeof ctx.tool?.list !== 'function') return false;
+      const deadline = Date.now() + toolRefreshTimeoutMs;
+      while (Date.now() < deadline) {
+        try {
+          const ids = toolIds(await ctx.tool.list());
+          if ([...IDEA_READY_TOOL_IDS].every((id) => ids.includes(id))) return true;
+        } catch {
+          // The MCP catalog may still be settling; retry within the bounded wait.
+        }
+        await new Promise((resolve) => setTimeout(resolve, TOOL_REFRESH_POLL_MS));
+      }
+      return false;
+    };
+
+    const refreshIdeTools = async () => {
+      activeToolsReady = false;
       if (typeof ctx.mcp.reload === 'function') await ctx.mcp.reload();
       // Reconcile the MCP servers above, then replay the tool registry so the
       // refreshed catalog lands in the next model request's tool snapshot.
       // Without this, a session that already captured a snapshot keeps the old
       // tool list until the session is reopened.
       if (typeof ctx.tool?.reload === 'function') await ctx.tool.reload();
+      activeToolsReady = await waitForIdeaTools();
+      return activeToolsReady;
+    };
+
+    const activateIde = async (port) => {
+      const mcpRegistration = await ctx.mcp.transform((editor) => {
+        editor.set(IDEA_SERVER_NAME, serverConfig(port, projectPath));
+      });
+      registrations = [mcpRegistration];
+      activePort = port;
+      return refreshIdeTools();
+    };
+
+    /** @type {Promise<boolean> | undefined} */
+    let healthCheck;
+    /**
+     * A manually activated IDE can disappear while the OpenCode background
+     * service keeps running (the desktop client and the service have separate
+     * lifetimes). Re-check the endpoint before every request that could expose
+     * IDEA tools, and unregister them as soon as the endpoint is gone. Only
+     * `/open-in-idea` may activate them again.
+     *
+     * @returns {Promise<boolean>}
+     */
+    const verifyActiveIde = async () => {
+      if (activePort === undefined) return true;
+      if (healthCheck) return healthCheck;
+      const port = activePort;
+      healthCheck = (async () => {
+        const available = await probePort(port, { timeoutMs: mcpProbeTimeoutMs });
+        if (available) return true;
+        if (activePort !== port) return true;
+        await deactivateIde();
+        if (typeof ctx.mcp.reload === 'function') await ctx.mcp.reload();
+        if (typeof ctx.tool?.reload === 'function') await ctx.tool.reload();
+        return false;
+      })().finally(() => {
+        healthCheck = undefined;
+      });
+      return healthCheck;
     };
 
     const reconcileOnce = async ({ probeIde = true } = {}) => {
-      if (disposed) return;
+      if (disposed) return false;
 
       // Manual: only `/open-in-idea` probes the IDE. Setup calls this with
       // `probeIde: false` so it never connects until the command asks.
@@ -206,7 +306,7 @@ export default {
       if (!isJetBrains) {
         currentEnv = { env: {}, prependPath: [] };
         await deactivateIde();
-        return;
+        return false;
       }
 
       // Environment: read from the IDE integrated terminal, the single source
@@ -220,9 +320,13 @@ export default {
         shellRegistration = await ctx.shell.hook('create.before', (input) => applyEnv(input, currentEnv));
       }
 
-      if (port === activePort) return;
+      // A repeated /open-in-idea must still refresh the current server. The
+      // previous implementation returned here, leaving the session on its old
+      // tool snapshot even though the command appeared successful.
+      if (port !== undefined && port === activePort) return refreshIdeTools();
       await deactivateIde();
-      if (port !== undefined) await activateIde(port);
+      if (port === undefined) return false;
+      return activateIde(port);
     };
 
     // Serialize reconciles so overlapping callers can never register/activate
@@ -235,6 +339,25 @@ export default {
         () => {},
       );
       return next;
+    };
+
+    /**
+     * `open -a` only requests activation/opening. A cold IDE needs time before
+     * its bundled MCP server listens, so poll until the endpoint appears. This
+     * is the step that makes a single `/open-in-idea` enough on a cold start.
+     *
+     * @returns {Promise<number | undefined>}
+     */
+    const waitForIdeServer = async () => {
+      const deadline = Date.now() + mcpStartTimeoutMs;
+      while (Date.now() < deadline) {
+        const port = await findIdePort(ports, { timeoutMs: mcpProbeTimeoutMs }).catch(() => undefined);
+        if (port !== undefined) return port;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(MCP_START_POLL_MS, remaining)));
+      }
+      return undefined;
     };
 
     // Re-entrant: repeat invocations share one open request so the IDE is not
@@ -277,9 +400,15 @@ export default {
         guard.markSpawn();
         const launched = await openInIde(projectPath, { app: ideApp });
         if (!launched) return { status: 'launch-failed' };
-        // `open -a` only requests activation/opening. Fast-fail if the MCP
-        // endpoint is not already available; the user can enable it in IDEA
-        // and run `/open-in-idea` again instead of waiting on a timer.
+        // `open -a` only requests activation/opening. A cold IDE needs time to
+        // start its bundled MCP server, so wait for the endpoint instead of
+        // reporting failure immediately.
+        const started = await waitForIdeServer();
+        if (started !== undefined) {
+          guard.reset();
+          launchNoticeSent = false;
+          return { status: 'connected', port: started, unavailableNoticeSent: false };
+        }
         await reportUnavailable(true);
         return { status: 'mcp-unavailable', opened: true, unavailableNoticeSent: launchNoticeSent };
       })();
@@ -328,33 +457,56 @@ export default {
                 return unavailableNoticeSent;
               },
             });
-            const { port, status, unavailableNoticeSent: resultNoticeSent } = result;
+            const { port } = result;
+            let toolsReady = false;
             try {
               // Do not repeat the expensive probe when the preflight already
               // found no MCP endpoint. The command will retry after the user
               // enables MCP + Brave Mode.
-              await reconcile({ probeIde: port !== undefined });
+              toolsReady = (await reconcile({ probeIde: port !== undefined })) === true;
             } catch {
               // capability load is best effort; feedback still matters
             }
+            const finalResult = result.status === 'connected' && !toolsReady
+              ? { ...result, status: 'tools-loading' }
+              : result;
             // The unavailable notice is the final result for this command. If
             // it was already delivered, do not show the same warning twice.
-            const unavailableAlreadySent = unavailableNoticeSent || resultNoticeSent;
-            if (!unavailableAlreadySent || status !== 'mcp-unavailable') {
-              await sendFeedback(input, result);
+            const unavailableAlreadySent = unavailableNoticeSent || result.unavailableNoticeSent;
+            if (!unavailableAlreadySent || finalResult.status !== 'mcp-unavailable') {
+              await sendFeedback(input, finalResult);
             }
           },
         });
       });
     }
 
-    // Direct-call guidance: while the IDEA MCP is available, append concise
-    // routing rules to every primary request. Native tools are left untouched.
-    if (injectGuidance && typeof ctx.session?.hook === 'function') {
-      sessionRegistration = await ctx.session.hook('context', (event) => {
+    // Every model request re-checks a manually activated IDE. If the endpoint
+    // is gone, drop IDEA tools from this request and from the registry so only
+    // a new `/open-in-idea` can bring them back. Guidance is appended only for
+    // an IDE that is still alive.
+    if (typeof ctx.session?.hook === 'function') {
+      sessionRegistration = await ctx.session.hook('context', async (event) => {
+        const ideActive = activePort !== undefined && activeToolsReady;
+        const available = ideActive ? await verifyActiveIde() : false;
+        const tools = event?.tools;
+        if (!available) removeIdeaToolDefinitions(tools);
         appendIdeRecoveryGuidance(event?.system);
-        if (activePort === undefined) return;
+        if (!injectGuidance) return;
+        if (!available) return;
         appendIdeGuidance(event?.system, projectPath);
+      });
+    }
+
+    // A failed IDEA MCP call is also a signal that the IDE endpoint is gone.
+    // Unregister immediately so later requests cannot keep calling a dead tool.
+    if (typeof ctx.tool?.hook === 'function') {
+      toolRegistration = await ctx.tool.hook('execute.after', async (event) => {
+        if (typeof event?.tool !== 'string' || !event.tool.startsWith('idea_')) return;
+        if (event.status !== 'error') return;
+        await deactivateIde();
+        if (typeof ctx.mcp.reload === 'function') await ctx.mcp.reload();
+        if (typeof ctx.tool?.reload === 'function') await ctx.tool.reload();
       });
     }
 
@@ -377,6 +529,13 @@ export default {
       if (commandRegistration) {
         try {
           await commandRegistration.dispose();
+        } catch {
+          // best effort
+        }
+      }
+      if (toolRegistration) {
+        try {
+          await toolRegistration.dispose();
         } catch {
           // best effort
         }

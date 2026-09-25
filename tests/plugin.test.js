@@ -47,15 +47,41 @@ function freePort() {
 }
 
 function fakeCtx(options = {}) {
-  const state = { mcp: 0, toolReload: 0, shellHook: undefined, sessionHook: undefined, commands: new Map(), prompts: [] };
+  const { toolsReadyAfter = 1, ...ctxOptions } = options;
+  const state = {
+    mcp: 0,
+    mcpReload: 0,
+    toolReload: 0,
+    toolList: 0,
+    toolsReadyAfter,
+    tools: [],
+    shellHook: undefined,
+    sessionHook: undefined,
+    toolHook: undefined,
+    commands: new Map(),
+    prompts: [],
+  };
   return {
     state,
     ctx: {
       location: { project: { directory: projectPath } },
-      options: { ports: [1], ...options },
+      options: { ports: [1], ...ctxOptions },
       tool: {
+        list: async () => {
+          state.toolList += 1;
+          return state.toolList < state.toolsReadyAfter ? [] : state.tools;
+        },
         reload: async () => {
           state.toolReload += 1;
+          state.tools = [
+            { id: 'idea_read_file' },
+            { id: 'idea_apply_patch' },
+            { id: 'idea_create_new_file' },
+          ];
+        },
+        hook: async (name, callback) => {
+          state.toolHook = callback;
+          return { dispose: () => {} };
         },
       },
       mcp: {
@@ -63,7 +89,9 @@ function fakeCtx(options = {}) {
           state.mcp += 1;
           return { dispose: () => {} };
         },
-        reload: async () => {},
+        reload: async () => {
+          state.mcpReload += 1;
+        },
       },
       shell: {
         hook: async (name, callback) => {
@@ -127,7 +155,7 @@ describe('plugin setup', () => {
   it('connects the IDE and loads capabilities when /open-in-idea runs', async () => {
     const fake = await startFakeIde();
     running = fake.server;
-    const { ctx, state } = fakeCtx({ ports: [fake.port] });
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolsReadyAfter: 3 });
     const cleanup = await plugin.setup(ctx);
 
     const command = state.commands.get('open-in-idea');
@@ -135,7 +163,9 @@ describe('plugin setup', () => {
     await command.execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
 
     expect(state.mcp).toBe(1);
+    expect(state.mcpReload).toBe(1);
     expect(state.toolReload).toBe(1);
+    expect(state.toolList).toBeGreaterThanOrEqual(3);
 
     // Default feedback is a clearly-labelled notification: the model sees the
     // instruction and only acknowledges; the user sees the clean notice.
@@ -150,8 +180,43 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
+  it('refreshes the tool catalog when /open-in-idea is run again', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port] });
+    const cleanup = await plugin.setup(ctx);
+    const command = state.commands.get('open-in-idea');
+
+    await command.execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    await command.execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+
+    expect(state.mcp).toBe(1);
+    expect(state.mcpReload).toBe(2);
+    expect(state.toolReload).toBe(2);
+    expect(state.prompts).toHaveLength(2);
+    expect(state.prompts.every((prompt) => prompt.metadata.displayText.includes('原生工具已注册'))).toBe(true);
+
+    await cleanup();
+  });
+
+  it('does not claim connected before the direct IDEA tool catalog is ready', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port] });
+    const cleanup = await plugin.setup(ctx);
+    delete ctx.tool.list;
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+
+    expect(state.prompts).toHaveLength(1);
+    expect(state.prompts[0].metadata.displayText).toContain('尚未完成注册');
+    expect(state.prompts[0].metadata.displayText).not.toContain('原生工具已注册');
+
+    await cleanup();
+  });
+
   it('fast-fails with an actionable MCP/Brave Mode notice when no endpoint exists', async () => {
-    const { ctx, state } = fakeCtx({ ports: [1], mcpProbeTimeoutMs: 10 });
+    const { ctx, state } = fakeCtx({ ports: [1], mcpProbeTimeoutMs: 10, mcpStartTimeoutMs: 50 });
     const cleanup = await plugin.setup(ctx);
     const started = Date.now();
     const execution = state.commands.get('open-in-idea').execute({
@@ -181,7 +246,7 @@ describe('plugin setup', () => {
 
     // Recovery guidance is always present; the full IDE catalog waits for /open-in-idea.
     const before = [];
-    state.sessionHook({ system: before });
+    await state.sessionHook({ system: before });
     expect(before).toHaveLength(1);
     expect(before[0].text).toContain('/open-in-idea');
 
@@ -191,7 +256,7 @@ describe('plugin setup', () => {
       system: [],
       tools: { edit: {}, write: {}, patch: {}, shell: {} },
     };
-    state.sessionHook(request);
+    await state.sessionHook(request);
     const system = request.system;
     expect(system).toHaveLength(2);
     expect(system.every((part) => part.type === 'text')).toBe(true);
@@ -210,7 +275,7 @@ describe('plugin setup', () => {
     const off = fakeCtx();
     const cleanupOff = await plugin.setup(off.ctx);
     const systemOff = [];
-    off.state.sessionHook({ system: systemOff });
+    await off.state.sessionHook({ system: systemOff });
     expect(systemOff).toHaveLength(1);
     expect(systemOff[0].text).toContain('IDEA MCP failure recovery');
     await cleanupOff();
@@ -219,7 +284,11 @@ describe('plugin setup', () => {
     running = fake.server;
     const disabled = fakeCtx({ ports: [fake.port], injectGuidance: false });
     const cleanupDisabled = await plugin.setup(disabled.ctx);
-    expect(disabled.state.sessionHook).toBeUndefined();
+    expect(disabled.state.sessionHook).toBeTypeOf('function');
+    const systemDisabled = [];
+    await disabled.state.sessionHook({ system: systemDisabled });
+    expect(systemDisabled).toHaveLength(1);
+    expect(systemDisabled[0].text).toContain('IDEA MCP failure recovery');
     await cleanupDisabled();
   });
 
@@ -230,7 +299,7 @@ describe('plugin setup', () => {
 
     // IDE not open yet: only fast-fail recovery guidance is present.
     const before = [];
-    state.sessionHook({ system: before });
+    await state.sessionHook({ system: before });
     expect(before).toHaveLength(1);
     expect(before[0].text).toContain('/open-in-idea');
 
@@ -242,9 +311,91 @@ describe('plugin setup', () => {
     await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
 
     const after = [];
-    state.sessionHook({ system: after });
+    await state.sessionHook({ system: after });
     expect(after).toHaveLength(2);
     expect(after[1].text).toContain('必须使用');
+
+    await cleanup();
+  });
+
+  it('waits for a cold IDE MCP endpoint after launching', async () => {
+    const port = await freePort();
+    const { ctx, state } = fakeCtx({ ports: [port], mcpStartTimeoutMs: 2000, mcpProbeTimeoutMs: 50 });
+    const cleanup = await plugin.setup(ctx);
+
+    const execution = state.commands.get('open-in-idea').execute({
+      sessionID: 's1',
+      prompt: { text: '' },
+      delivery: 'steer',
+    });
+
+    // The endpoint appears only after `/open-in-idea` has already launched the
+    // IDE, matching a cold IntelliJ start.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const fake = await startFakeIde(port);
+    running = fake.server;
+
+    await execution;
+    expect(state.prompts).toHaveLength(1);
+    expect(state.prompts[0].metadata.displayText).toContain('原生工具已注册');
+
+    await cleanup();
+  });
+
+  it('unregisters IDEA tools when the manually activated IDE disappears', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    expect(state.mcpReload).toBe(1);
+
+    // The desktop client and the background service have separate lifetimes:
+    // closing IDEA must not leave dead idea_* tools advertised.
+    await new Promise((resolve) => fake.server.close(resolve));
+    running = undefined;
+
+    const request = {
+      system: [],
+      tools: { read: {}, idea_read_file: {}, idea_apply_patch: {} },
+    };
+    await state.sessionHook(request);
+
+    expect(request.tools).toHaveProperty('read');
+    expect(request.tools).not.toHaveProperty('idea_read_file');
+    expect(request.tools).not.toHaveProperty('idea_apply_patch');
+    expect(request.system).toHaveLength(1);
+    expect(request.system[0].text).toContain('IDEA MCP failure recovery');
+
+    // The next request no longer probes or injects full guidance.
+    const next = { system: [], tools: { read: {} } };
+    await state.sessionHook(next);
+    expect(next.system).toHaveLength(1);
+    expect(next.system[0].text).toContain('IDEA MCP failure recovery');
+
+    await cleanup();
+  });
+
+  it('unregisters IDEA tools after a failed IDEA tool call', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port] });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    expect(state.toolHook).toBeTypeOf('function');
+
+    await state.toolHook({ tool: 'idea_read_file', status: 'error', error: { message: 'connect failed' } });
+    expect(state.mcpReload).toBe(2);
+    expect(state.toolReload).toBe(2);
+
+    const request = { system: [], tools: { read: {}, idea_read_file: {} } };
+    await state.sessionHook(request);
+    expect(request.tools).toHaveProperty('read');
+    expect(request.tools).not.toHaveProperty('idea_read_file');
+    expect(request.system).toHaveLength(1);
+    expect(request.system[0].text).toContain('IDEA MCP failure recovery');
 
     await cleanup();
   });
