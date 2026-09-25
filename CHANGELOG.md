@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.3
+
+- **直接暴露 IDEA MCP 工具**:注册 MCP 服务器时设置 `codemode: false`,让 `idea_*` 工具直接出现在原生工具表(而非 Code Mode 的 `tools.idea.*`)。模型可以直接调用并看到完整参数 schema,不再需要先探索、也不会猜错参数名。
+- **引导补充**:明确要求「直接调用工具,不要用 `execute` 包裹」。
+
 ## 0.0.2
 
 - **路由引导重写**:system prompt 明确写出项目绝对路径,并要求路径内的检索 / 读文件 / 目录浏览 / 改文件 / 新建文件 / 校验都使用 `idea_*` 工具,逐条点名禁止对应的原生工具(`grep` / `glob` / `read` / `edit` / `write` / `ls` / `find`)。
