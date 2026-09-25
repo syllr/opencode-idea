@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.5
+
+- **冷启动等待 MCP 端点**:`/open-in-idea` 在 `open -a` 之后按 `mcpStartTimeoutMs`(默认 60s)轮询,直到 IDEA 自带的 MCP server 开始监听。冷启动时一次命令即可连上,不再像之前那样探测一次失败就报「未检测到 MCP 服务」。
+- **工具就绪判定**:连接后轮询 `ctx.tool.list()`,确认 `idea_read_file` / `idea_apply_patch` 已注册。未就绪时状态为 `tools-loading` 并提示稍后重试,不再在原生工具表尚未就绪时谎称「已连接」。
+- **重复执行刷新工具列表**:再次执行 `/open-in-idea` 会重建 MCP server 并依次 `ctx.mcp.reload()` + `ctx.tool.reload()`,让已经捕获过工具快照的会话立即看到最新工具,而不是停留在旧快照。
+- **IDE 掉线自动注销**:每次请求前复检端点,IDEA 关闭或某次 `idea_*` 工具调用失败时,立即移除 `idea_*` 工具并恢复原生工具,避免后续请求继续调用已失效的 IDE 工具;只有再次执行 `/open-in-idea` 才能重新注册。
+- **清理**:移除调试日志;删除过时的 `scripts/publish.sh`(旧包名 + bypass token 流程,已由 `scripts/release.mjs` 取代);`package.json` 的 `files` 移除早已删除的 `src/idea-tool-descriptions.js`。
+
 ## 0.0.4
 
 - **`/open-in-idea` 刷新工具列表**:在 `ctx.mcp.reload()` 之后显式调用 `ctx.tool.reload()`。之前只有 MCP 层重建目录,已经捕获过工具快照的会话仍然看不到新的 `idea_*` 原生工具;现在下一次模型请求即可用,无需重开会话。
