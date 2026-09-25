@@ -15,10 +15,8 @@
     "src/ide-launcher.js",
     "src/ide-guidance.js",
     "src/idea-tool-descriptions.js",
-    "skills",
     "README.md",
-    "CHANGELOG.md",
-    "UPGRADING.md"
+    "CHANGELOG.md"
   ],
   "scripts": {
     "test": "vitest run",

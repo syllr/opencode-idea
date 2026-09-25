@@ -47,19 +47,12 @@ function freePort() {
 }
 
 function fakeCtx(options = {}) {
-  const state = { tool: 0, mcp: 0, tools: [], shellHook: undefined, sessionHook: undefined, commands: new Map(), prompts: [] };
+  const state = { mcp: 0, shellHook: undefined, sessionHook: undefined, commands: new Map(), prompts: [] };
   return {
     state,
     ctx: {
       location: { project: { directory: projectPath } },
       options: { ports: [1], ...options },
-      tool: {
-        list: async () => state.tools,
-        transform: async () => {
-          state.tool += 1;
-          return { dispose: () => {} };
-        },
-      },
       mcp: {
         transform: async () => {
           state.mcp += 1;
@@ -108,21 +101,19 @@ describe('plugin setup', () => {
     const cleanup = await plugin.setup(ctx);
 
     expect(state.shellHook).toBeTypeOf('function');
-    expect(state.tool).toBe(0);
     expect(state.mcp).toBe(0);
     expect(state.commands.has('open-in-idea')).toBe(true);
 
     await cleanup();
   });
 
-  it('does not connect to the IDE at setup (manual mode): no MCP or IDEA tool transform', async () => {
+  it('does not connect to the IDE at setup (manual mode)', async () => {
     const fake = await startFakeIde();
     running = fake.server;
     const { ctx, state } = fakeCtx({ ports: [fake.port] });
     const cleanup = await plugin.setup(ctx);
 
     // Setup never connects to the IDE; the command does.
-    expect(state.tool).toBe(0);
     expect(state.mcp).toBe(0);
 
     await cleanup();
@@ -138,7 +129,6 @@ describe('plugin setup', () => {
     expect(command).toBeTypeOf('object');
     await command.execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
 
-    expect(state.tool).toBe(1);
     expect(state.mcp).toBe(1);
 
     // Default feedback is a clearly-labelled notification: the model sees the
@@ -199,9 +189,9 @@ describe('plugin setup', () => {
     const system = request.system;
     expect(system).toHaveLength(2);
     expect(system.every((part) => part.type === 'text')).toBe(true);
-    expect(system[1].text).toContain('项目内操作优先使用 IDEA MCP');
+    expect(system[1].text).toContain('必须使用');
+    expect(system[1].text).toContain(projectPath);
     expect(system[1].text).toContain('idea_apply_patch');
-    expect(system[1].text).toContain('直接调用');
     expect(request.tools).toHaveProperty('edit');
     expect(request.tools).toHaveProperty('write');
     expect(request.tools).toHaveProperty('patch');
@@ -248,7 +238,7 @@ describe('plugin setup', () => {
     const after = [];
     state.sessionHook({ system: after });
     expect(after).toHaveLength(2);
-    expect(after[1].text).toContain('项目内操作优先使用 IDEA MCP');
+    expect(after[1].text).toContain('必须使用');
 
     await cleanup();
   });

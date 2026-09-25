@@ -3,7 +3,7 @@
 OpenCode 插件,面向 JetBrains 项目(IntelliJ IDEA / PyCharm / WebStorm 等),做三件事:
 
 1. **接入 IDE MCP** —— 用 `/open-in-idea` 把当前项目在 IntelliJ IDEA 中打开,并把这个 IDE 的 MCP 服务(60 个工具:检索、读、改、构建、重构、调试、数据库……)注册进 OpenCode。
-2. **优先使用 IDE 工具** —— IDE 可用时,向模型注入"项目内操作默认走 IDE MCP"的系统提示引导 + 能力映射;IDE 不可用时回退原生工具(正常回退,无需声明)。
+2. **优先使用 IDE 工具** —— IDE 可用时,向模型注入"项目内操作优先使用 IDEA MCP"的系统提示引导 + 能力映射;IDE 不可用时回退原生工具(正常回退,无需声明)。
 3. **注入 IDE 环境变量** —— 从 IDE 集成终端读取它实际运行的环境(版本化管理的 Node、goenv 的 Go、SDKMAN 的 Java、Maven……)注入每个 OpenCode shell。
 
 非 JetBrains 项目完全不受影响。**全部手动**:插件启动不探测、不连接 IDE,只有跑 `/open-in-idea` 时才连接。
@@ -95,10 +95,24 @@ IDE MCP 可用时,插件通过两层轻量引导提高模型主动使用 IDEA MC
 
 ## 安装
 
-```json
+推荐用 CLI 安装,它会写入全局配置 `~/.config/opencode/opencode.json`:
+
+```bash
+opencode plugin add opencode-idea
+```
+
+等价的配置写法(V2 使用 `plugins` 数组):
+
+```jsonc
 {
-  "plugin": ["opencode-idea"]
+  "plugins": ["opencode-idea"],
 }
+```
+
+安装后确认:
+
+```bash
+opencode plugin list
 ```
 
 > 仅支持 **OpenCode V2**。若你日常跑的是 1.x 的 `opencode-ai`,它用的是旧插件 API,本插件不会生效;真机验证请用 V2 运行时。
@@ -115,14 +129,6 @@ IDE MCP 可用时,插件通过两层轻量引导提高模型主动使用 IDEA MC
 }
 ```
 
-也可以沿用旧键 `plugin` 的元组写法:
-
-```jsonc
-{
-  "plugin": [["/Users/yutao/Projects/opencode-idea", {}]],
-}
-```
-
 配置保存后 V2 会监听并自动重载(日志里能看到它开始 watch `index.js` / `src/*.js`),无需重启。改插件源码也会触发重载(此时需重跑 `/open-in-idea`)。
 
 另一种零配置方式:在 `~/.config/opencode/plugins/` 放一个转发文件(自动发现,但不能传 options):
@@ -134,31 +140,35 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
 
 ## 配置
 
+用 CLI 安装只会写入包名。要传 options,把 `plugins` 数组里的字符串改成对象:
+
 ```jsonc
 {
-  "plugin": [
-    [
-      "opencode-idea",
-      {
+  "plugins": [
+    {
+      "package": "opencode-idea",
+      "options": {
         "ports": [64342, 6420, 6421, 63342],
         "injectEnv": true,
-        "injectGuidance": true, // IDE 可用时向系统提示注入「默认走 IDE MCP」引导
+        "injectGuidance": true, // IDE 可用时向系统提示注入「优先使用 IDEA MCP」引导
         "openInIde": "idea", // false 关闭;或任意 macOS 应用名(如 "IntelliJ IDEA")
         "launchCooldownMs": 120000, // 启动保护冷却
         "launchMaxAttempts": 5,
         "mcpProbeTimeoutMs": 1000, // 单个 MCP 端口的短探测超时
         "feedback": "message", // "message"(默认,会话通知,AI 只回"收到")| false(静默)
       },
-    ],
+    },
   ],
 }
 ```
+
+不传 options 时全部使用下表默认值。
 
 | 选项                | 类型                 | 默认                         | 说明                                                             |
 | ------------------- | -------------------- | ---------------------------- | ---------------------------------------------------------------- |
 | `ports`             | `number[]`           | `[64342, 6420, 6421, 63342]` | 依次探测的 IDE MCP 端口                                          |
 | `injectEnv`         | `boolean`            | `true`                       | 是否注入 IDE 终端环境变量                                        |
-| `injectGuidance`    | `boolean`            | `true`                       | IDE 可用时是否向系统提示注入「默认走 IDE MCP」引导               |
+| `injectGuidance`    | `boolean`            | `true`                       | IDE 可用时是否向系统提示注入「优先使用 IDEA MCP」引导            |
 | `openInIde`         | `boolean \| string`  | `"idea"`                     | 拉起哪个 IDE;`false` 关闭,`"idea"` 映射到 IntelliJ IDEA          |
 | `launchCooldownMs`  | `number`             | `120000`                     | 启动保护冷却:冷却期内不重复 spawn                                |
 | `launchMaxAttempts` | `number`             | `5`                          | 单次会话内最多 spawn 次数,超出后停止重试                         |

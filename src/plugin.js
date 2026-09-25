@@ -28,7 +28,6 @@ import {
 import { readIdeTerminalEnv } from './ide-env.js';
 import { currentProjectPath, hasIdeaDirectory } from './project.js';
 import { applyEnv, mergeEnv } from './env.js';
-import { applyIdeaToolGuidance } from './idea-tool-descriptions.js';
 import {
   createLaunchGuard,
   openInIde,
@@ -187,13 +186,10 @@ export default {
     };
 
     const activateIde = async (port) => {
-      const toolRegistration = await ctx.tool.transform((editor) => {
-        applyIdeaToolGuidance(editor);
-      });
       const mcpRegistration = await ctx.mcp.transform((editor) => {
         editor.set(IDEA_SERVER_NAME, serverConfig(port, projectPath));
       });
-      registrations = [toolRegistration, mcpRegistration];
+      registrations = [mcpRegistration];
       activePort = port;
       if (typeof ctx.mcp.reload === 'function') await ctx.mcp.reload();
     };
@@ -356,7 +352,7 @@ export default {
       sessionRegistration = await ctx.session.hook('context', (event) => {
         appendIdeRecoveryGuidance(event?.system);
         if (activePort === undefined) return;
-        appendIdeGuidance(event?.system);
+        appendIdeGuidance(event?.system, projectPath);
       });
     }
 
