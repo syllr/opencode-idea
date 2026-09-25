@@ -1,6 +1,6 @@
 // Reads the IDE terminal environment over MCP and extracts the SDK-related
-// variables. The IDE terminal reflects the environment the IDE runs with, which
-// complements the static project SDK config read from `.idea`.
+// variables. The IDE terminal is the single source of truth for the environment
+// the IDE actually runs with (version-managed Node, goenv Go, SDKMAN Java, ...).
 
 import { callTool } from './idea-mcp.js';
 
@@ -41,7 +41,7 @@ export async function readIdeTerminalEnv(port, projectPath, fetchImpl = fetch) {
     projectPath,
     'execute_terminal_command',
     { command: 'printenv', executeInShell: true, timeout: 8000, maxLinesCount: 800 },
-    fetchImpl,
+    { fetchImpl, timeoutMs: 15000 },
   ).catch(() => undefined);
   if (!result || result.isError) return {};
   const text = (result.content ?? [])

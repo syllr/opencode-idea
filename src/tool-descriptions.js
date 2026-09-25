@@ -6,11 +6,13 @@
 // what the model reads when choosing). When the plugin deactivates, the
 // transform registration is disposed and the registry rebuilds with the
 // original descriptions.
+//
+// It complements the system-prompt guidance (src/ide-guidance.js), which
+// carries the full capability map; this note stays short on purpose.
 
 export const IDEA_PREFER_NOTE =
-  '优先:当 JetBrains IDE(IntelliJ IDEA / PyCharm / WebStorm 等)的 MCP 工具可用时,' +
-  '请改用 IDE 的对应工具来完成本操作——它对项目结构、索引、引用和构建的理解更强。' +
-  '仅当 IDE MCP 不可用时,才使用本工具。\n\n';
+  '优先:项目已在 JetBrains IDE 中打开时,改用 IDE 的 MCP 对应工具(`idea_apply_patch` / ' +
+  '`idea_create_new_file` / `idea_execute_terminal_command` 等);IDE 不可用或报错时再用本工具。\n\n';
 
 /** Native tools that should defer to the IDE when it is available. */
 export const PREFERRED_NATIVE_TOOLS = ['edit', 'write', 'patch', 'shell'];
