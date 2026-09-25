@@ -1,27 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { IDE_GUIDANCE, appendIdeGuidance } from './ide-guidance.js';
+import {
+  IDE_GUIDANCE,
+  MCP_RECOVERY_GUIDANCE,
+  appendIdeGuidance,
+  appendIdeRecoveryGuidance,
+} from './ide-guidance.js';
 
 describe('IDE_GUIDANCE', () => {
-  it('states the firm default and lists key tools', () => {
-    expect(IDE_GUIDANCE).toContain('默认走 IDE MCP');
-    for (const tool of [
-      'idea_search_text',
-      'idea_read_file',
-      'idea_apply_patch',
-      'idea_create_new_file',
-      'idea_lint_files',
-      'idea_git_status',
-    ]) {
-      expect(IDE_GUIDANCE).toContain(tool);
-    }
+  it('states the direct-call default and key IDEA tools', () => {
+    expect(IDE_GUIDANCE).toContain('直接调用');
+    expect(IDE_GUIDANCE).toContain('idea_search_text');
+    expect(IDE_GUIDANCE).toContain('idea_apply_patch');
+    expect(IDE_GUIDANCE).toContain('idea_create_new_file');
+    expect(IDE_GUIDANCE).toContain('pathInProject');
+    expect(IDE_GUIDANCE).toContain('q');
   });
 
-  it('documents Code Mode dotted names and key parameter names', () => {
-    expect(IDE_GUIDANCE).toContain('idea.search_text');
-    // Parameter names that fail loudly if omitted, so they must be stated.
-    expect(IDE_GUIDANCE).toContain('`q`');
-    expect(IDE_GUIDANCE).toContain('file_path');
-    expect(IDE_GUIDANCE).toContain('pathInProject');
+  it('contains the fast-fail recovery rule', () => {
+    expect(IDE_GUIDANCE).toContain('/open-in-idea');
+    expect(MCP_RECOVERY_GUIDANCE).toContain('stop retrying immediately');
   });
 });
 
@@ -32,14 +29,20 @@ describe('appendIdeGuidance', () => {
     expect(system).toEqual([{ type: 'text', text: IDE_GUIDANCE }]);
   });
 
-  it('is idempotent per request', () => {
+  it('is idempotent and safe for non-arrays', () => {
     const system = [];
     appendIdeGuidance(system);
     appendIdeGuidance(system);
     expect(system).toHaveLength(1);
-  });
-
-  it('is a no-op on a non-array', () => {
     expect(() => appendIdeGuidance(undefined)).not.toThrow();
+  });
+});
+
+describe('appendIdeRecoveryGuidance', () => {
+  it('adds the fast-fail recovery instruction once', () => {
+    const system = [];
+    appendIdeRecoveryGuidance(system);
+    appendIdeRecoveryGuidance(system);
+    expect(system).toEqual([{ type: 'text', text: MCP_RECOVERY_GUIDANCE }]);
   });
 });

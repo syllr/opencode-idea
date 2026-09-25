@@ -1,6 +1,6 @@
 {
-  "name": "opencode-jetbrains-mcp",
-  "version": "0.3.1",
+  "name": "opencode-idea",
+  "version": "0.0.1",
   "description": "OpenCode plugin that connects to JetBrains IDE MCP servers and prefers IDE tools when the current project is open in the IDE",
   "main": "src/index.js",
   "type": "module",
@@ -12,9 +12,9 @@
     "src/ide-env.js",
     "src/project.js",
     "src/env.js",
-    "src/tool-descriptions.js",
     "src/ide-launcher.js",
     "src/ide-guidance.js",
+    "src/idea-tool-descriptions.js",
     "skills",
     "README.md",
     "CHANGELOG.md",
@@ -22,6 +22,10 @@
   ],
   "scripts": {
     "test": "vitest run",
+    "release": "node scripts/release.mjs",
+    "release:dry": "node scripts/release.mjs --dry-run",
+    "release:bump": "node scripts/release.mjs --bump",
+    "release:check": "node scripts/release.mjs --check",
     "prepublishOnly": "npm test"
   },
   "keywords": [
@@ -37,7 +41,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/syllr/opencode-jetbrains-mcp.git"
+    "url": "git+https://github.com/syllr/opencode-idea.git"
   },
   "devDependencies": {
     "vitest": "^2"

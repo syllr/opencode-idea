@@ -1,12 +1,11 @@
-// opencode-jetbrains-mcp — OpenCode plugin entry.
+// opencode-idea — OpenCode plugin entry.
 //
 // For a JetBrains project this plugin:
 //   1. injects the IDE integrated-terminal environment (JAVA_HOME / GOROOT /
 //      Node / Maven / ...) into every OpenCode shell;
 //   2. registers the IDE MCP server with OpenCode (scoped to the project via the
-//      IJ_MCP_SERVER_PROJECT_PATH header), injects "prefer IDE tools" guidance
-//      into the system prompt, and rewrites the native edit/write/patch/shell
-//      descriptions to prefer the IDE tools;
+//      IJ_MCP_SERVER_PROJECT_PATH header), injects direct-call guidance for
+//      IDEA MCP tools, and updates only IDEA MCP tool descriptions;
 //   3. registers the `/open-in-idea` command, which opens the current project
 //      in IntelliJ IDEA (reusing a running instance) and then loads the IDE
 //      capabilities immediately.
@@ -29,13 +28,16 @@ import {
 import { readIdeTerminalEnv } from './ide-env.js';
 import { currentProjectPath, hasIdeaDirectory } from './project.js';
 import { applyEnv, mergeEnv } from './env.js';
-import { applyPreference } from './tool-descriptions.js';
+import { applyIdeaToolGuidance } from './idea-tool-descriptions.js';
 import {
   createLaunchGuard,
   openInIde,
   resolveIdeApp,
 } from './ide-launcher.js';
-import { appendIdeGuidance } from './ide-guidance.js';
+import {
+  appendIdeGuidance,
+  appendIdeRecoveryGuidance,
+} from './ide-guidance.js';
 
 const DEFAULT_LAUNCH_COOLDOWN_MS = 120000;
 const DEFAULT_LAUNCH_MAX_ATTEMPTS = 5;
@@ -99,7 +101,7 @@ export function idePromptMetadata(result) {
 }
 
 export default {
-  id: 'opencode-jetbrains-mcp',
+  id: 'opencode-idea',
 
   /**
    * @param {{
@@ -122,8 +124,14 @@ export default {
    *   },
    *   session?: {
    *     prompt: (input: { sessionID: string, text: string, delivery: unknown }) => Promise<unknown>,
+   *     hook: (name: string, cb: (event: { system?: unknown[] }) => void) => Promise<{ dispose: () => Promise<void> | void }>,
    *   },
-   *   tool: { transform: (cb: (editor: unknown) => void) => Promise<{ dispose: () => Promise<void> | void }> },
+   *   tool: {
+   *     transform: (cb: (editor: {
+   *       list: () => ReadonlyArray<{ id?: string }>,
+   *       update: (id: string, update: (tool: { description?: string }) => void) => void,
+   *     }) => void) => Promise<{ dispose: () => Promise<void> | void }>,
+   *   },
    *   mcp: {
    *     transform: (cb: (editor: { set: (name: string, config: unknown) => void }) => void) => Promise<{ dispose: () => Promise<void> | void }>,
    *     reload?: () => Promise<void>,
@@ -153,6 +161,7 @@ export default {
     /** @type {number | undefined} */
     let activePort;
     let currentEnv = { env: {}, prependPath: [] };
+
     /** @type {Array<{ dispose: () => Promise<void> | void }>} */
     let registrations = [];
     /** @type {{ dispose: () => Promise<void> | void } | undefined} */
@@ -178,7 +187,9 @@ export default {
     };
 
     const activateIde = async (port) => {
-      const toolRegistration = await ctx.tool.transform((editor) => applyPreference(editor));
+      const toolRegistration = await ctx.tool.transform((editor) => {
+        applyIdeaToolGuidance(editor);
+      });
       const mcpRegistration = await ctx.mcp.transform((editor) => {
         editor.set(IDEA_SERVER_NAME, serverConfig(port, projectPath));
       });
@@ -339,11 +350,11 @@ export default {
       });
     }
 
-    // Strong soft guidance: while the IDE MCP is available, append a
-    // "prefer IDE tools" section to the system prompt of every primary request.
-    // This is much more effective than only rewriting native tool descriptions.
+    // Direct-call guidance: while the IDEA MCP is available, append concise
+    // routing rules to every primary request. Native tools are left untouched.
     if (injectGuidance && typeof ctx.session?.hook === 'function') {
       sessionRegistration = await ctx.session.hook('context', (event) => {
+        appendIdeRecoveryGuidance(event?.system);
         if (activePort === undefined) return;
         appendIdeGuidance(event?.system);
       });

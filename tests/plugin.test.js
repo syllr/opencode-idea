@@ -47,13 +47,14 @@ function freePort() {
 }
 
 function fakeCtx(options = {}) {
-  const state = { tool: 0, mcp: 0, shellHook: undefined, sessionHook: undefined, commands: new Map(), prompts: [] };
+  const state = { tool: 0, mcp: 0, tools: [], shellHook: undefined, sessionHook: undefined, commands: new Map(), prompts: [] };
   return {
     state,
     ctx: {
       location: { project: { directory: projectPath } },
       options: { ports: [1], ...options },
       tool: {
+        list: async () => state.tools,
         transform: async () => {
           state.tool += 1;
           return { dispose: () => {} };
@@ -114,7 +115,7 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('does not connect to the IDE at setup (manual mode): no MCP, no tool rewrite', async () => {
+  it('does not connect to the IDE at setup (manual mode): no MCP or IDEA tool transform', async () => {
     const fake = await startFakeIde();
     running = fake.server;
     const { ctx, state } = fakeCtx({ ports: [fake.port] });
@@ -174,7 +175,7 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('injects IDE-tool guidance into the system prompt while the IDE is available', async () => {
+  it('injects direct IDEA-tool guidance while the IDE is available', async () => {
     const fake = await startFakeIde();
     running = fake.server;
     const { ctx, state } = fakeCtx({ ports: [fake.port] });
@@ -182,19 +183,29 @@ describe('plugin setup', () => {
 
     expect(state.sessionHook).toBeTypeOf('function');
 
-    // Manual: guidance only appears once /open-in-idea has connected the IDE.
+    // Recovery guidance is always present; the full IDE catalog waits for /open-in-idea.
     const before = [];
     state.sessionHook({ system: before });
-    expect(before).toHaveLength(0);
+    expect(before).toHaveLength(1);
+    expect(before[0].text).toContain('/open-in-idea');
 
     await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
 
-    const system = [];
-    state.sessionHook({ system });
-    expect(system).toHaveLength(1);
-    expect(system[0].type).toBe('text');
-    expect(system[0].text).toContain('默认走 IDE MCP');
-    expect(system[0].text).toContain('idea_apply_patch');
+    const request = {
+      system: [],
+      tools: { edit: {}, write: {}, patch: {}, shell: {} },
+    };
+    state.sessionHook(request);
+    const system = request.system;
+    expect(system).toHaveLength(2);
+    expect(system.every((part) => part.type === 'text')).toBe(true);
+    expect(system[1].text).toContain('项目内操作优先使用 IDEA MCP');
+    expect(system[1].text).toContain('idea_apply_patch');
+    expect(system[1].text).toContain('直接调用');
+    expect(request.tools).toHaveProperty('edit');
+    expect(request.tools).toHaveProperty('write');
+    expect(request.tools).toHaveProperty('patch');
+    expect(request.tools).toHaveProperty('shell');
 
     await cleanup();
   });
@@ -204,7 +215,8 @@ describe('plugin setup', () => {
     const cleanupOff = await plugin.setup(off.ctx);
     const systemOff = [];
     off.state.sessionHook({ system: systemOff });
-    expect(systemOff).toHaveLength(0);
+    expect(systemOff).toHaveLength(1);
+    expect(systemOff[0].text).toContain('IDEA MCP failure recovery');
     await cleanupOff();
 
     const fake = await startFakeIde();
@@ -220,10 +232,11 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [port] });
     const cleanup = await plugin.setup(ctx);
 
-    // IDE not open yet: no guidance.
+    // IDE not open yet: only fast-fail recovery guidance is present.
     const before = [];
     state.sessionHook({ system: before });
-    expect(before).toHaveLength(0);
+    expect(before).toHaveLength(1);
+    expect(before[0].text).toContain('/open-in-idea');
 
     // IDE opens now (same port the plugin probes).
     const fake = await startFakeIde(port);
@@ -234,8 +247,8 @@ describe('plugin setup', () => {
 
     const after = [];
     state.sessionHook({ system: after });
-    expect(after).toHaveLength(1);
-    expect(after[0].text).toContain('默认走 IDE MCP');
+    expect(after).toHaveLength(2);
+    expect(after[1].text).toContain('项目内操作优先使用 IDEA MCP');
 
     await cleanup();
   });

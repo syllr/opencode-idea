@@ -1,4 +1,4 @@
-# opencode-jetbrains-mcp
+# opencode-idea
 
 OpenCode 插件,面向 JetBrains 项目(IntelliJ IDEA / PyCharm / WebStorm 等),做三件事:
 
@@ -25,8 +25,7 @@ setup(启动):
   5. MCP 就绪时:
        a. 注册 IDE MCP(url /stream,header IJ_MCP_SERVER_PROJECT_PATH 锁定当前项目)
        b. 读 IDE 终端环境 → 更新注入每个 shell 的环境变量
-       c. 启用系统提示引导(每次模型请求都追加「默认走 IDE MCP」+ 能力映射)
-       d. 把原生 edit / write / patch / shell 的描述改为「优先 IDE 工具」
+       c. 启用系统提示引导(直接调用 `idea_*` 工具)+ IDEA MCP 工具描述前缀
   6. 发一条结果通知(用户看到干净气泡,模型只回"收到")
 ```
 
@@ -37,7 +36,7 @@ setup(启动):
 1. 先探测 `/stream`;已就绪 → 直接加载能力;
 2. 未就绪 → 用 `open -a "IntelliJ IDEA" <项目目录>` 拉起或激活 IDEA —— **复用已运行的实例**(不会重复开新实例);
 3. 如果 MCP 仍未就绪,命令会**立即 fast-fail**,提示在 IDEA 的 `Settings → MCP Server` 开启 MCP 服务并启用 **Brave Mode**;
-4. 用户手动完成设置后,再次执行 `/open-in-idea`;探测成功后才注册 IDE MCP、重读 IDE 环境并启用引导与工具描述改写。
+4. 用户手动完成设置后,再次执行 `/open-in-idea`;探测成功后才注册 IDE MCP、重读 IDE 环境并启用系统引导与 live tool catalog。
 
 > **通知不触发 AI 干活**:默认 `feedback: "message"` 把结果作为一条**标注清楚的通知**发到会话里 —— 用户看到干净的通知气泡(经 `metadata.displayText`),模型只看到"这是通知,请只回复『收到』"的指令,因此不会执行任何操作、不会调用工具。`feedback: false` 则完全静默。
 
@@ -45,20 +44,25 @@ setup(启动):
 
 **热更新会断开**:插件源码变更会触发 V2 热重载,注册随旧实例一起释放,`activePort` 归零。这是手动模式的预期行为 —— **改完插件后重跑一次 `/open-in-idea`** 即可恢复。
 
-## IDE 工具优先(软引导)
+## IDE 工具优先(直接调用引导)
 
-IDE MCP 可用时,插件做两层引导(都不强制、可回退):
+IDE MCP 可用时,插件通过两层轻量引导提高模型主动使用 IDEA MCP 的概率;不会修改原生工具的定义、描述或可用性:
 
-1. **系统提示注入**(主):通过 `ctx.session.hook("context", …)` 往每次请求的 system 里追加一段「项目内操作默认走 IDE MCP」的强默认引导 + 能力映射表(`src/ide-guidance.js`),含工具名(普通表 `idea_<name>` / Code Mode `idea.<name>`)与关键参数名:
+1. **系统提示注入**(主):通过 `ctx.session.hook("context", …)` 往每次请求的 system 里追加一段「项目内操作优先使用 IDEA MCP」的直接调用引导 + 能力映射表(`src/ide-guidance.js`),含工具名(`idea_<name>`)与关键参数名:
    - 检索 → `idea_search_text` / `idea_search_regex` / `idea_search_file`(参数 `q`,可带 `paths` 收窄)
    - 读文件 → `idea_read_file`(`file_path` / `offset` / `limit`);目录 → `idea_list_directory_tree`
    - 改文件 → `idea_apply_patch`(`input`);新建 → `idea_create_new_file`(`pathInProject`)
    - 校验 → `idea_lint_files` / `idea_get_file_problems` / `idea_build_project`
    - 重构/格式化 → `idea_rename_refactoring` / `idea_reformat_file`;版本 → `idea_git_status`
-   - 例外(直接用原生):IDE 不索引的目录、`git diff/log/blame`、MCP 无等价能力、MCP 失败/超时
-2. **工具描述改写**(辅):给原生 `edit` / `write` / `patch` / `shell` 的描述加「优先 IDE 工具」前缀。
+   - 例外(直接用原生):IDE 不索引的目录、`git diff/log/blame`、MCP 无等价能力、IDE MCP 未连接/未注册
 
-引导只在 **IDE MCP 可用时**生效(IDE 关闭则不注入);`injectGuidance: false` 可关闭系统提示注入。
+   连接成功后,插件只对 `idea_*` IDEA MCP 工具追加一段简短描述,要求模型直接调用、严格按当前 schema 传参;不会把整份工具目录重复塞进 system prompt,也不要求模型额外包一层 JavaScript 编排代码。
+
+   IDEA MCP 工具自身的 description/schema 仍是参数使用的权威来源;工具返回业务错误时先修正参数,不要误判成工具不可用。MCP 不可用时立即提示用户执行 `/open-in-idea`,不重复探测或等待。
+
+2. **IDEA MCP 工具描述增强**:插件通过 `ctx.tool.transform` 只更新 `idea_*` / `idea.*` 工具的 description,强调直接调用和按 schema 传参;原生 `edit` / `write` / `patch` / `shell` 完全不变。
+
+引导只在 **IDE MCP 可用**时生效;MCP 不可用时仅保留 fast-fail 恢复提示。`injectGuidance: false` 可关闭系统提示注入。
 
 ## 环境变量注入
 
@@ -93,7 +97,7 @@ IDE MCP 可用时,插件做两层引导(都不强制、可回退):
 
 ```json
 {
-  "plugin": ["opencode-jetbrains-mcp"]
+  "plugin": ["opencode-idea"]
 }
 ```
 
@@ -107,7 +111,7 @@ IDE MCP 可用时,插件做两层引导(都不强制、可回退):
 
 ```jsonc
 {
-  "plugins": [{ "package": "/Users/yutao/Projects/opencode-jetbrains-mcp" }],
+  "plugins": [{ "package": "/Users/yutao/Projects/opencode-idea" }],
 }
 ```
 
@@ -115,7 +119,7 @@ IDE MCP 可用时,插件做两层引导(都不强制、可回退):
 
 ```jsonc
 {
-  "plugin": [["/Users/yutao/Projects/opencode-jetbrains-mcp", {}]],
+  "plugin": [["/Users/yutao/Projects/opencode-idea", {}]],
 }
 ```
 
@@ -124,8 +128,8 @@ IDE MCP 可用时,插件做两层引导(都不强制、可回退):
 另一种零配置方式:在 `~/.config/opencode/plugins/` 放一个转发文件(自动发现,但不能传 options):
 
 ```js
-// ~/.config/opencode/plugins/opencode-jetbrains-mcp.js
-export { default } from "/Users/yutao/Projects/opencode-jetbrains-mcp/src/index.js";
+// ~/.config/opencode/plugins/opencode-idea.js
+export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
 ```
 
 ## 配置
@@ -134,7 +138,7 @@ export { default } from "/Users/yutao/Projects/opencode-jetbrains-mcp/src/index.
 {
   "plugin": [
     [
-      "opencode-jetbrains-mcp",
+      "opencode-idea",
       {
         "ports": [64342, 6420, 6421, 63342],
         "injectEnv": true,
@@ -167,6 +171,7 @@ export { default } from "/Users/yutao/Projects/opencode-jetbrains-mcp/src/index.
 - **非 JetBrains 项目**:不改环境、不注册、不改描述。
 - **纯手动**:启动**不探测、不连接 IDE MCP**;IDE MCP 注册、环境重读、系统提示引导全部由 `/open-in-idea` 触发。IDE 中途关闭不会自动撤销,需再执行一次 `/open-in-idea` 重新同步。
 - **`/open-in-idea`**:手动打开当前项目并即时加载能力(已在 IDE 打开时则只重新加载);MCP 未开启时只发一次提示并 fast-fail,用户手动开启 MCP + Brave Mode 后重试。
+- **IDEA 工具增强**:通过 `ctx.tool.transform` 只更新 `idea_*` / `idea.*` 工具 description,原生 `edit` / `write` / `patch` / `shell` 的定义、描述和可用性均不变。
 
 ## 限制
 
@@ -177,6 +182,7 @@ export { default } from "/Users/yutao/Projects/opencode-jetbrains-mcp/src/index.
 - 打开 IDE 仅实现 macOS(`open -a`);首次打开若弹 Trust 对话框,需确认后重试。
 - IDE MCP 没有「打开项目」工具,因此打开动作走 OS/CLI,而非 MCP。
 - 插件热重载会断开 IDE 连接,需重跑 `/open-in-idea`。
+- 插件只修改 IDEA MCP 工具 description,不修改原生工具定义、描述或可用性;默认调用方式为直接 `idea_*` 工具调用。
 
 ## 测试
 

@@ -1,6 +1,6 @@
 ---
 name: jetbrains-mcp-setup
-description: 配置并验证 opencode-jetbrains-mcp 插件:开启 JetBrains IDE 的 MCP 服务、找到端口、写入 opencode.json、验证 OpenCode 能连上并优先使用 IDE 工具。当用户要「接入 IDEA/JetBrains 的 MCP」「让 OpenCode 用 IDE 工具编辑/构建」或排查插件不生效时使用。
+description: 配置并验证 opencode-idea 插件:开启 JetBrains IDE 的 MCP 服务、找到端口、写入 opencode.json、验证 OpenCode 能连上并优先使用 IDE 工具。当用户要「接入 IDEA/JetBrains 的 MCP」「让 OpenCode 用 IDE 工具编辑/构建」或排查插件不生效时使用。
 ---
 
 # JetBrains MCP 接入配置
@@ -20,7 +20,7 @@ description: 配置并验证 opencode-jetbrains-mcp 插件:开启 JetBrains IDE 
    ```jsonc
    {
      "plugin": [
-       ["opencode-jetbrains-mcp", { "ports": [<port>], "pollMs": 15000 }]
+       ["opencode-idea", { "ports": [<port>] }]
      ]
    }
    ```

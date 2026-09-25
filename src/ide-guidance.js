@@ -1,52 +1,52 @@
-// Strong "prefer IDE tools" guidance injected into the model's SYSTEM prompt
-// while the IDE MCP server is available.
-//
-// Modeled on a project AGENTS.md that reliably makes agents prefer IDE tools:
-// a firm default ("default to IDE MCP"), a capability mapping, usage tips, and
-// explicit fall-back exceptions. Injected via
-// `ctx.session.hook("context", (event) => event.system.push(...))`, which runs
-// for every primary model request (see src/plugin.js).
-//
-// NAMING: OpenCode registers MCP tools by namespace + name.
-//   * normal tool list (the model calls it directly): `idea_<tool>`
-//     e.g. idea_search_text — namespace "idea" + "_" + "search_text".
-//   * Code Mode catalog (this session: tools.idea.search_text): dotted path.
-// The guidance names both forms so either mode resolves.
-//
-// KEY PARAMETERS (verified against the live server; wrong names fail loudly):
-//   * search_* tools take `q` (NOT `query`), plus optional `paths` (project-
-//     relative globs, `!` to exclude). `q` is required.
-//   * read_file takes `file_path`, `offset`, `limit`.
-//   * apply_patch takes `input` (the patch text); create_new_file takes
-//     `pathInProject` (required) + optional `text`, `overwrite`.
+// Direct IDEA MCP usage guidance injected into the model's system prompt.
+// The plugin does not modify native OpenCode tools.
 
 /** The guidance text appended to the system prompt. */
 export const IDE_GUIDANCE = [
-  '## 项目内操作默认走 IDE MCP(JetBrains)',
-  '当前项目已在 JetBrains IDE 中打开,IDE 的 MCP 工具可用(普通工具表里叫 `idea_<name>`,如 `idea_search_text`;Code Mode 里叫 `idea.<name>`,如 `idea.search_text`)。项目内的**检索 / 读文件 / 改文件 / 校验 / 目录浏览,一律优先用这些工具**——它们基于 IDE 索引与语义,比原生工具更准;只有它们做不了、不可用或报错时才回退原生工具(正常回退,无需声明)。',
+  '## 项目内操作优先使用 IDEA MCP 工具',
+  '当前项目已在 JetBrains IDE 中打开。普通工具调用名称是 `idea_<name>`,例如 `idea_search_text`、`idea_read_file`、`idea_apply_patch`;项目内检索、读文件、改文件、校验和目录浏览优先直接调用这些 IDEA MCP 工具。',
+  '直接调用工具本身,不要为了调用 IDEA MCP 工具再包一层额外的 JavaScript 编排代码。',
   '',
-  '能力映射(常用,非穷举;参数名按实际 schema,写错会报 `Missing key`):',
-  '- 文本 / 正则 / 文件名检索:`idea_search_text` / `idea_search_regex` / `idea_search_file` —— 参数 `q`(**不是 `query`**),可带 `paths`(项目相对 glob,`!` 排除)收窄;基于 IDE 索引、不扫 `node_modules`',
-  '- 符号 / 语义:`idea_search_symbol` / `idea_get_symbol_info` / `idea_analyze_calls`(只用 `depth=1`)',
-  '- 读文件:`idea_read_file`(参数 `file_path` / `offset` / `limit`;窗口是 `[offset, 末行]`,读中段必须显式传 `offset`)',
-  '- 目录浏览:`idea_list_directory_tree`(代替 `ls`/`find`,`maxDepth` ≥ 2)',
-  '- 改文件:`idea_apply_patch`(参数 `input`,传 patch 文本);新建文件:`idea_create_new_file`(参数 `pathInProject`,可选 `text` / `overwrite`)',
-  '- 校验:`idea_lint_files` / `idea_get_file_problems`(单次 1~2 个文件)/ `idea_build_project`(`filesToRebuild` 传单文件做增量)',
-  '- 重构 / 格式化:`idea_rename_refactoring` / `idea_reformat_file`',
-  '- 结构 / 依赖:`idea_get_project_modules` / `idea_get_project_dependencies`',
-  '- 版本状态:`idea_git_status`(`git status` 走这条)',
-  '- 编辑器上下文:`idea_get_all_open_file_paths`;把文件推给用户看:`idea_open_file_in_editor`',
+  '常用工具与关键参数:',
+  '- 文本 / 正则 / 文件名检索:`idea_search_text` / `idea_search_regex` / `idea_search_file` —— 参数 `q`(不是 `query`),可带 `paths` 收窄。',
+  '- 符号 / 语义:`idea_search_symbol` / `idea_get_symbol_info` / `idea_analyze_calls`(只用 `depth=1`)。',
+  '- 读文件:`idea_read_file`(`file_path` / `offset` / `limit`)。',
+  '- 目录浏览:`idea_list_directory_tree`(代替 `ls` / `find`,`maxDepth` ≥ 2)。',
+  '- 修改已有文件:`idea_apply_patch`(参数 `input`,传 patch 文本)。',
+  '- 新建文件:`idea_create_new_file`(参数 `pathInProject`,可选 `text` / `overwrite`)。',
+  '- 校验:`idea_lint_files` / `idea_get_file_problems` / `idea_build_project`。',
+  '- 重构 / 格式化:`idea_rename_refactoring` / `idea_reformat_file`。',
+  '- 结构 / 依赖:`idea_get_project_modules` / `idea_get_project_dependencies`。',
+  '- 版本状态:`idea_git_status`;终端命令:`idea_execute_terminal_command`。',
   '',
-  '例外(直接用原生工具,属正常分支):`node_modules/`、`target/` 等 IDE 不索引的目录;`git diff` / `log` / `blame` 等 git 独有语义;`lsof` / `nc` / `ping` 等 MCP 无等价能力;IDE MCP 报错 / 超时;项目根之外的文件。',
+  '调用纪律:',
+  '- 直接调用当前工具 schema 中声明的参数,不要猜参数名;工具自身的 description 是参数使用的权威来源。',
+  '- 工具返回 `File already exists` 等业务错误时,先修正调用参数,不要判断成工具不存在。',
+  '- 如果 IDEA MCP 未连接、工具缺失、连接被拒绝或超时,立即提示用户执行 `/open-in-idea`,不要反复探测或长时间等待。',
+  '',
+  '例外(直接使用原生工具):`node_modules/`、`target/` 等 IDE 不索引的目录;`git diff` / `log` / `blame` 等 git 独有语义;`lsof` / `nc` / `ping` 等 MCP 无等价能力;IDE MCP 未连接 / 未注册;项目根之外的文件。',
+].join('\n');
+
+export const MCP_RECOVERY_GUIDANCE = [
+  '### IDEA MCP failure recovery',
+  'If an idea.* / idea_* tool is missing, MCP is disconnected, the connection is refused, or a tool times out: stop retrying immediately; do not run extra probes or wait in tool calls. Tell the user that IDEA MCP is unavailable and ask them to run /open-in-idea to reconnect.',
 ].join('\n');
 
 /**
  * Push the guidance onto a session `system` array. Called for every primary
- * model request, so it must stay idempotent per request (the array is fresh
- * each request; guard the array itself, not a module-level flag).
+ * model request, so it stays idempotent per request.
+ *
+ * @param {unknown} system
  */
 export function appendIdeGuidance(system) {
   if (!Array.isArray(system)) return;
   if (system.some((part) => part?.text === IDE_GUIDANCE)) return;
   system.push({ type: 'text', text: IDE_GUIDANCE });
+}
+
+/** @param {unknown} system */
+export function appendIdeRecoveryGuidance(system) {
+  if (!Array.isArray(system)) return;
+  if (system.some((part) => part?.text === MCP_RECOVERY_GUIDANCE)) return;
+  system.push({ type: 'text', text: MCP_RECOVERY_GUIDANCE });
 }
