@@ -47,12 +47,17 @@ function freePort() {
 }
 
 function fakeCtx(options = {}) {
-  const state = { mcp: 0, shellHook: undefined, sessionHook: undefined, commands: new Map(), prompts: [] };
+  const state = { mcp: 0, toolReload: 0, shellHook: undefined, sessionHook: undefined, commands: new Map(), prompts: [] };
   return {
     state,
     ctx: {
       location: { project: { directory: projectPath } },
       options: { ports: [1], ...options },
+      tool: {
+        reload: async () => {
+          state.toolReload += 1;
+        },
+      },
       mcp: {
         transform: async () => {
           state.mcp += 1;
@@ -130,6 +135,7 @@ describe('plugin setup', () => {
     await command.execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
 
     expect(state.mcp).toBe(1);
+    expect(state.toolReload).toBe(1);
 
     // Default feedback is a clearly-labelled notification: the model sees the
     // instruction and only acknowledges; the user sees the clean notice.

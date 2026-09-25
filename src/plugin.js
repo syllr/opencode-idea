@@ -125,11 +125,8 @@ export default {
    *     prompt: (input: { sessionID: string, text: string, delivery: unknown }) => Promise<unknown>,
    *     hook: (name: string, cb: (event: { system?: unknown[] }) => void) => Promise<{ dispose: () => Promise<void> | void }>,
    *   },
-   *   tool: {
-   *     transform: (cb: (editor: {
-   *       list: () => ReadonlyArray<{ id?: string }>,
-   *       update: (id: string, update: (tool: { description?: string }) => void) => void,
-   *     }) => void) => Promise<{ dispose: () => Promise<void> | void }>,
+   *   tool?: {
+   *     reload?: () => Promise<void>,
    *   },
    *   mcp: {
    *     transform: (cb: (editor: { set: (name: string, config: unknown) => void }) => void) => Promise<{ dispose: () => Promise<void> | void }>,
@@ -192,6 +189,11 @@ export default {
       registrations = [mcpRegistration];
       activePort = port;
       if (typeof ctx.mcp.reload === 'function') await ctx.mcp.reload();
+      // Reconcile the MCP servers above, then replay the tool registry so the
+      // refreshed catalog lands in the next model request's tool snapshot.
+      // Without this, a session that already captured a snapshot keeps the old
+      // tool list until the session is reopened.
+      if (typeof ctx.tool?.reload === 'function') await ctx.tool.reload();
     };
 
     const reconcileOnce = async ({ probeIde = true } = {}) => {
