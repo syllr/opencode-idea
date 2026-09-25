@@ -50,8 +50,12 @@ describe('buildIdeGuidance', () => {
   it('does not explain or mention Code Mode', () => {
     const text = buildIdeGuidance(PROJECT);
     expect(text).not.toContain('Code Mode');
-    expect(text).not.toContain('execute');
     expect(text).not.toContain('模板字符串');
+  });
+
+  it('requires direct tool calls instead of execute wrapping', () => {
+    const text = buildIdeGuidance(PROJECT);
+    expect(text).toContain('不要用 `execute` 包裹');
   });
 });
 

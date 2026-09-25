@@ -37,6 +37,11 @@ const CALL_TIMEOUT_MS = 15000;
 /**
  * Build the OpenCode MCP server config for a given IDE port + project.
  *
+ * `codemode: false` exposes the IDE tools directly on the provider tool list
+ * (as `idea_<tool>`) instead of routing them through Code Mode. Direct exposure
+ * passes each tool's full schema to the model, so parameter names are known
+ * without exploration. The rest of an MCP server's options are unchanged.
+ *
  * @param {number} port
  * @param {string} projectPath
  */
@@ -45,6 +50,7 @@ export function serverConfig(port, projectPath) {
     type: 'remote',
     url: `http://127.0.0.1:${port}${MCP_STREAM_PATH}`,
     headers: { [PROJECT_HEADER]: projectPath },
+    codemode: false,
   };
 }
 

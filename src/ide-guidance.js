@@ -1,10 +1,14 @@
 // IDEA MCP routing guidance injected into the model's system prompt.
 //
 // Two rules for this file:
-//   1. State requirements only. No explanations, no asides, no examples of
-//      what NOT to do — every extra sentence weakens the instruction.
+//   1. State requirements only. No explanations, no asides.
 //   2. The boundary is the project path. Inside it -> idea_* tools.
 //      Outside it -> whatever else is available.
+//
+// The IDE MCP server is registered with `codemode: false`, so every idea_*
+// tool is exposed directly on the provider tool list with its full schema.
+// Parameter names therefore come from the tool definitions; this text only
+// states which tool to use for which operation.
 
 /** Build the guidance text for one project path. */
 export function buildIdeGuidance(projectPath) {
@@ -15,15 +19,16 @@ export function buildIdeGuidance(projectPath) {
     ``,
     `## 强制要求`,
     `- 路径在 \`${projectPath}\` 内的所有操作,必须使用 \`idea_*\` 工具。`,
+    `- 直接调用工具,不要用 \`execute\` 包裹。`,
     `- 检索内容用 \`idea_search_text\` / \`idea_search_regex\`,不要用 \`grep\`。`,
     `- 查找文件名用 \`idea_search_file\`,不要用 \`glob\`。`,
-    `- 读文件用 \`idea_read_file\`(\`file_path\`),不要用 \`read\`。`,
-    `- 浏览目录用 \`idea_list_directory_tree\`(\`directoryPath\`),不要用 \`ls\` / \`find\`。`,
-    `- 修改已有文件用 \`idea_apply_patch\`(\`input\`),不要用 \`edit\` / \`patch\`。`,
-    `- 新建文件用 \`idea_create_new_file\`(\`pathInProject\`),不要用 \`write\`。`,
-    `- 改完代码用 \`idea_lint_files\`(\`files\`) 或 \`idea_get_file_problems\` 校验。`,
+    `- 读文件用 \`idea_read_file\`,不要用 \`read\`。`,
+    `- 浏览目录用 \`idea_list_directory_tree\`,不要用 \`ls\` / \`find\`。`,
+    `- 修改已有文件用 \`idea_apply_patch\`,不要用 \`edit\` / \`patch\`。`,
+    `- 新建文件用 \`idea_create_new_file\`,不要用 \`write\`。`,
+    `- 改完代码用 \`idea_lint_files\` 或 \`idea_get_file_problems\` 校验。`,
     `- 看 git 状态用 \`idea_git_status\`。`,
-    `- 编辑类工具的参数必须按该工具的 schema 传。`,
+    `- 工具参数按该工具的 schema 传。`,
     ``,
     `## 范围`,
     `- \`${projectPath}\` 内:只用 \`idea_*\` 工具。`,
