@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.2
+
+- **路由引导重写**:system prompt 明确写出项目绝对路径,并要求路径内的检索 / 读文件 / 目录浏览 / 改文件 / 新建文件 / 校验都使用 `idea_*` 工具,逐条点名禁止对应的原生工具(`grep` / `glob` / `read` / `edit` / `write` / `ls` / `find`)。
+- **不再修改任何工具描述**:移除对 IDEA MCP 工具描述的前缀改写(`src/idea-tool-descriptions.js` 已删除),插件不再调用 `ctx.tool.transform`;IDEA 工具与原生工具的描述均保持原样。
+- **引导文案精简**:删除解释性内容和宽泛的「例外」条款,只保留要求与项目内 / 外边界。
+- **移除无用文件**:删除 `skills/`(setup skill)与 `UPGRADING.md`。
+- **安装文档更新**:README 的安装与配置示例改为 V2 的 `plugins` 对象写法。
+
 ## 0.0.1
 
 首个版本（包名 `opencode-idea`，从 `opencode-jetbrains-mcp` 重命名而来）。
