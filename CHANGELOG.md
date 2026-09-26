@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.8
+
+- **撤销 0.0.7 的「skill 注册尽力而为」**。skill 是本插件的核心功能,不是可选知识:定义被 schema 拒绝就说明我们写错了,必须**立即失败**。原来那个 catch 会把「功能残缺」伪装成「运行正常」—— 正是 0.0.6 丢掉 `/open-in-idea` 却没人察觉的那种失败模式。现在恢复为直接注册 (无 try/catch)。
+- **补测试**:断言打包后的 skill 文档 (`src/ide-run-config-skill.md`) 真实存在,这样 `.md` 漏进 `package.json` 的 `files` 会在测试阶段暴露,而不是在 `setup` 时才炸。
+- **文档**:README 限制节写明 skill 字段名以 schema 为准 (`Skill.Info` 要 `path`,官方文档里的 `location` 不存在),用错会禁用整个插件。
+
 ## 0.0.7
 
 - **修复:0.0.6 因 skill schema 校验失败导致整个插件被禁用**。`idea-run-config` skill 的定义用了 `location` 字段,而 `Skill.Info` 要求的是 `path` (AbsolutePath);`ctx.skill.transform` 因此抛 `SchemaError(Missing key at ["path"])`。OpenCode 的策略是**任何 transform 失败都会禁用整个插件**,所以 0.0.6 里 `/open-in-idea` 命令和 IDE MCP 注册都没能生效 (日志:`disabled plugin after transform failure plugin.id=opencode-idea state=skill`)。现在改用 `path`,并在测试里钉死字段集合 (`content` / `description` / `id` / `name` / `path`)。
