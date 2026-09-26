@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.6
+
+- **修复:工具报错不再注销 IDE MCP**。旧实现在 `tool.execute.after` 里把**任何** `idea_*` 报错都当成「端点已死」并注销整个注册 —— 业务错误 (例如路径不存在返回 `File not found`) 和一次传输抖动都会触发;注销后紧跟的 `ctx.mcp.reload()` 还会掐断同一批正在执行的其他调用。现在插件**不注册**该钩子:连接状态以 OpenCode 自己维护的工具快照为准 (`context` 钩子收到的 `event.tools` 里有没有 `idea_*`),只有 `/open-in-idea` 会 (重新) 连接。
+- **隐藏 31 个用不到的 IDEA 工具** (`HIDDEN_IDEA_TOOLS`):VCS、Router 派发工具、Debugger (全部 `idea_xdebug_*`)、Dev Kit MCP、Inspection KTS MCP、Python Environment MCP、数据库建/改数据源、终端 `execute_terminal_command`。模型可见的 `idea_*` 从 64 降到 33。
+- **引导词重写**:边界从「所有操作」收窄为「**代码与文件操作**」(未暴露的领域自然走原生,不再列例外);新增数据库段 (走 IDEA Database 工具 + 用户配数据源 + 不索取凭据);删除终端命令段 (该工具已隐藏)。
+- **新增 `idea-run-config` skill**:教模型在 `.run/*.run.xml` 里建/改/删 run configuration,并用 `get_run_configurations` 校验、`execute_run_configuration` 实跑 (IDE MCP 没有增删改能力)。仅 JetBrains 项目注册,与 `/open-in-idea` 无关。
+- **`/open-in-idea` 改为问注册表要连接状态**:活着只刷新,死了才换注册 (OpenCode 对未变更的 MCP 配置不会重连)。
+- **默认 MCP 端口收敛**:`DEFAULT_PORTS` 从 `[64342, 6420, 6421, 63342]` 改为 `[64342]`。
+- **修复发布脚本**:`assertCleanGit()` 原先排在版本递增之后,导致正式发布必然中途失败并留下已被改动的版本号;现在移到递增之前。
+
 ## 0.0.5
 
 - **冷启动等待 MCP 端点**:`/open-in-idea` 在 `open -a` 之后按 `mcpStartTimeoutMs`(默认 60s)轮询,直到 IDEA 自带的 MCP server 开始监听。冷启动时一次命令即可连上,不再像之前那样探测一次失败就报「未检测到 MCP 服务」。

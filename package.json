@@ -1,6 +1,6 @@
 {
   "name": "opencode-idea",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "OpenCode plugin that connects to JetBrains IDE MCP servers and prefers IDE tools when the current project is open in the IDE",
   "main": "src/index.js",
   "type": "module",
