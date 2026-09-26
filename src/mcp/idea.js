@@ -81,7 +81,7 @@ export async function probePort(port, options = {}) {
         params: {
           protocolVersion: PROTOCOL_VERSION,
           capabilities: {},
-          clientInfo: { name: 'opencode-idea', version: '0.0.8' },
+          clientInfo: { name: 'opencode-idea', version: '0.0.9' },
         },
       }),
       signal: controller.signal,
@@ -151,7 +151,7 @@ export async function callTool(port, projectPath, name, args = {}, options = {})
       params: {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: 'opencode-idea', version: '0.0.8' },
+        clientInfo: { name: 'opencode-idea', version: '0.0.9' },
       },
     });
     const response = await post({
