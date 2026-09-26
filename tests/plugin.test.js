@@ -162,6 +162,21 @@ describe('plugin setup', () => {
     rmSync(plain, { recursive: true, force: true });
   });
 
+  it('registers the command even when the optional skill is rejected', async () => {
+    const { ctx, state } = fakeCtx();
+    ctx.skill.transform = async () => {
+      throw new Error('skill definition rejected');
+    };
+    const cleanup = await plugin.setup(ctx);
+
+    // The skill is optional knowledge. A rejected definition must not take the
+    // command or the request hook down with it.
+    expect(state.commands.has('open-in-idea')).toBe(true);
+    expect(state.sessionHook).toBeTypeOf('function');
+
+    await cleanup();
+  });
+
   it('does not connect to the IDE at setup (manual mode)', async () => {
     const fake = await startFakeIde();
     running = fake.server;

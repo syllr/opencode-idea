@@ -14,7 +14,13 @@ describe('runConfigSkill', () => {
     expect(skill.id).toBe(RUN_CONFIG_SKILL_ID);
     expect(skill.id).toBe('idea-run-config');
     expect(skill.name).toBe('idea-run-config');
-    expect(skill.location).toMatch(/ide-run-config-skill\.md$/);
+    // `Skill.Info` requires `path` (an AbsolutePath). `location` is not a field:
+    // it fails schema validation, and a transform failure disables the whole
+    // plugin — command included.
+    expect(skill.path).toMatch(/ide-run-config-skill\.md$/);
+    expect(skill.path.startsWith('/')).toBe(true);
+    expect(skill).not.toHaveProperty('location');
+    expect(Object.keys(skill).sort()).toEqual(['content', 'description', 'id', 'name', 'path']);
     expect(skill.description).toBe(RUN_CONFIG_SKILL_DESCRIPTION);
     expect(skill.content).toBe(content);
     expect(skill.content.length).toBeGreaterThan(0);

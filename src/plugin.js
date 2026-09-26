@@ -507,12 +507,20 @@ export default {
     // The run-configuration skill is static knowledge — where `.run/*.run.xml`
     // live, how to bootstrap a schema from a real example, and how to verify a
     // write. JetBrains projects only, and independent of `/open-in-idea`.
+    //
+    // Best effort on purpose: optional knowledge must never take the command and
+    // the MCP wiring down with it. A rejected definition fails the transform, and
+    // a transform failure disables this plugin entirely.
     if (isIdeaProject && typeof ctx.skill?.transform === 'function') {
-      // Read the document before the transform: callbacks must stay synchronous.
-      const runConfigSkillDefinition = runConfigSkill();
-      skillRegistration = await ctx.skill.transform((editor) => {
-        editor.add(runConfigSkillDefinition);
-      });
+      try {
+        // Read the document before the transform: callbacks must stay synchronous.
+        const runConfigSkillDefinition = runConfigSkill();
+        skillRegistration = await ctx.skill.transform((editor) => {
+          editor.add(runConfigSkillDefinition);
+        });
+      } catch {
+        skillRegistration = undefined;
+      }
     }
 
     // `/open-in-idea`: manual, re-entrant trigger that also loads the IDE

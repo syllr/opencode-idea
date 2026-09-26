@@ -41,17 +41,21 @@ export function readRunConfigSkillContent() {
 /**
  * Build the skill definition registered through `ctx.skill.transform`.
  *
- * `location` points at the shipped `.md` — the real skill document — so any
- * path-shaped validation is satisfied without inventing a virtual filename.
+ * The schema (`Skill.Info` in `@opencode/schema/skill`) requires the field to be
+ * named `path` and to hold an absolute path. Point it at the shipped `.md` — the
+ * real skill document — rather than inventing a virtual filename.
  *
- * @returns {{ id: string, name: string, description: string, location: string, content: string }}
+ * @returns {{ id: string, name: string, description: string, path: string, content: string }}
  */
 export function runConfigSkill() {
   return {
     id: RUN_CONFIG_SKILL_ID,
     name: 'idea-run-config',
     description: RUN_CONFIG_SKILL_DESCRIPTION,
-    location: fileURLToPath(SKILL_FILE),
+    // Field names are schema-critical: `Skill.Info` requires `path`
+    // (AbsolutePath). A wrong key fails validation and takes the whole plugin
+    // down, not just the skill.
+    path: fileURLToPath(SKILL_FILE),
     content: readRunConfigSkillContent(),
   };
 }
