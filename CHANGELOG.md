@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.7
+
+- **修复:0.0.6 因 skill schema 校验失败导致整个插件被禁用**。`idea-run-config` skill 的定义用了 `location` 字段,而 `Skill.Info` 要求的是 `path` (AbsolutePath);`ctx.skill.transform` 因此抛 `SchemaError(Missing key at ["path"])`。OpenCode 的策略是**任何 transform 失败都会禁用整个插件**,所以 0.0.6 里 `/open-in-idea` 命令和 IDE MCP 注册都没能生效 (日志:`disabled plugin after transform failure plugin.id=opencode-idea state=skill`)。现在改用 `path`,并在测试里钉死字段集合 (`content` / `description` / `id` / `name` / `path`)。
+- **skill 注册改为尽力而为**:`runConfigSkill()` 或 `ctx.skill.transform` 抛错时只放弃 skill,不再中断 `setup` —— 可选知识不该拖垮命令与 MCP 接线。
+- **新增回归测试**:skill transform 被拒时 `/open-in-idea` 仍然注册。
+
 ## 0.0.6
 
 - **修复:工具报错不再注销 IDE MCP**。旧实现在 `tool.execute.after` 里把**任何** `idea_*` 报错都当成「端点已死」并注销整个注册 —— 业务错误 (例如路径不存在返回 `File not found`) 和一次传输抖动都会触发;注销后紧跟的 `ctx.mcp.reload()` 还会掐断同一批正在执行的其他调用。现在插件**不注册**该钩子:连接状态以 OpenCode 自己维护的工具快照为准 (`context` 钩子收到的 `event.tools` 里有没有 `idea_*`),只有 `/open-in-idea` 会 (重新) 连接。
