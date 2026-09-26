@@ -47,7 +47,7 @@ function freePort() {
 }
 
 function fakeCtx(options = {}) {
-  const { toolsReadyAfter = 1, ...ctxOptions } = options;
+  const { toolsReadyAfter = 1, directory = projectPath, ...ctxOptions } = options;
   const state = {
     mcp: 0,
     mcpReload: 0,
@@ -59,12 +59,13 @@ function fakeCtx(options = {}) {
     sessionHook: undefined,
     toolHook: undefined,
     commands: new Map(),
+    skills: new Map(),
     prompts: [],
   };
   return {
     state,
     ctx: {
-      location: { project: { directory: projectPath } },
+      location: { project: { directory } },
       options: { ports: [1], ...ctxOptions },
       tool: {
         list: async () => {
@@ -105,6 +106,12 @@ function fakeCtx(options = {}) {
           return { dispose: () => {} };
         },
       },
+      skill: {
+        transform: async (callback) => {
+          callback({ add: (definition) => state.skills.set(definition.id, definition) });
+          return { dispose: () => {} };
+        },
+      },
       session: {
         hook: async (name, callback) => {
           state.sessionHook = callback;
@@ -138,6 +145,21 @@ describe('plugin setup', () => {
     expect(state.commands.has('open-in-idea')).toBe(true);
 
     await cleanup();
+  });
+
+  it('leaves projects without an IDEA directory untouched', async () => {
+    const plain = mkdtempSync(path.join(tmpdir(), 'no-idea-'));
+    const { ctx, state } = fakeCtx({ directory: plain });
+    const cleanup = await plugin.setup(ctx);
+
+    // No IDEA tool can ever exist here, so no per-request prompt may mention
+    // them. Nothing probes, ever: the plugin only reacts to the request it sees.
+    const system = [];
+    await state.sessionHook({ system, tools: { read: {} } });
+    expect(system).toHaveLength(0);
+
+    await cleanup();
+    rmSync(plain, { recursive: true, force: true });
   });
 
   it('does not connect to the IDE at setup (manual mode)', async () => {
@@ -254,7 +276,8 @@ describe('plugin setup', () => {
 
     const request = {
       system: [],
-      tools: { edit: {}, write: {}, patch: {}, shell: {} },
+      // A real request while the IDE is connected carries its IDEA tools.
+      tools: { edit: {}, write: {}, patch: {}, shell: {}, idea_read_file: {} },
     };
     await state.sessionHook(request);
     const system = request.system;
@@ -267,6 +290,51 @@ describe('plugin setup', () => {
     expect(request.tools).toHaveProperty('write');
     expect(request.tools).toHaveProperty('patch');
     expect(request.tools).toHaveProperty('shell');
+
+    await cleanup();
+  });
+
+  it('never exposes the hidden IDEA tools, even while the IDE is connected', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port] });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+
+    const request = {
+      system: [],
+      tools: {
+        idea_read_file: {},
+        idea_git_status: {},
+        idea_execute_tool: {},
+        idea_execute_terminal_command: {},
+        idea_xdebug_get_stack: {},
+        idea_recognize_ij_module_kind: {},
+        idea_generate_psi_tree: {},
+        idea_get_python_environment: {},
+        idea_get_repositories: {},
+        idea_create_database_connection: {},
+      },
+    };
+    await state.sessionHook(request);
+
+    // Version control goes through the native tool, and the router dispatcher is
+    // redundant while every routed tool is exposed directly. The Debugger, Dev
+    // Kit MCP, Inspection KTS MCP and Python Environment MCP groups are hidden as
+    // a whole, data sources are created/edited by the user in the IDE, and the
+    // terminal tool is only needed by the plugin's own IDE-env read (which calls
+    // the MCP endpoint directly, not through the model tool list).
+    expect(request.tools).not.toHaveProperty('idea_git_status');
+    expect(request.tools).not.toHaveProperty('idea_execute_tool');
+    expect(request.tools).not.toHaveProperty('idea_xdebug_get_stack');
+    expect(request.tools).not.toHaveProperty('idea_recognize_ij_module_kind');
+    expect(request.tools).not.toHaveProperty('idea_generate_psi_tree');
+    expect(request.tools).not.toHaveProperty('idea_get_python_environment');
+    expect(request.tools).not.toHaveProperty('idea_get_repositories');
+    expect(request.tools).not.toHaveProperty('idea_create_database_connection');
+    expect(request.tools).not.toHaveProperty('idea_execute_terminal_command');
+    expect(request.tools).toHaveProperty('idea_read_file');
 
     await cleanup();
   });
@@ -310,10 +378,10 @@ describe('plugin setup', () => {
     // The manual command loads capabilities and activates the guidance.
     await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
 
-    const after = [];
-    await state.sessionHook({ system: after });
-    expect(after).toHaveLength(2);
-    expect(after[1].text).toContain('必须使用');
+    const after = { system: [], tools: { idea_read_file: {} } };
+    await state.sessionHook(after);
+    expect(after.system).toHaveLength(2);
+    expect(after.system[1].text).toContain('必须使用');
 
     await cleanup();
   });
@@ -342,7 +410,7 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('unregisters IDEA tools when the manually activated IDE disappears', async () => {
+  it('reads "the IDE is serving" from the request snapshot, not a probe', async () => {
     const fake = await startFakeIde();
     running = fake.server;
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
@@ -351,51 +419,87 @@ describe('plugin setup', () => {
     await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
     expect(state.mcpReload).toBe(1);
 
-    // The desktop client and the background service have separate lifetimes:
-    // closing IDEA must not leave dead idea_* tools advertised.
-    await new Promise((resolve) => fake.server.close(resolve));
-    running = undefined;
+    // Requests never touch the endpoint. The `context` hook fires for every
+    // agent-loop step, so it is a pure function of the request: the snapshot
+    // OpenCode hands it already says whether the IDEA tools are there.
+    const probes = fake.streamRequests();
+    const serving = { system: [], tools: { read: {}, idea_read_file: {}, idea_git_status: {} } };
+    await state.sessionHook(serving);
+    await state.sessionHook({ system: [], tools: { idea_read_file: {} } });
+    expect(fake.streamRequests()).toBe(probes);
 
-    const request = {
-      system: [],
-      tools: { read: {}, idea_read_file: {}, idea_apply_patch: {} },
-    };
-    await state.sessionHook(request);
+    // Serving: hidden tools are stripped, the rest survive, full guidance goes out.
+    expect(serving.tools).toHaveProperty('idea_read_file');
+    expect(serving.tools).not.toHaveProperty('idea_git_status');
+    expect(serving.system).toHaveLength(2);
+    expect(serving.system[1].text).toContain('必须使用');
 
-    expect(request.tools).toHaveProperty('read');
-    expect(request.tools).not.toHaveProperty('idea_read_file');
-    expect(request.tools).not.toHaveProperty('idea_apply_patch');
-    expect(request.system).toHaveLength(1);
-    expect(request.system[0].text).toContain('IDEA MCP failure recovery');
-
-    // The next request no longer probes or injects full guidance.
-    const next = { system: [], tools: { read: {} } };
-    await state.sessionHook(next);
-    expect(next.system).toHaveLength(1);
-    expect(next.system[0].text).toContain('IDEA MCP failure recovery');
+    // Not serving: OpenCode's registry has already dropped the IDEA tools, so a
+    // request that carries none IS the "IDE is gone" case. The plugin takes no
+    // action of its own and stops promising tools the model cannot call.
+    const gone = { system: [], tools: { read: {} } };
+    await state.sessionHook(gone);
+    expect(gone.system).toHaveLength(1);
+    expect(gone.system[0].text).toContain('IDEA MCP failure recovery');
+    expect(state.mcpReload).toBe(1);
 
     await cleanup();
   });
 
-  it('unregisters IDEA tools after a failed IDEA tool call', async () => {
+  it('never reacts to a failed IDEA tool call on its own', async () => {
     const fake = await startFakeIde();
     running = fake.server;
     const { ctx, state } = fakeCtx({ ports: [fake.port] });
     const cleanup = await plugin.setup(ctx);
 
     await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
-    expect(state.toolHook).toBeTypeOf('function');
 
-    await state.toolHook({ tool: 'idea_read_file', status: 'error', error: { message: 'connect failed' } });
-    expect(state.mcpReload).toBe(2);
-    expect(state.toolReload).toBe(2);
+    // Reacting to a tool error is exactly what used to tear a healthy IDE down: a
+    // business error ("File not found") or a single transport hiccup unregistered
+    // everything. The plugin now installs no tool hook at all — only the manual
+    // command and the server's own status events change anything.
+    expect(state.toolHook).toBeUndefined();
+    expect(state.mcpReload).toBe(1);
+    expect(state.toolReload).toBe(1);
 
     const request = { system: [], tools: { read: {}, idea_read_file: {} } };
     await state.sessionHook(request);
     expect(request.tools).toHaveProperty('read');
-    expect(request.tools).not.toHaveProperty('idea_read_file');
-    expect(request.system).toHaveLength(1);
-    expect(request.system[0].text).toContain('IDEA MCP failure recovery');
+    expect(request.tools).toHaveProperty('idea_read_file');
+    expect(request.system).toHaveLength(2);
+    expect(request.system[1].text).toContain('必须使用');
+
+    await cleanup();
+  });
+
+  it('brings a dropped IDE back only through /open-in-idea', async () => {
+    const port = await freePort();
+    const fake = await startFakeIde(port);
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [port], toolRefreshTimeoutMs: 100 });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    expect(state.mcp).toBe(1);
+
+    // The connection drops: OpenCode's registry drops the IDEA tools, and the
+    // plugin takes no action — nothing is re-registered behind the user's back.
+    state.tools = [];
+    await state.sessionHook({ system: [], tools: {} });
+    await state.sessionHook({ system: [], tools: {} });
+    expect(state.mcp).toBe(1);
+
+    // Only the manual command brings it back. The registry says the server is
+    // gone, so the command replaces the registration instead of just refreshing
+    // it — an unchanged config is never reconnected by OpenCode.
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    expect(state.mcp).toBe(2);
+    expect(state.mcpReload).toBe(2);
+    const request = { system: [], tools: { read: {}, idea_read_file: {} } };
+    await state.sessionHook(request);
+    expect(request.tools).toHaveProperty('idea_read_file');
+    expect(request.system).toHaveLength(2);
+    expect(request.system[1].text).toContain('必须使用');
 
     await cleanup();
   });
@@ -421,6 +525,30 @@ describe('plugin setup', () => {
     expect(state.prompts).toHaveLength(0);
 
     await cleanup();
+  });
+
+  it('registers the run-configuration skill for JetBrains projects', async () => {
+    const { ctx, state } = fakeCtx();
+    const cleanup = await plugin.setup(ctx);
+
+    const skill = state.skills.get('idea-run-config');
+    expect(skill).toBeTruthy();
+    expect(skill.description).toContain('run configuration');
+    expect(skill.content).toContain('.run/');
+    expect(skill.content).toContain('idea_get_run_configurations');
+
+    await cleanup();
+  });
+
+  it('skips the run-configuration skill outside JetBrains projects', async () => {
+    const bare = mkdtempSync(path.join(tmpdir(), 'ojbm-bare-'));
+    const { ctx, state } = fakeCtx({ directory: bare });
+    const cleanup = await plugin.setup(ctx);
+
+    expect(state.skills.size).toBe(0);
+
+    await cleanup();
+    rmSync(bare, { recursive: true, force: true });
   });
 
   it('never schedules periodic work (no timers) in manual mode', async () => {

@@ -24,8 +24,8 @@ export const IDEA_SERVER_NAME = 'idea';
 /** Streamable-HTTP endpoint exposed by the IDE MCP server (IntelliJ 2026.2+). */
 export const MCP_STREAM_PATH = '/stream';
 
-/** Ports to try when the IDE MCP port is not configured explicitly. */
-export const DEFAULT_PORTS = [64342, 6420, 6421, 63342];
+/** Port the IDE MCP server listens on when not configured explicitly. */
+export const DEFAULT_PORTS = [64342];
 
 const PROTOCOL_VERSION = '2025-06-18';
 // A probe is only a local availability check. Keep it short: a disabled IDE

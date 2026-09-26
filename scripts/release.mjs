@@ -14,6 +14,8 @@
 //   * a version already published on npm is never reused or overwritten
 //   * package.json, package-lock.json, src/idea-mcp.js clientInfo.version and
 //     CHANGELOG.md are kept in sync
+//   * a real publish starts from a clean working tree; the bump below dirties
+//     the tree on purpose, so the cleanliness check runs before the bump
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -129,6 +131,10 @@ function main() {
     return;
   }
 
+  // A real publish must start from a clean tree. The version bump below dirties
+  // the tree on purpose, so this check has to run before it, never after.
+  if (!bumpOnly && !dryRun) assertCleanGit();
+
   // npm versions are immutable: always move to the next free patch. Published
   // versions are skipped so a half-finished local state can never overwrite one.
   let nextVersion = bumpPatch(currentVersion);
@@ -154,8 +160,6 @@ function main() {
     console.log(`[release] dry-run complete. Files are bumped to ${nextVersion}.`);
     return;
   }
-
-  assertCleanGit();
 
   console.log('[release] running npm publish');
   run('npm', ['publish']);

@@ -12,12 +12,14 @@ import { createServer } from 'node:http';
  */
 export function startFakeIde(port = 0) {
   return new Promise((resolve) => {
+    let streamRequests = 0;
     const server = createServer((req, res) => {
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname !== '/stream' || req.method !== 'POST') {
         res.writeHead(404).end();
         return;
       }
+      streamRequests += 1;
       let body = '';
       req.on('data', (chunk) => (body += chunk));
       req.on('end', () => {
@@ -41,6 +43,8 @@ export function startFakeIde(port = 0) {
         res.writeHead(202).end();
       });
     });
-    server.listen(port, '127.0.0.1', () => resolve({ server, port: server.address().port }));
+    server.listen(port, '127.0.0.1', () =>
+      resolve({ server, port: server.address().port, streamRequests: () => streamRequests }),
+    );
   });
 }

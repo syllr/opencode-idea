@@ -8,7 +8,10 @@
 //      IDEA MCP tools, and updates only IDEA MCP tool descriptions;
 //   3. registers the `/open-in-idea` command, which opens the current project
 //      in IntelliJ IDEA (reusing a running instance) and then loads the IDE
-//      capabilities immediately.
+//      capabilities immediately;
+//   4. registers the `idea-run-config` skill (JetBrains projects only),
+//      which teaches the model how to manage `.run/*.run.xml` run
+//      configurations — a capability the IDE MCP server does not expose.
 //
 // Non-JetBrains projects are left untouched. Everything is manual: setup does
 // NOT probe or connect the IDE (only the IDE-terminal env is read when a probe
@@ -23,7 +26,6 @@ import {
   DEFAULT_PORTS,
   IDEA_SERVER_NAME,
   findIdePort,
-  probePort,
   serverConfig,
 } from './idea-mcp.js';
 import { readIdeTerminalEnv } from './ide-env.js';
@@ -38,6 +40,7 @@ import {
   appendIdeGuidance,
   appendIdeRecoveryGuidance,
 } from './ide-guidance.js';
+import { runConfigSkill } from './ide-run-config-skill.js';
 
 const DEFAULT_LAUNCH_COOLDOWN_MS = 120000;
 const DEFAULT_LAUNCH_MAX_ATTEMPTS = 5;
@@ -53,15 +56,86 @@ const TOOL_REFRESH_POLL_MS = 25;
 const IDEA_READY_TOOL_IDS = new Set(['idea_read_file', 'idea_apply_patch']);
 
 /**
- * Remove IDEA MCP definitions from one request's tool record.
+ * IDEA MCP tools that must never reach the model.
+ *
+ * Grouped by the IDE's Exposed Tools page so the list stays auditable. Anything
+ * listed here is stripped from every model request, even while the IDE is up.
+ *
+ * - VCS: `idea_git_status` returns porcelain codes only and
+ *   `idea_get_repositories` is covered by the native git tool, which also
+ *   handles diff/log/blame.
+ * - Router: `idea_execute_tool` is the IDE's router-mode dispatcher. Router-only
+ *   mode is off, so every routed tool is exposed directly with its full schema
+ *   and this dispatcher is redundant. Revisit if router-only mode is enabled.
+ * - Debugger (`xdebug_*`): the Debugger MCP toolset. Rarely needed, and a real
+ *   debug session is driven from the IDE window anyway.
+ * - Dev Kit MCP: IntelliJ Platform plugin-development tools (Split Mode module
+ *   kinds, the New IntelliJ Module scaffold, Read/Write lock and EDT threading
+ *   analysis). Useless outside IntelliJ Platform plugin work.
+ * - Inspection KTS MCP: inspection.kts authoring helpers (PSI tree, API docs,
+ *   examples, run). Also IntelliJ Platform plugin-development only.
+ * - Python Environment MCP: Python interpreter detection and configuration.
+ *   Hidden; the IDE-injected shell env already carries the SDK paths.
+ * - Database data sources: connections are configured by the user in the IDE,
+ *   so the AI only reads and queries them; create/edit stay hidden.
+ */
+export const HIDDEN_IDEA_TOOLS = [
+  // VCS
+  'idea_git_status',
+  'idea_get_repositories',
+  // Router
+  'idea_execute_tool',
+  // Terminal: the plugin reads the IDE env through its own direct MCP call
+  // (`src/ide-env.js`), so the model never needs this tool. Measured value for
+  // the agent is nil: ~60s hard cutoff with no way to read the terminal buffer,
+  // and the native shell already keeps the output tail plus a full-output file.
+  'idea_execute_terminal_command',
+  // Debugger
+  'idea_xdebug_control_session',
+  'idea_xdebug_evaluate_expression',
+  'idea_xdebug_get_debugger_status',
+  'idea_xdebug_get_frame_values',
+  'idea_xdebug_get_stack',
+  'idea_xdebug_get_threads',
+  'idea_xdebug_get_value_by_path',
+  'idea_xdebug_list_breakpoints',
+  'idea_xdebug_remove_breakpoint',
+  'idea_xdebug_run_to_line',
+  'idea_xdebug_set_breakpoint',
+  'idea_xdebug_set_variable',
+  'idea_xdebug_start_debugger_session',
+  // Dev Kit MCP
+  'idea_collect_split_mode_compatibility_issues',
+  'idea_create_ij_module',
+  'idea_find_lock_requirements_usages',
+  'idea_find_threading_requirements_usages',
+  'idea_recognize_ij_module_kind',
+  'idea_recognize_split_mode_api_kind',
+  // Inspection KTS MCP
+  'idea_generate_inspection_kts_api',
+  'idea_generate_inspection_kts_examples',
+  'idea_generate_psi_tree',
+  'idea_run_inspection_kts',
+  // Python Environment MCP
+  'idea_configure_python_interpreter',
+  'idea_get_python_environment',
+  // Database data sources: the user configures them in the IDE, the AI only
+  // reads and queries them.
+  'idea_create_database_connection',
+  'idea_edit_database_connection',
+];
+
+/**
+ * Remove the given IDEA MCP definitions from one request's tool record.
  *
  * @param {Record<string, unknown> | undefined} tools
+ * @param {readonly string[]} names
  */
-function removeIdeaToolDefinitions(tools) {
+function removeIdeaToolDefinitions(tools, names) {
   if (!tools || typeof tools !== 'object') return 0;
   let removed = 0;
-  for (const name of Object.keys(tools)) {
-    if (!name.startsWith('idea_')) continue;
+  for (const name of names) {
+    if (!name.startsWith('idea_') || !(name in tools)) continue;
     delete tools[name];
     removed += 1;
   }
@@ -154,6 +228,15 @@ export default {
    *       execute: (input: { sessionID: string, prompt: { text: string }, delivery: unknown }) => Promise<void>,
    *     }) => void }) => void) => Promise<{ dispose: () => Promise<void> | void }>,
    *   },
+   *   skill?: {
+   *     transform: (cb: (editor: { add: (definition: {
+   *       id: string,
+   *       name: string,
+   *       description: string,
+   *       location: string,
+   *       content: string,
+   *     }) => void }) => void) => Promise<{ dispose: () => Promise<void> | void }>,
+   *   },
    *   session?: {
    *     prompt: (input: { sessionID: string, text: string, delivery: unknown }) => Promise<unknown>,
    *     hook: (name: string, cb: (event: {
@@ -166,11 +249,6 @@ export default {
    *   tool?: {
    *     list?: () => Promise<ReadonlyArray<{ id?: string }>>,
    *     reload?: () => Promise<void>,
-   *     hook?: (name: string, cb: (event: {
-   *       tool?: string,
-   *       status?: string,
-   *       error?: { message?: string },
-   *     }) => void | Promise<void>) => Promise<{ dispose: () => Promise<void> | void }>,
    *   },
    *   mcp: {
    *     transform: (cb: (editor: { set: (name: string, config: unknown) => void }) => void) => Promise<{ dispose: () => Promise<void> | void }>,
@@ -182,6 +260,11 @@ export default {
   async setup(ctx) {
     const projectPath = currentProjectPath(ctx.location);
     if (!projectPath) return;
+    // Where IDEA tools can exist at all. Computed once: the recovery guidance is
+    // injected per model request, so it must not cost a filesystem check each
+    // time, and unrelated projects must not receive IDEA prompts they can never
+    // use.
+    const isIdeaProject = hasIdeaDirectory(projectPath);
 
     const options = ctx.options || {};
     const ports = asArray(options.ports, DEFAULT_PORTS);
@@ -199,9 +282,6 @@ export default {
       cooldownMs: asPositiveNumber(options.launchCooldownMs, DEFAULT_LAUNCH_COOLDOWN_MS),
       maxAttempts: asPositiveNumber(options.launchMaxAttempts, DEFAULT_LAUNCH_MAX_ATTEMPTS),
     });
-    /** @type {number | undefined} */
-    let activePort;
-    let activeToolsReady = false;
     let currentEnv = { env: {}, prependPath: [] };
 
     /** @type {Array<{ dispose: () => Promise<void> | void }>} */
@@ -213,12 +293,10 @@ export default {
     /** @type {{ dispose: () => Promise<void> | void } | undefined} */
     let commandRegistration;
     /** @type {{ dispose: () => Promise<void> | void } | undefined} */
-    let toolRegistration;
+    let skillRegistration;
     let disposed = false;
 
     const deactivateIde = async () => {
-      activePort = undefined;
-      activeToolsReady = false;
       const current = registrations.slice();
       registrations.length = 0;
       if (current.length === 0) return;
@@ -247,15 +325,13 @@ export default {
     };
 
     const refreshIdeTools = async () => {
-      activeToolsReady = false;
       if (typeof ctx.mcp.reload === 'function') await ctx.mcp.reload();
       // Reconcile the MCP servers above, then replay the tool registry so the
       // refreshed catalog lands in the next model request's tool snapshot.
       // Without this, a session that already captured a snapshot keeps the old
       // tool list until the session is reopened.
       if (typeof ctx.tool?.reload === 'function') await ctx.tool.reload();
-      activeToolsReady = await waitForIdeaTools();
-      return activeToolsReady;
+      return waitForIdeaTools();
     };
 
     const activateIde = async (port) => {
@@ -263,37 +339,23 @@ export default {
         editor.set(IDEA_SERVER_NAME, serverConfig(port, projectPath));
       });
       registrations = [mcpRegistration];
-      activePort = port;
       return refreshIdeTools();
     };
 
-    /** @type {Promise<boolean> | undefined} */
-    let healthCheck;
     /**
-     * A manually activated IDE can disappear while the OpenCode background
-     * service keeps running (the desktop client and the service have separate
-     * lifetimes). Re-check the endpoint before every request that could expose
-     * IDEA tools, and unregister them as soon as the endpoint is gone. Only
-     * `/open-in-idea` may activate them again.
-     *
-     * @returns {Promise<boolean>}
+     * Is the IDE MCP server contributing tools right now? OpenCode's registry is
+     * the source of truth: it adds the tools when a server connects and drops
+     * them when the connection stops (`stopServer` publishes `mcp.tools.changed`
+     * and the registry reloads). No probe of our own is involved, and only
+     * `/open-in-idea` asks, so the read is user-initiated.
      */
-    const verifyActiveIde = async () => {
-      if (activePort === undefined) return true;
-      if (healthCheck) return healthCheck;
-      const port = activePort;
-      healthCheck = (async () => {
-        const available = await probePort(port, { timeoutMs: mcpProbeTimeoutMs });
-        if (available) return true;
-        if (activePort !== port) return true;
-        await deactivateIde();
-        if (typeof ctx.mcp.reload === 'function') await ctx.mcp.reload();
-        if (typeof ctx.tool?.reload === 'function') await ctx.tool.reload();
+    const ideaToolsRegistered = async () => {
+      if (typeof ctx.tool?.list !== 'function') return false;
+      try {
+        return toolIds(await ctx.tool.list()).some((id) => id.startsWith('idea_'));
+      } catch {
         return false;
-      })().finally(() => {
-        healthCheck = undefined;
-      });
-      return healthCheck;
+      }
     };
 
     const reconcileOnce = async ({ probeIde = true } = {}) => {
@@ -302,7 +364,7 @@ export default {
       // Manual: only `/open-in-idea` probes the IDE. Setup calls this with
       // `probeIde: false` so it never connects until the command asks.
       const port = probeIde ? await findIdePort(ports, { timeoutMs: mcpProbeTimeoutMs }) : undefined;
-      const isJetBrains = hasIdeaDirectory(projectPath) || port !== undefined;
+      const isJetBrains = isIdeaProject || port !== undefined;
       if (!isJetBrains) {
         currentEnv = { env: {}, prependPath: [] };
         await deactivateIde();
@@ -320,10 +382,10 @@ export default {
         shellRegistration = await ctx.shell.hook('create.before', (input) => applyEnv(input, currentEnv));
       }
 
-      // A repeated /open-in-idea must still refresh the current server. The
-      // previous implementation returned here, leaving the session on its old
-      // tool snapshot even though the command appeared successful.
-      if (port !== undefined && port === activePort) return refreshIdeTools();
+      // A live server is only refreshed; a dead one must be replaced, because
+      // `reconcile()` skips an unchanged config and would never reconnect it.
+      // The registry says which case this is.
+      if (port !== undefined && (await ideaToolsRegistered())) return refreshIdeTools();
       await deactivateIde();
       if (port === undefined) return false;
       return activateIde(port);
@@ -332,14 +394,15 @@ export default {
     // Serialize reconciles so overlapping callers can never register/activate
     // the IDE concurrently (which would leak registrations).
     let reconcileChain = Promise.resolve();
-    const reconcile = (options) => {
-      const next = reconcileChain.then(() => reconcileOnce(options));
+    const enqueue = (task) => {
+      const next = reconcileChain.then(task);
       reconcileChain = next.then(
         () => {},
         () => {},
       );
       return next;
     };
+    const reconcile = (options) => enqueue(() => reconcileOnce(options));
 
     /**
      * `open -a` only requests activation/opening. A cold IDE needs time before
@@ -441,6 +504,17 @@ export default {
       }
     };
 
+    // The run-configuration skill is static knowledge — where `.run/*.run.xml`
+    // live, how to bootstrap a schema from a real example, and how to verify a
+    // write. JetBrains projects only, and independent of `/open-in-idea`.
+    if (isIdeaProject && typeof ctx.skill?.transform === 'function') {
+      // Read the document before the transform: callbacks must stay synchronous.
+      const runConfigSkillDefinition = runConfigSkill();
+      skillRegistration = await ctx.skill.transform((editor) => {
+        editor.add(runConfigSkillDefinition);
+      });
+    }
+
     // `/open-in-idea`: manual, re-entrant trigger that also loads the IDE
     // capabilities immediately.
     if (typeof ctx.command?.transform === 'function') {
@@ -481,32 +555,27 @@ export default {
       });
     }
 
-    // Every model request re-checks a manually activated IDE. If the endpoint
-    // is gone, drop IDEA tools from this request and from the registry so only
-    // a new `/open-in-idea` can bring them back. Guidance is appended only for
-    // an IDE that is still alive.
+    // Hide the tools the model must not see, and point it at the rest. This hook
+    // runs for every agent-loop step (including tool-driven continuations), so
+    // it is deliberately a pure function of the request: no I/O, no cached
+    // connection state, and no action of its own.
+    //
+    // `event.tools` is this request's tool snapshot, and OpenCode's own registry
+    // adds IDEA tools when the server connects and drops them when it stops
+    // (`stopServer` publishes `mcp.tools.changed`, which the registry turns into
+    // a reload). So the snapshot is also the honest answer to "is the IDE
+    // serving?".
     if (typeof ctx.session?.hook === 'function') {
-      sessionRegistration = await ctx.session.hook('context', async (event) => {
-        const ideActive = activePort !== undefined && activeToolsReady;
-        const available = ideActive ? await verifyActiveIde() : false;
+      sessionRegistration = await ctx.session.hook('context', (event) => {
         const tools = event?.tools;
-        if (!available) removeIdeaToolDefinitions(tools);
-        appendIdeRecoveryGuidance(event?.system);
+        const serving = tools !== undefined && Object.keys(tools).some((name) => name.startsWith('idea_'));
+        if (serving) removeIdeaToolDefinitions(tools, HIDDEN_IDEA_TOOLS);
+        if (isIdeaProject || serving) appendIdeRecoveryGuidance(event?.system);
         if (!injectGuidance) return;
-        if (!available) return;
+        // Guidance promises tools the model can call, so it only goes out when
+        // they are actually in this request.
+        if (!serving) return;
         appendIdeGuidance(event?.system, projectPath);
-      });
-    }
-
-    // A failed IDEA MCP call is also a signal that the IDE endpoint is gone.
-    // Unregister immediately so later requests cannot keep calling a dead tool.
-    if (typeof ctx.tool?.hook === 'function') {
-      toolRegistration = await ctx.tool.hook('execute.after', async (event) => {
-        if (typeof event?.tool !== 'string' || !event.tool.startsWith('idea_')) return;
-        if (event.status !== 'error') return;
-        await deactivateIde();
-        if (typeof ctx.mcp.reload === 'function') await ctx.mcp.reload();
-        if (typeof ctx.tool?.reload === 'function') await ctx.tool.reload();
       });
     }
 
@@ -533,9 +602,9 @@ export default {
           // best effort
         }
       }
-      if (toolRegistration) {
+      if (skillRegistration) {
         try {
-          await toolRegistration.dispose();
+          await skillRegistration.dispose();
         } catch {
           // best effort
         }

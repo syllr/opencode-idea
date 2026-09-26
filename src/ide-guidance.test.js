@@ -26,10 +26,26 @@ describe('buildIdeGuidance', () => {
       'idea_apply_patch',
       'idea_create_new_file',
       'idea_lint_files',
-      'idea_git_status',
     ]) {
       expect(text).toContain(tool);
     }
+  });
+
+  it('scopes the in-project rule to code and file operations', () => {
+    const text = buildIdeGuidance(PROJECT);
+    expect(text).toContain('代码与文件操作');
+    expect(text).not.toContain('## 例外');
+    expect(text).not.toContain('版本控制用原生');
+    expect(text).not.toContain('idea_git_status');
+    expect(text).not.toContain('idea_execute_terminal_command');
+  });
+
+  it('routes database work through the IDE Database tools', () => {
+    const text = buildIdeGuidance(PROJECT);
+    expect(text).toContain('## 数据库');
+    expect(text).toContain('idea_list_database_connections');
+    expect(text).toContain('先建议用户在 IDEA 里配好数据源');
+    expect(text).toContain('不要向用户索取数据库凭据');
   });
 
   it('forbids the native counterpart of each operation', () => {

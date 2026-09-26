@@ -14,6 +14,8 @@
     "src/env.js",
     "src/ide-launcher.js",
     "src/ide-guidance.js",
+    "src/ide-run-config-skill.js",
+    "src/ide-run-config-skill.md",
     "README.md",
     "CHANGELOG.md"
   ],
