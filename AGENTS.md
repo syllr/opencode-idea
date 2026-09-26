@@ -9,7 +9,6 @@
 - 更新 minor 或 major 版本（例如 `0.0.x → 0.1.0` 或 `1.0.0`）前，必须先得到用户明确同意。
 - 不使用 `--force` 或任何方式覆盖已发布版本；发布失败时保留旧版本，改用新版本号。
 - 发布前运行 `npm test` 和 `npm publish --dry-run`；发布后验证 `npm view opencode-idea dist-tags`，确认 `latest` 指向新版本。
-- 当前发布基线：`0.0.1`。
 
 ## 发布脚本
 
