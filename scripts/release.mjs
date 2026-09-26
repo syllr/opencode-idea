@@ -20,6 +20,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const PACKAGE_NAME = 'opencode-idea';
@@ -76,6 +77,27 @@ function latestTag() {
   return entry?.latest;
 }
 
+/**
+ * npm answers a publish with `202`: the tarball is accepted but processed
+ * asynchronously, so `latest` can lag behind by minutes. Polling turns that
+ * lag into a wait instead of a false "publish failed".
+ *
+ * @param {string} expected
+ * @param {number} attempts total number of `latest` reads
+ * @param {number} delayMs pause between reads
+ */
+async function waitForLatest(expected, attempts = 12, delayMs = 15_000) {
+  let tag = latestTag();
+  for (let attempt = 1; attempt < attempts && tag !== expected; attempt += 1) {
+    console.log(
+      `[release] npm latest is ${tag ?? '(unknown)'}, waiting for ${expected} (${attempt}/${attempts - 1})`,
+    );
+    await sleep(delayMs);
+    tag = latestTag();
+  }
+  return tag;
+}
+
 function syncFiles(previousVersion, nextVersion) {
   const packageJson = readJson('package.json');
   const packageLock = readJson('package-lock.json');
@@ -112,7 +134,7 @@ function assertCleanGit() {
   }
 }
 
-function main() {
+async function main() {
   const currentVersion = readJson('package.json').version;
   const published = publishedVersions();
 
@@ -157,14 +179,17 @@ function main() {
   console.log('[release] running npm publish');
   run('npm', ['publish']);
 
-  console.log('[release] verifying dist-tags');
-  const tag = latestTag();
+  console.log('[release] verifying dist-tags (npm processed the publish asynchronously)');
+  const tag = await waitForLatest(nextVersion);
   console.log(`[release] npm latest: ${tag ?? '(unknown)'}`);
   if (tag !== nextVersion) {
-    console.error(`\n[release] latest is ${tag ?? 'unknown'}, expected ${nextVersion}. Verify manually.\n`);
+    console.error(
+      `\n[release] latest is ${tag ?? 'unknown'}, expected ${nextVersion}.\n` +
+        '[release] the publish was accepted; if latest updates later, nothing left to do.\n',
+    );
     process.exit(1);
   }
   console.log(`[release] published ${PACKAGE_NAME}@${nextVersion}`);
 }
 
-main();
+await main();
