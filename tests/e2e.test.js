@@ -4,7 +4,7 @@
 
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import { findIdePort, probePort } from '../src/idea-mcp.js';
+import { findIdePort, probePort } from '../src/mcp/idea.js';
 
 function startFakeIde() {
   return new Promise((resolve) => {

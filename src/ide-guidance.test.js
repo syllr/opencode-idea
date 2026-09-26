@@ -15,20 +15,86 @@ describe('buildIdeGuidance', () => {
     expect(text).toContain('必须使用');
   });
 
-  it('names the idea tool for each common operation', () => {
+  it('covers every tool exposed to the model, one line each', () => {
     const text = buildIdeGuidance(PROJECT);
     for (const tool of [
+      // 检索
       'idea_search_text',
       'idea_search_regex',
       'idea_search_file',
+      'idea_search_symbol',
+      // 阅读
       'idea_read_file',
       'idea_list_directory_tree',
+      'idea_get_symbol_info',
+      'idea_get_all_open_file_paths',
+      'idea_open_file_in_editor',
+      // 写入
       'idea_apply_patch',
       'idea_create_new_file',
+      'idea_rename_refactoring',
+      'idea_reformat_file',
+      // 校验
       'idea_lint_files',
+      'idea_get_file_problems',
+      'idea_build_project',
+      // 分析
+      'idea_analyze_calls',
+      'idea_get_project_modules',
+      'idea_get_project_dependencies',
+      // 运行配置
+      'idea_get_run_configurations',
+      'idea_execute_run_configuration',
+      // 数据库
+      'idea_list_database_connections',
+      'idea_test_database_connection',
+      'idea_list_database_schemas',
+      'idea_list_schema_object_kinds',
+      'idea_list_schema_objects',
+      'idea_introspect_schema',
+      'idea_get_database_object_description',
+      'idea_execute_sql_query',
+      'idea_fetch_query_result',
+      'idea_preview_table_data',
+      'idea_list_recent_sql_queries',
+      'idea_cancel_sql_query',
     ]) {
       expect(text).toContain(tool);
     }
+  });
+
+  it('states the parameters and the positive flow for each tool', () => {
+    const text = buildIdeGuidance(PROJECT);
+    expect(text).toContain('`analysisKind` 取 `INCOMING_CALLS` / `OUTGOING_CALLS`');
+    expect(text).toContain('`childOffset` 翻页');
+    expect(text).toContain('EXECUTE_IN_TERMINAL: false');
+    expect(text).toContain('supportsDynamicLaunchOverrides');
+    expect(text).toContain('`databaseName` 为空、库名在 `schemaName`');
+    expect(text).toContain('一次 10 行');
+    expect(text).toContain('`status` 变 `CANCELLED`');
+    expect(text).toContain('没返回即没问题');
+  });
+
+  it('writes no caveats or edge cases', () => {
+    const text = buildIdeGuidance(PROJECT);
+    for (const caveat of [
+      '不要传',
+      '静默',
+      'timedOut',
+      'No more rows',
+      'Query executed successfully',
+      '外部客户端的看不到',
+      '一堆同名符号',
+      '只能读项目',
+    ]) {
+      expect(text).not.toContain(caveat);
+    }
+  });
+
+  it('says nothing about languages or frameworks', () => {
+    const text = buildIdeGuidance(PROJECT);
+    expect(text).not.toMatch(/\bJS\b/);
+    expect(text).not.toMatch(/Python|Java|Kotlin|npm/);
   });
 
   it('scopes the in-project rule to code and file operations', () => {
@@ -42,7 +108,7 @@ describe('buildIdeGuidance', () => {
 
   it('routes database work through the IDE Database tools', () => {
     const text = buildIdeGuidance(PROJECT);
-    expect(text).toContain('## 数据库');
+    expect(text).toContain('### 数据库');
     expect(text).toContain('idea_list_database_connections');
     expect(text).toContain('先建议用户在 IDEA 里配好数据源');
     expect(text).toContain('不要向用户索取数据库凭据');

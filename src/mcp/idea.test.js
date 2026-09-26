@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MCP_STREAM_PATH, serverConfig } from './idea-mcp.js';
+import { MCP_STREAM_PATH, serverConfig } from './idea.js';
 
 describe('serverConfig', () => {
   it('builds a remote Streamable-HTTP config scoped to the project', () => {

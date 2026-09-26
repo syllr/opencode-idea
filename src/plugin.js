@@ -27,8 +27,8 @@ import {
   IDEA_SERVER_NAME,
   findIdePort,
   serverConfig,
-} from './idea-mcp.js';
-import { readIdeTerminalEnv } from './ide-env.js';
+} from './mcp/idea.js';
+import { readIdeTerminalEnv } from './mcp/ide-env.js';
 import { currentProjectPath, hasIdeaDirectory } from './project.js';
 import { applyEnv, mergeEnv } from './env.js';
 import {
@@ -40,7 +40,7 @@ import {
   appendIdeGuidance,
   appendIdeRecoveryGuidance,
 } from './ide-guidance.js';
-import { runConfigSkill } from './ide-run-config-skill.js';
+import { readSkills } from './skill/loader.js';
 
 const DEFAULT_LAUNCH_COOLDOWN_MS = 120000;
 const DEFAULT_LAUNCH_MAX_ATTEMPTS = 5;
@@ -86,7 +86,7 @@ export const HIDDEN_IDEA_TOOLS = [
   // Router
   'idea_execute_tool',
   // Terminal: the plugin reads the IDE env through its own direct MCP call
-  // (`src/ide-env.js`), so the model never needs this tool. Measured value for
+  // (`src/mcp/ide-env.js`), so the model never needs this tool. Measured value for
   // the agent is nil: ~60s hard cutoff with no way to read the terminal buffer,
   // and the native shell already keeps the output tail plus a full-output file.
   'idea_execute_terminal_command',
@@ -232,8 +232,9 @@ export default {
    *     transform: (cb: (editor: { add: (definition: {
    *       id: string,
    *       name: string,
-   *       description: string,
-   *       location: string,
+   *       description?: string,
+   *       autoinvoke?: boolean,
+   *       path: string,
    *       content: string,
    *     }) => void }) => void) => Promise<{ dispose: () => Promise<void> | void }>,
    *   },
@@ -504,19 +505,20 @@ export default {
       }
     };
 
-    // The run-configuration skill is static knowledge — where `.run/*.run.xml`
-    // live, how to bootstrap a schema from a real example, and how to verify a
-    // write. JetBrains projects only, and independent of `/open-in-idea`.
+    // The shipped skills are static knowledge (`skills/<id>/SKILL.md`), e.g. the
+    // run-configuration workflow: where `.run/*.run.xml` live, how to bootstrap a
+    // schema from a real example, and how to verify a write. JetBrains projects
+    // only, and independent of `/open-in-idea`.
     //
-    // Deliberately NOT wrapped in a catch: this is a core feature of the plugin,
+    // Deliberately NOT wrapped in a catch: these are core features of the plugin,
     // so a rejected definition must fail loudly. Swallowing it would ship a
     // silently incomplete plugin — which is exactly how 0.0.6 lost
     // `/open-in-idea` without anyone noticing until the command was gone.
     if (isIdeaProject && typeof ctx.skill?.transform === 'function') {
-      // Read the document before the transform: callbacks must stay synchronous.
-      const runConfigSkillDefinition = runConfigSkill();
+      // Read the documents before the transform: callbacks must stay synchronous.
+      const skills = readSkills();
       skillRegistration = await ctx.skill.transform((editor) => {
-        editor.add(runConfigSkillDefinition);
+        for (const skill of skills) editor.add(skill);
       });
     }
 

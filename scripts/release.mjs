@@ -12,8 +12,8 @@
 //   * only the smallest version position (patch) is bumped
 //   * minor / major bumps are refused here; do them manually with user approval
 //   * a version already published on npm is never reused or overwritten
-//   * package.json, package-lock.json, src/idea-mcp.js clientInfo.version and
-//     CHANGELOG.md are kept in sync
+//   * package.json, package-lock.json and src/mcp/idea.js clientInfo.version
+//     are kept in sync
 //   * a real publish starts from a clean working tree; the bump below dirties
 //     the tree on purpose, so the cleanliness check runs before the bump
 
@@ -88,23 +88,16 @@ function syncFiles(previousVersion, nextVersion) {
   writeFileSync(resolve(ROOT, 'package-lock.json'), `${JSON.stringify(packageLock, null, 2)}\n`);
 
   // MCP clientInfo.version must match the package version.
-  const ideaMcpPath = resolve(ROOT, 'src/idea-mcp.js');
+  const ideaMcpPath = resolve(ROOT, 'src/mcp/idea.js');
   const ideaMcp = readFileSync(ideaMcpPath, 'utf8');
   const updatedIdeaMcp = ideaMcp
     .split(`version: '${previousVersion}'`)
     .join(`version: '${nextVersion}'`);
   if (updatedIdeaMcp === ideaMcp) {
-    throw new Error("src/idea-mcp.js: clientInfo version not found; expected two occurrences");
+    throw new Error("src/mcp/idea.js: clientInfo version not found; expected two occurrences");
   }
   writeFileSync(ideaMcpPath, updatedIdeaMcp);
 
-  // CHANGELOG: add a new section above the previous top version.
-  const changelogPath = resolve(ROOT, 'CHANGELOG.md');
-  const changelog = readFileSync(changelogPath, 'utf8');
-  const heading = `## ${nextVersion}\n\n- \n`;
-  const nextChangelog = changelog.replace(/^(# Changelog\n\n)/, `$1${heading}\n`);
-  if (nextChangelog === changelog) throw new Error('CHANGELOG.md: could not find "# Changelog" heading');
-  writeFileSync(changelogPath, nextChangelog);
 }
 
 function assertCleanGit() {

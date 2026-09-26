@@ -2,7 +2,7 @@
 // variables. The IDE terminal is the single source of truth for the environment
 // the IDE actually runs with (version-managed Node, goenv Go, SDKMAN Java, ...).
 
-import { callTool } from './idea-mcp.js';
+import { callTool } from './idea.js';
 
 /** SDK-related variables worth mirroring into OpenCode's shell environment. */
 export const SDK_ENV_KEYS = [

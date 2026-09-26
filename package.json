@@ -8,16 +8,15 @@
     "index.js",
     "src/index.js",
     "src/plugin.js",
-    "src/idea-mcp.js",
-    "src/ide-env.js",
+    "src/mcp/idea.js",
+    "src/mcp/ide-env.js",
     "src/project.js",
     "src/env.js",
     "src/ide-launcher.js",
     "src/ide-guidance.js",
-    "src/ide-run-config-skill.js",
-    "src/ide-run-config-skill.md",
-    "README.md",
-    "CHANGELOG.md"
+    "src/skill/loader.js",
+    "skills",
+    "README.md"
   ],
   "scripts": {
     "test": "vitest run",
