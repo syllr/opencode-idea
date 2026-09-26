@@ -508,19 +508,16 @@ export default {
     // live, how to bootstrap a schema from a real example, and how to verify a
     // write. JetBrains projects only, and independent of `/open-in-idea`.
     //
-    // Best effort on purpose: optional knowledge must never take the command and
-    // the MCP wiring down with it. A rejected definition fails the transform, and
-    // a transform failure disables this plugin entirely.
+    // Deliberately NOT wrapped in a catch: this is a core feature of the plugin,
+    // so a rejected definition must fail loudly. Swallowing it would ship a
+    // silently incomplete plugin — which is exactly how 0.0.6 lost
+    // `/open-in-idea` without anyone noticing until the command was gone.
     if (isIdeaProject && typeof ctx.skill?.transform === 'function') {
-      try {
-        // Read the document before the transform: callbacks must stay synchronous.
-        const runConfigSkillDefinition = runConfigSkill();
-        skillRegistration = await ctx.skill.transform((editor) => {
-          editor.add(runConfigSkillDefinition);
-        });
-      } catch {
-        skillRegistration = undefined;
-      }
+      // Read the document before the transform: callbacks must stay synchronous.
+      const runConfigSkillDefinition = runConfigSkill();
+      skillRegistration = await ctx.skill.transform((editor) => {
+        editor.add(runConfigSkillDefinition);
+      });
     }
 
     // `/open-in-idea`: manual, re-entrant trigger that also loads the IDE

@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   RUN_CONFIG_SKILL_DESCRIPTION,
@@ -19,6 +20,10 @@ describe('runConfigSkill', () => {
     // plugin — command included.
     expect(skill.path).toMatch(/ide-run-config-skill\.md$/);
     expect(skill.path.startsWith('/')).toBe(true);
+    // The shipped document must be readable from the installed package: a missing
+    // `.md` (e.g. dropped from package.json `files`) throws at setup, and a setup
+    // failure disables the plugin.
+    expect(existsSync(skill.path)).toBe(true);
     expect(skill).not.toHaveProperty('location');
     expect(Object.keys(skill).sort()).toEqual(['content', 'description', 'id', 'name', 'path']);
     expect(skill.description).toBe(RUN_CONFIG_SKILL_DESCRIPTION);
