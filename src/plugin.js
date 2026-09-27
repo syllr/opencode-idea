@@ -3,9 +3,10 @@
 // For a project the user opted into IDEA this plugin:
 //   1. injects the IDE integrated-terminal environment (JAVA_HOME / GOROOT /
 //      Node / Maven / ...) into every OpenCode shell;
-//   2. registers the IDE MCP server with OpenCode (scoped to the project via the
-//      IJ_MCP_SERVER_PROJECT_PATH header), injects direct-call guidance for
-//      IDEA MCP tools, and updates only IDEA MCP tool descriptions;
+//   2. registers the IDE MCP server with OpenCode — by default as the IDE's
+//      stdio bridge (`idea stdioMcpServer`), scoped to the project through
+//      `IJ_MCP_SERVER_PROJECT_PATH` — injects direct-call guidance for IDEA MCP
+//      tools, and updates only IDEA MCP tool descriptions;
 //   3. registers the `/open-in-idea` command, which opens the current project
 //      in IntelliJ IDEA (reusing a running instance), loads the IDE
 //      capabilities immediately, and marks the project as an IDEA project;
@@ -19,13 +20,17 @@
 // when a probe is requested). `/open-in-idea` probes, opens the IDE, and loads
 // the IDE MCP + guidance on demand.
 //
-// Once the user runs `/open-in-idea` in a project, that project is marked as an
-// IDEA project. The mark is persisted through `ctx.storage` (durable across
-// restarts) and cleared by `/close-in-idea`. While a project is marked, every
-// user message assumes the IDE is still up: the plugin asks OpenCode for the
-// `idea` MCP server's status and, when it is not connected, re-runs the open
-// flow before the request is built. Detection is by MCP status, never by tool
-// errors, so a normal business error can never look like a dropped connection.
+// `/open-in-idea` opens the project in the IDE, waits until its MCP endpoint is
+// ready, registers `idea` (stdio, project-scoped) and marks the project in
+// `ctx.storage`; `/close-in-idea` unregisters the server and clears the mark.
+// The mark gates the IDEA skills and the failure-driven recovery. After a manual
+// open, an `idea_*` call that fails because the IDE MCP is not usable (the server
+// dropped, or the project is not open in the IDE) re-runs the open flow; a plain
+// business error is classified apart and left alone. Because a stdio bridge whose
+// IDE connection drops never reports it (it hangs), a background heartbeat probes
+// the IDE endpoint and, once it is clearly gone, deactivates the server — killing
+// the zombie bridge and removing the tools so a call cannot hang — and the next
+// user message rebuilds it.
 //
 // `Plugin.define` from `@opencode/plugin` is an identity function, so a plain
 // `{ id, setup }` object is the whole plugin contract. Exporting it directly
@@ -36,14 +41,17 @@ import {
   IDEA_SERVER_NAME,
   findIdePort,
   serverConfig,
+  stdioServerConfig,
 } from './mcp/idea.js';
 import { readIdeTerminalEnv } from './mcp/ide-env.js';
 import { currentProjectPath } from './project.js';
 import { applyEnv, mergeEnv } from './env.js';
 import {
   createLaunchGuard,
+  DEFAULT_IDE_APP,
   openInIde,
   resolveIdeApp,
+  resolveIdeExecutable,
 } from './ide-launcher.js';
 import {
   appendIdeGuidance,
@@ -62,6 +70,20 @@ const DEFAULT_MCP_START_TIMEOUT_MS = 60000;
 const MCP_START_POLL_MS = 1000;
 const DEFAULT_TOOL_REFRESH_TIMEOUT_MS = 5000;
 const TOOL_REFRESH_POLL_MS = 25;
+// Hard cap on ONE IDE MCP tool call. OpenCode's own default is 12 hours, and the
+// IDE's stdio bridge NEVER answers a call once its upstream IDE connection has
+// dropped (it logs on stderr but sends no JSON-RPC response) — so a call made
+// after the IDE died would otherwise sit unresolved for 12h. 10 minutes is far
+// beyond any normal IDE tool and turns that permanent hang into a normal error.
+const DEFAULT_EXECUTION_TIMEOUT_MS = 600000;
+// Background IDE liveness probe. The stdio bridge NEVER reports a dropped IDE
+// connection (it just hangs), so the plugin watches the IDE endpoint itself.
+// After HEARTBEAT_FAILURES consecutive misses it deactivates the `idea` server
+// — which kills the zombie bridge child AND removes the `idea_*` tools, so the
+// model can never call into a dead pipe — and latches a rebuild for the next
+// user message (the bridge never heals on its own).
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 5000;
+const DEFAULT_HEARTBEAT_FAILURES = 2;
 const IDEA_READY_TOOL_IDS = new Set(['idea_read_file', 'idea_apply_patch']);
 
 /**
@@ -157,12 +179,96 @@ function toolIds(tools) {
 }
 
 /**
+ * Classify an `idea_*` tool failure for the reconnect decision.
+ *
+ * It must never mistake a plain business error (a bad path, a missing file) for
+ * a broken connection, so only two shapes trigger action:
+ *
+ * - `project`: the IDE is up but the requested project is not open in it, e.g.
+ *   "`projectPath`=... doesn't correspond to any open project." Re-opening the
+ *   project fixes it.
+ * - `mcp`: the IDE MCP server itself is gone (dropped / transport closed).
+ *
+ * Everything else is `none`.
+ *
+ * @param {{ message?: unknown } | undefined} error
+ * @returns {'project' | 'mcp' | 'none'}
+ */
+function classifyIdeaFailure(error) {
+  const message = typeof error?.message === 'string' ? error.message : '';
+  // "Project not open in the IDE" comes in two shapes, both meaning the same
+  // thing and both fixed by opening the project again:
+  //   - the called tool carried no `projectPath`, so the server could not pick
+  //     one: "Unable to determine the target project for the current MCP tool
+  //     call." (this is what the plugin's stdio registration produces, since it
+  //     sets the project through env, not through the call)
+  //   - an explicit `projectPath` was passed but is not open: "`projectPath`=...
+  //     doesn't correspond to any open project."
+  if (
+    message.includes('Unable to determine the target project') ||
+    message.includes('correspond to any open project')
+  ) {
+    return 'project';
+  }
+  // Only transport-level markers, which OpenCode / the IDE bridge emit
+  // themselves. The message of an MCP *tool error* is the tool's own content
+  // (`tool/mcp.ts` turns `result.isError` into `ToolFailure({ message: <text> })`),
+  // so a generic string such as "Connection refused" from a SQL or run-config
+  // tool would otherwise be misread as a dropped connection and rebuild a
+  // healthy bridge.
+  if (
+    message.includes(`MCP server "${IDEA_SERVER_NAME}" is not available`) ||
+    message.includes('MCP server is not connected') ||
+    message.includes('Error POSTing to endpoint') ||
+    message.includes('SseClientTransport is closed')
+  ) {
+    return 'mcp';
+  }
+  return 'none';
+}
+
+/**
+ * Replace a tool error's message, so the model sees the replacement. OpenCode
+ * returns `event.error` after the `execute.after` hook resolves, so rewriting it
+ * is how the plugin steers the model after an automatic reconnect.
+ *
+ * The error is a `Tool.Error` instance (`ToolFailure` extends it). It is rebuilt
+ * through its own constructor — no runtime dependency on `@opencode/ai` — with a
+ * direct field mutation as a fallback.
+ *
+ * @param {{ error?: unknown }} event
+ * @param {string} message
+ * @returns {boolean}
+ */
+function rewriteToolError(event, message) {
+  const current = event?.error;
+  if (!current || typeof current !== 'object') return false;
+  try {
+    const Ctor = current.constructor;
+    if (typeof Ctor === 'function') {
+      const next = { message };
+      if (current.error !== undefined) next.error = current.error;
+      if (current.metadata !== undefined) next.metadata = current.metadata;
+      event.error = new Ctor(next);
+      return true;
+    }
+  } catch {
+    // fall through to mutation
+  }
+  try {
+    current.message = message;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * @typedef {{
  *   status: 'connected' | 'tools-loading' | 'mcp-unavailable' | 'launch-failed' | 'disabled' | 'closed',
  *   port?: number,
  *   opened?: boolean,
- *   unavailableNoticeSent?: boolean,
- *   autoRecovered?: boolean
+ *   unavailableNoticeSent?: boolean
  * }} IdeCommandResult
  */
 
@@ -182,9 +288,6 @@ const asPositiveNumber = (value, fallback) =>
 /** User-facing status text for a `/open-in-idea` result. */
 /** @param {IdeCommandResult} result */
 export function ideFeedback(result) {
-  if (result?.autoRecovered) {
-    return '检测到 IDE MCP 连接已断开,已自动重新连接并恢复 IDEA 原生工具。';
-  }
   switch (result?.status) {
     case 'connected':
       return 'IDE MCP 已连接;IDEA 原生工具已注册并可用于后续请求。';
@@ -199,7 +302,7 @@ export function ideFeedback(result) {
     case 'disabled':
       return '插件已通过 openInIde: false 关闭 IDE 启动。请手动打开 IntelliJ IDEA,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后重试 /open-in-idea。';
     case 'closed':
-      return '已关闭当前项目的 IDEA 接入标记;IDE MCP 断开后将不再自动重连。如需重新接入,请再次执行 /open-in-idea。';
+      return '已关闭当前项目的 IDEA 接入:已注销 IDE MCP 并清除项目标记。如需重新接入,请再次执行 /open-in-idea。';
     default:
       return '已处理 /open-in-idea。';
   }
@@ -210,8 +313,11 @@ export function ideFeedback(result) {
  * notification, not a task: the model must only acknowledge it. The user sees
  * the clean notice instead, via `metadata.displayText`.
  */
+/** Marks the plugin's own session notices, so recovery never reacts to them. */
+export const NOTICE_PREFIX = '【插件通知】';
+
 export function idePromptText(result) {
-  return [`【插件通知】${ideFeedback(result)}`, '这是发给用户的通知,你无需处理。请只回复"收到"。'].join('\n\n');
+  return [`${NOTICE_PREFIX}${ideFeedback(result)}`, '这是发给用户的通知,你无需处理。请只回复"收到"。'].join('\n\n');
 }
 
 /** `metadata` so the UI shows the clean notice while the model sees the instruction. */
@@ -234,6 +340,11 @@ export default {
    *     mcpProbeTimeoutMs?: number,
    *     mcpStartTimeoutMs?: number,
    *     toolRefreshTimeoutMs?: number,
+   *     executionTimeoutMs?: number,
+   *     heartbeatIntervalMs?: number,
+   *     heartbeatFailures?: number,
+   *     transport?: 'stdio' | 'http',
+   *     ideExecutable?: string,
    *     feedback?: false | 'message',
    *   },
    *   command?: {
@@ -260,13 +371,17 @@ export default {
    *       agent?: string,
    *       system?: unknown[],
    *       tools?: Record<string, unknown>,
-   *       prompt?: { text?: string },
-   *       metadata?: Record<string, unknown>,
    *     }) => void | Promise<void>) => Promise<{ dispose: () => Promise<void> | void }>,
    *   },
    *   tool?: {
    *     list?: () => Promise<ReadonlyArray<{ id?: string }>>,
    *     reload?: () => Promise<void>,
+   *     hook?: (name: string, cb: (event: {
+   *       tool?: string,
+   *       sessionID?: string,
+   *       status?: string,
+   *       error?: unknown,
+   *     }) => void | Promise<void>) => Promise<{ dispose: () => Promise<void> | void }>,
    *   },
    *   mcp: {
    *     transform: (cb: (editor: { set: (name: string, config: unknown) => void }) => void) => Promise<{ dispose: () => Promise<void> | void }>,
@@ -290,9 +405,28 @@ export default {
     const injectEnv = options.injectEnv !== false;
     const injectGuidance = options.injectGuidance !== false;
     const ideApp = resolveIdeApp(options.openInIde);
+    // Transport for the IDE MCP server. `stdio` (default) registers the IDE's
+    // stdio bridge as a local server: the client side is a child-process pipe,
+    // which — unlike the remote Streamable-HTTP stream — does not get closed
+    // while idle and never reconnected. `http` keeps the older remote config.
+    const transport = options.transport === 'http' ? 'http' : 'stdio';
+    const ideExecutable = typeof options.ideExecutable === 'string'
+      ? options.ideExecutable
+      // Resolve independently of `openInIde`: that option only controls whether
+      // the plugin may LAUNCH the IDE, not which transport the MCP server uses.
+      // Falling back to the default app when launching is disabled keeps stdio
+      // the default there too (otherwise `openInIde: false` silently registered
+      // the remote HTTP transport).
+      : resolveIdeExecutable(ideApp ?? DEFAULT_IDE_APP);
+    const useStdio = transport === 'stdio' && typeof ideExecutable === 'string';
     const mcpProbeTimeoutMs = asPositiveNumber(options.mcpProbeTimeoutMs, DEFAULT_MCP_PROBE_TIMEOUT_MS);
     const mcpStartTimeoutMs = asPositiveNumber(options.mcpStartTimeoutMs, DEFAULT_MCP_START_TIMEOUT_MS);
     const toolRefreshTimeoutMs = asPositiveNumber(options.toolRefreshTimeoutMs, DEFAULT_TOOL_REFRESH_TIMEOUT_MS);
+    // Cap on a single IDE tool call, so a bridge that hangs (IDE died) fails in
+    // finite time instead of OpenCode's 12h default. See DEFAULT_EXECUTION_TIMEOUT_MS.
+    const executionTimeoutMs = asPositiveNumber(options.executionTimeoutMs, DEFAULT_EXECUTION_TIMEOUT_MS);
+    const heartbeatIntervalMs = asPositiveNumber(options.heartbeatIntervalMs, DEFAULT_HEARTBEAT_INTERVAL_MS);
+    const heartbeatFailures = asPositiveNumber(options.heartbeatFailures, DEFAULT_HEARTBEAT_FAILURES);
     // "message" (default) injects a clearly-labelled notification that the
     // model only acknowledges ("收到"); the user sees the clean notice via
     // metadata.displayText. false is silent.
@@ -310,6 +444,8 @@ export default {
     /** @type {{ dispose: () => Promise<void> | void } | undefined} */
     let sessionRegistration;
     /** @type {{ dispose: () => Promise<void> | void } | undefined} */
+    let toolRegistration;
+    /** @type {{ dispose: () => Promise<void> | void } | undefined} */
     let promptRegistration;
     /** @type {{ dispose: () => Promise<void> | void } | undefined} */
     let commandRegistration;
@@ -317,6 +453,15 @@ export default {
     let skillRegistration;
     let skillsRegistered = false;
     let disposed = false;
+
+    // Background heartbeat state (see DEFAULT_HEARTBEAT_INTERVAL_MS).
+    /** @type {ReturnType<typeof setInterval> | undefined} */
+    let heartbeatTimer;
+    let heartbeatMisses = 0;
+    // Latches when the IDE was seen down and the server was deactivated. It is
+    // cleared ONLY by a successful rebuild — never by the endpoint coming back —
+    // because the bridge does not heal on its own.
+    let needsRebuild = false;
 
     // Project-level mark: has the user opted this project into IDEA via
     // `/open-in-idea`? One plugin instance serves one project (OpenCode
@@ -328,9 +473,6 @@ export default {
     const markKey = `project/${projectPath}`;
     /** @type {boolean | undefined} undefined = a storage read is due */
     let markCache;
-    // One auto-recovery run per project at a time; overlapping prompts share it.
-    /** @type {Promise<void> | undefined} */
-    let autoRecovering;
 
     /** Read the durable mark into the cache; at most one storage read per invalidation. */
     const readMark = async () => {
@@ -361,7 +503,9 @@ export default {
       } catch {
         // best effort
       }
-      markCache = undefined;
+      // Keep the in-memory cache in sync with the write (write-through), so any
+      // later synchronous reader sees the new value immediately.
+      markCache = marked;
       // The skill lifecycle follows the mark: marking the project registers the
       // IDEA skills, clearing the mark removes them again. Same semantics as the
       // reconnect behavior, so the two can never disagree.
@@ -411,27 +555,14 @@ export default {
     };
 
     const activateIde = async (port) => {
+      const config = useStdio
+        ? stdioServerConfig(ideExecutable, port, projectPath, { executionTimeoutMs })
+        : serverConfig(port, projectPath, { executionTimeoutMs });
       const mcpRegistration = await ctx.mcp.transform((editor) => {
-        editor.set(IDEA_SERVER_NAME, serverConfig(port, projectPath));
+        editor.set(IDEA_SERVER_NAME, config);
       });
       registrations = [mcpRegistration];
       return refreshIdeTools();
-    };
-
-    /**
-     * Is the IDE MCP server contributing tools right now? OpenCode's registry is
-     * the source of truth: it adds the tools when a server connects and drops
-     * them when the connection stops (`stopServer` publishes `mcp.tools.changed`
-     * and the registry reloads). No probe of our own is involved, and only
-     * `/open-in-idea` asks, so the read is user-initiated.
-     */
-    const ideaToolsRegistered = async () => {
-      if (typeof ctx.tool?.list !== 'function') return false;
-      try {
-        return toolIds(await ctx.tool.list()).some((id) => id.startsWith('idea_'));
-      } catch {
-        return false;
-      }
     };
 
     const reconcileOnce = async ({ probeIde = true } = {}) => {
@@ -458,10 +589,15 @@ export default {
         shellRegistration = await ctx.shell.hook('create.before', (input) => applyEnv(input, currentEnv));
       }
 
-      // A live server is only refreshed; a dead one must be replaced, because
-      // `reconcile()` skips an unchanged config and would never reconnect it.
-      // The registry says which case this is.
-      if (port !== undefined && (await ideaToolsRegistered())) return refreshIdeTools();
+      // Always tear the server down and register it again. A stdio bridge whose
+      // IDE connection dropped becomes a permanent zombie: the child process is
+      // still alive, so OpenCode keeps reporting it as connected, never restarts
+      // it, and SKIPS a re-`set` whose config is unchanged (`reconcile()` compares
+      // the config). Disposing the registration removes the server from the
+      // reconciled config, which is what actually kills the child process — so a
+      // full rebuild is the only reliable way back to a working bridge.
+      // `/open-in-idea` is manual and rare; rebuilding an already-healthy bridge
+      // costs one restart, which is the right trade for never leaving a zombie.
       await deactivateIde();
       if (port === undefined) return false;
       return activateIde(port);
@@ -587,6 +723,48 @@ export default {
     // Setup never probes or connects the IDE — everything is on `/open-in-idea`.
     await reconcile({ probeIde: false });
 
+    /**
+     * One heartbeat tick. Only marked projects are watched, and it only acts
+     * when an `idea` server is actually registered: the point is to protect an
+     * ESTABLISHED connection. A project that never connected has no zombie to
+     * kill, and must not have IDEA launched on its behalf. The deactivation
+     * runs under the reconcile chain, so a tick cannot race `/open-in-idea`.
+     */
+    let heartbeatBusy = false;
+    const heartbeatTick = async () => {
+      if (disposed || heartbeatBusy) return;
+      if (markCache !== true || registrations.length === 0) {
+        heartbeatMisses = 0;
+        return;
+      }
+      heartbeatBusy = true;
+      try {
+        const port = await findIdePort(ports, { timeoutMs: mcpProbeTimeoutMs }).catch(() => undefined);
+        if (port !== undefined) {
+          heartbeatMisses = 0;
+          return;
+        }
+        heartbeatMisses += 1;
+        if (heartbeatMisses < heartbeatFailures) return;
+        // The IDE is gone. Deactivating kills the zombie bridge child and
+        // removes the `idea_*` tools, so the model cannot call into a dead
+        // pipe. Latch a rebuild for the next user message.
+        const kicked = await enqueue(async () => {
+          if (disposed || registrations.length === 0) return false;
+          await deactivateIde();
+          return true;
+        });
+        if (kicked) needsRebuild = true;
+      } finally {
+        heartbeatBusy = false;
+      }
+    };
+    heartbeatTimer = setInterval(() => {
+      heartbeatTick().catch(() => {});
+    }, heartbeatIntervalMs);
+    // Never keep the host process alive just to probe (also keeps tests from hanging).
+    if (typeof heartbeatTimer?.unref === 'function') heartbeatTimer.unref();
+
     const sendFeedback = async (input, result) => {
       if (feedback !== 'message' || typeof ctx.session?.prompt !== 'function') return false;
       try {
@@ -602,71 +780,6 @@ export default {
         // feedback is best effort
         return false;
       }
-    };
-
-    /**
-     * Is the plugin's `idea` MCP server connected right now? OpenCode tracks
-     * every server's status in memory, and this is the authoritative "the IDE
-     * MCP is down" signal: it reflects the transport, not the result of any
-     * single tool call, so a business error can never look like a disconnect.
-     * `pending` means "still connecting" and is treated as healthy, so a server
-     * that is merely starting up is left alone.
-     *
-     * @returns {Promise<boolean>}
-     */
-    const isIdeaConnected = async () => {
-      if (typeof ctx.mcp?.list !== 'function') return false;
-      try {
-        const result = await ctx.mcp.list();
-        const servers = Array.isArray(result) ? result : (result?.data ?? []);
-        return servers.some((server) => {
-          const status = server?.status?.status;
-          return server?.name === IDEA_SERVER_NAME && (status === 'connected' || status === 'pending');
-        });
-      } catch {
-        return false;
-      }
-    };
-
-    /**
-     * Marked-project recovery: while the project is marked (the user ran
-     * `/open-in-idea`), treat the IDE as expected and rebuild the connection
-     * whenever its MCP server is not connected. Runs before the prompt's request
-     * is built, so a successful recovery makes its `idea_*` tools available to
-     * that very message.
-     *
-     * Only a confirmed reconnect is announced. A failed recovery stays silent:
-     * the per-request recovery guidance already tells the model what to say, and
-     * a notice per failed message would be noise (the launch guard, shared with
-     * the command, keeps it from re-spawning on every message).
-     *
-     * @param {string} sessionID the notice target; the mark itself is per-project
-     */
-    const autoReconnect = (sessionID) => {
-      if (autoRecovering) return autoRecovering;
-      const run = (async () => {
-        try {
-          if (disposed) return;
-          if (await isIdeaConnected()) return;
-          const result = await runOpenInIdea();
-          // A found endpoint is what counts as recovered, even if its tool
-          // catalog is still registering (`tools-loading`).
-          if (result.port === undefined) return;
-          // Queue the notice so it is delivered after the user's own message,
-          // never mixed into the same model turn as it.
-          await sendFeedback(
-            { sessionID, prompt: { text: '' }, delivery: 'queue' },
-            { status: 'connected', autoRecovered: true },
-          );
-        } catch {
-          // auto-recovery is best effort
-        }
-      })();
-      autoRecovering = run;
-      void run.finally(() => {
-        if (autoRecovering === run) autoRecovering = undefined;
-      });
-      return run;
     };
 
     // The shipped skills are static knowledge (`skills/<id>/SKILL.md`), e.g. the
@@ -738,9 +851,14 @@ export default {
         });
         editor.add({
           name: 'close-in-idea',
-          description: '取消当前项目的 IDEA 接入标记,断开后不再自动重连',
+          description: '取消当前项目的 IDEA 接入:注销 IDE MCP 并清除项目标记',
           execute: async (input) => {
             await setMark(false);
+            // Unregister the IDE MCP server and clear the injected env. Reuses
+            // the serialized reconcile, so a concurrent rebuild (an in-flight
+            // `/open-in-idea`, or a heartbeat tick) cannot re-register the
+            // server after the mark is gone.
+            await reconcile({ probeIde: false });
             await sendFeedback(input, { status: 'closed' });
           },
         });
@@ -762,7 +880,7 @@ export default {
         const tools = event?.tools;
         const serving = tools !== undefined && Object.keys(tools).some((name) => name.startsWith('idea_'));
         if (serving) removeIdeaToolDefinitions(tools, HIDDEN_IDEA_TOOLS);
-        if (markCache === true || serving) appendIdeRecoveryGuidance(event?.system);
+        if (markCache === true || serving) appendIdeRecoveryGuidance(event?.system, { marked: markCache === true });
         if (!injectGuidance) return;
         // Guidance promises tools the model can call, so it only goes out when
         // they are actually in this request.
@@ -770,32 +888,55 @@ export default {
         appendIdeGuidance(event?.system, projectPath);
       });
 
-      // Project-level auto-recovery. The only self-initiated action in the
-      // plugin, and only for a marked project. It belongs to the `prompt` hook
-      // (not `context`) because the tool catalog for a request is already fixed
-      // by the time `context` runs: a `prompt`-time reconnect is what lets the
-      // message that triggered it use `idea_*` tools.
-      //
-      // The returned promise is awaited by OpenCode before the request is built,
-      // so a slow cold start delays that message — the accepted cost of treating
-      // a marked project's IDE as always up.
+      // Rebuild after a heartbeat-detected drop. It reads only the in-memory
+      // `needsRebuild` latch, so it is a cheap no-op on every other message.
+      // OpenCode awaits `prompt` before the request is built, so when the IDE is
+      // back, the message that triggers this already carries working tools.
       promptRegistration = await ctx.session.hook('prompt', async (event) => {
-        const sessionID = event?.sessionID;
-        if (typeof sessionID !== 'string') return;
-        // Never react to the plugin's own notices, or auto-recovery would feed
-        // on itself. Notices carry `metadata.displayText`; the prefix guards
-        // against an older notice shape.
-        const displayText = event?.metadata?.displayText;
-        if (typeof displayText === 'string') return;
+        if (disposed || !needsRebuild || markCache !== true) return;
+        // Never react to the plugin's own notices, or recovery would feed on
+        // itself. Match the notice TEXT, never `metadata.displayText`: OpenCode
+        // also sets `displayText` on ordinary user messages (it is the message
+        // text itself), so a displayText guard silently skips every real message
+        // — verified live, and it made this rebuild never run.
         const text = event?.prompt?.text;
-        if (typeof text === 'string' && text.startsWith('【插件通知】')) return;
-        if (!(await readMark())) return;
-        return autoReconnect(sessionID);
+        if (typeof text === 'string' && text.startsWith(NOTICE_PREFIX)) return;
+        const result = await runOpenInIdea();
+        if (result.port !== undefined) {
+          needsRebuild = false;
+          heartbeatMisses = 0;
+        }
       });
+
+      // The only self-initiated action: when an `idea_*` call fails in a way
+      // that means the IDE MCP is not usable, run the open flow again. The
+      // failure is classified — a plain business error (a bad path, a missing
+      // file) never triggers a reconnect, only "the MCP is not available" or
+      // "the project is not open in the IDE" do.
+      if (typeof ctx.tool?.hook === 'function') {
+        toolRegistration = await ctx.tool.hook('execute.after', async (event) => {
+          if (event?.status !== 'error') return;
+          if (typeof event?.tool !== 'string' || !event.tool.startsWith('idea_')) return;
+          if (!(await readMark())) return;
+          const kind = classifyIdeaFailure(event.error);
+          if (kind === 'none') return;
+          if (kind === 'project' && ideApp) {
+            // The IDE is up; the project simply is not open in it. Ask the IDE
+            // to open the project again, and tell the model to retry.
+            await openInIde(projectPath, { app: ideApp });
+            rewriteToolError(event, '该项目已在 IDEA 中重新打开,请重试刚才的操作。');
+            return;
+          }
+          const result = await runOpenInIdea();
+          if (result.port === undefined) return;
+          rewriteToolError(event, 'IDE MCP 已重新连接,请重试刚才的操作。');
+        });
+      }
     }
 
     return async () => {
       disposed = true;
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (shellRegistration) {
         try {
           await shellRegistration.dispose();
@@ -806,6 +947,13 @@ export default {
       if (sessionRegistration) {
         try {
           await sessionRegistration.dispose();
+        } catch {
+          // best effort
+        }
+      }
+      if (toolRegistration) {
+        try {
+          await toolRegistration.dispose();
         } catch {
           // best effort
         }

@@ -15,6 +15,7 @@ vi.mock('../src/ide-launcher.js', async (importOriginal) => {
       openCalls.push(args);
       return true;
     },
+    resolveIdeExecutable: () => '/Applications/IntelliJ IDEA.app/Contents/MacOS/idea',
   };
 });
 
@@ -64,6 +65,8 @@ function fakeCtx(options = {}) {
     storage: new Map(),
     storageGets: 0,
     mcpServers: [],
+    mcpConfig: undefined,
+    mcpDisposed: 0,
   };
   return {
     state,
@@ -93,11 +96,16 @@ function fakeCtx(options = {}) {
           state.mcp += 1;
           // Simulate OpenCode registering the server and reaching `connected`.
           callback({
-            set: (name) => {
+            set: (name, config) => {
+              state.mcpConfig = { name, config };
               state.mcpServers = [{ name, status: { status: 'connected' } }];
             },
           });
-          return { dispose: () => {} };
+          return {
+            dispose: () => {
+              state.mcpDisposed += 1;
+            },
+          };
         },
         reload: async () => {
           state.mcpReload += 1;
@@ -239,7 +247,56 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('refreshes the tool catalog when /open-in-idea is run again', async () => {
+  it('registers the IDE MCP as the stdio bridge by default', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolsReadyAfter: 3 });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+
+    expect(state.mcpConfig.name).toBe('idea');
+    expect(state.mcpConfig.config.type).toBe('local');
+    expect(state.mcpConfig.config.command[0]).toContain('IntelliJ IDEA.app');
+    expect(state.mcpConfig.config.command[1]).toBe('stdioMcpServer');
+    expect(state.mcpConfig.config.environment.IJ_MCP_SERVER_PORT).toBe(String(fake.port));
+    expect(state.mcpConfig.config.environment.IJ_MCP_SERVER_PROJECT_PATH).toBe(projectPath);
+    // 10-minute cap by default, so a bridge that hangs after the IDE dies fails
+    // in finite time instead of OpenCode's 12h default.
+    expect(state.mcpConfig.config.timeout).toEqual({ execution: 600000 });
+
+    await cleanup();
+  });
+
+  it('honours an executionTimeoutMs override', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolsReadyAfter: 3, executionTimeoutMs: 45000 });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+
+    expect(state.mcpConfig.config.timeout).toEqual({ execution: 45000 });
+
+    await cleanup();
+  });
+
+  it('registers the remote server when transport is http', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], transport: 'http', toolsReadyAfter: 3 });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+
+    expect(state.mcpConfig.config.type).toBe('remote');
+    expect(state.mcpConfig.config.url).toContain(`:${fake.port}/stream`);
+    expect(state.mcpConfig.config.headers.IJ_MCP_SERVER_PROJECT_PATH).toBe(projectPath);
+
+    await cleanup();
+  });
+
+  it('rebuilds the server when /open-in-idea is run again', async () => {
     const fake = await startFakeIde();
     running = fake.server;
     const { ctx, state } = fakeCtx({ ports: [fake.port] });
@@ -247,9 +304,16 @@ describe('plugin setup', () => {
     const command = state.commands.get('open-in-idea');
 
     await command.execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    const transformsAfterFirst = state.mcp;
+    const disposedAfterFirst = state.mcpDisposed;
+
     await command.execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
 
-    expect(state.mcp).toBe(1);
+    // The second run tears the old registration down (which is what kills the
+    // bridge child) and registers a fresh one, so a zombie can never survive a
+    // re-run of /open-in-idea.
+    expect(state.mcp).toBe(transformsAfterFirst + 1);
+    expect(state.mcpDisposed).toBeGreaterThan(disposedAfterFirst);
     expect(state.mcpReload).toBe(2);
     expect(state.toolReload).toBe(2);
     expect(state.prompts).toHaveLength(2);
@@ -463,11 +527,6 @@ describe('plugin setup', () => {
     await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
     expect(state.mcpReload).toBe(1);
 
-    // The command invalidated the mark cache; a user message re-reads it before
-    // the request is built, exactly like a real turn.
-    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: '继续' } });
-    expect(state.mcpReload).toBe(1);
-
     // Requests never touch the endpoint. The `context` hook fires for every
     // agent-loop step, so it is a pure function of the request: the snapshot
     // OpenCode hands it already says whether the IDEA tools are there.
@@ -495,28 +554,144 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('never reacts to a failed IDEA tool call on its own', async () => {
+  it('reconnects and rewrites a dropped IDEA tool error mid-turn', async () => {
     const fake = await startFakeIde();
     running = fake.server;
-    const { ctx, state } = fakeCtx({ ports: [fake.port] });
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    expect(state.toolHook).toBeTypeOf('function');
+    const mcpAfterCommand = state.mcp;
+
+    // The IDE MCP drops mid-turn: no connected server, its tools gone.
+    state.mcpServers = [];
+    state.tools = [];
+
+    const event = {
+      tool: 'idea_apply_patch',
+      sessionID: 's1',
+      status: 'error',
+      error: { message: 'MCP server "idea" is not available' },
+    };
+    await state.toolHook(event);
+
+    // Reconnected, tools reloaded, and the error now tells the model to retry.
+    expect(state.mcp).toBe(mcpAfterCommand + 1);
+    expect(event.error.message).toContain('已重新连接');
+  });
+
+  it('never reconnects on a business error while the server is connected', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    const mcpAfterCommand = state.mcp;
+
+    // The server still reports connected, so a failed call is a business error
+    // (e.g. a bad path), not a dropped connection: leave it untouched.
+    const event = {
+      tool: 'idea_apply_patch',
+      sessionID: 's1',
+      status: 'error',
+      error: { message: 'File not found: src/missing.kt' },
+    };
+    await state.toolHook(event);
+
+    expect(state.mcp).toBe(mcpAfterCommand);
+    expect(event.error.message).toBe('File not found: src/missing.kt');
+
+    await cleanup();
+  });
+
+  it('does not treat tool output that merely mentions a refused connection as a drop', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    const mcpAfterCommand = state.mcp;
+
+    // The message of an MCP tool error is the tool's own content, so a query
+    // against a stopped database reads exactly like a transport failure.
+    const event = {
+      tool: 'idea_execute_sql_query',
+      sessionID: 's1',
+      status: 'error',
+      error: { message: 'java.net.ConnectException: Connection refused' },
+    };
+    await state.toolHook(event);
+
+    expect(state.mcp).toBe(mcpAfterCommand);
+    expect(event.error.message).toBe('java.net.ConnectException: Connection refused');
+
+    await cleanup();
+  });
+
+  it('keeps the stdio transport when launching is disabled', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolsReadyAfter: 3, openInIde: false });
     const cleanup = await plugin.setup(ctx);
 
     await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
 
-    // Reacting to a tool error is exactly what used to tear a healthy IDE down: a
-    // business error ("File not found") or a single transport hiccup unregistered
-    // everything. The plugin now installs no tool hook at all — only the manual
-    // command and the server's own status events change anything.
-    expect(state.toolHook).toBeUndefined();
-    expect(state.mcpReload).toBe(1);
-    expect(state.toolReload).toBe(1);
+    // `openInIde: false` disables auto-launch; it must not silently switch the
+    // transport to the remote HTTP config.
+    expect(state.mcpConfig.config.type).toBe('local');
+    expect(state.mcpConfig.config.command[1]).toBe('stdioMcpServer');
 
-    const request = { system: [], tools: { read: {}, idea_read_file: {} } };
-    await state.sessionHook(request);
-    expect(request.tools).toHaveProperty('read');
-    expect(request.tools).toHaveProperty('idea_read_file');
-    expect(request.system).toHaveLength(2);
-    expect(request.system[1].text).toContain('必须使用');
+    await cleanup();
+  });
+
+  it('ignores tool errors in an unmarked project or for non-IDEA tools', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
+    const cleanup = await plugin.setup(ctx);
+
+    state.mcpServers = [];
+    state.tools = [];
+
+    // Unmarked project: the plugin stays out of the way.
+    const unmarked = { tool: 'idea_read_file', sessionID: 's1', status: 'error', error: { message: 'boom' } };
+    await state.toolHook(unmarked);
+    expect(state.mcp).toBe(0);
+    expect(unmarked.error.message).toBe('boom');
+
+    // Marked project, but the failed tool is not an IDEA tool.
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    const mcpAfterCommand = state.mcp;
+    state.mcpServers = [];
+    const foreign = { tool: 'edit', sessionID: 's1', status: 'error', error: { message: 'boom' } };
+    await state.toolHook(foreign);
+    expect(state.mcp).toBe(mcpAfterCommand);
+    expect(foreign.error.message).toBe('boom');
+
+    await cleanup();
+  });
+
+  it('leaves the error untouched when the mid-turn reconnect fails', async () => {
+    const { ctx, state } = fakeCtx({ ports: [1], mcpProbeTimeoutMs: 10, mcpStartTimeoutMs: 50, openInIde: false });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    state.mcpServers = [];
+    state.tools = [];
+
+    const event = {
+      tool: 'idea_read_file',
+      sessionID: 's1',
+      status: 'error',
+      error: { message: 'MCP server "idea" is not available' },
+    };
+    await state.toolHook(event);
+
+    // No reconnect: the recovery guidance still explains the manual fallback.
+    expect(event.error.message).toBe('MCP server "idea" is not available');
 
     await cleanup();
   });
@@ -533,8 +708,8 @@ describe('plugin setup', () => {
 
     // The connection drops: OpenCode's registry drops the IDEA tools. The
     // `context` hook is a pure function of the request and never re-registers
-    // anything behind the user's back; only the `prompt` hook auto-recovers, and
-    // only for a session that ran the command (covered separately).
+    // anything behind the user's back; only the `prompt` and `tool` hooks
+    // auto-recover, for a marked project (covered separately).
     state.tools = [];
     await state.sessionHook({ system: [], tools: {} });
     await state.sessionHook({ system: [], tools: {} });
@@ -555,132 +730,81 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('marks the project and auto-recovers a dropped IDE on the next message', async () => {
-    const port = await freePort();
-    const fake = await startFakeIde(port);
-    running = fake.server;
-    const { ctx, state } = fakeCtx({ ports: [port], toolRefreshTimeoutMs: 100 });
-    const cleanup = await plugin.setup(ctx);
-
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
-    expect(state.storage.get(`project/${projectPath}`)).toBe(true);
-    const mcpAfterCommand = state.mcp;
-    const promptsAfterCommand = state.prompts.length;
-
-    // The IDE MCP drops: OpenCode reports no connected server and its tools go.
-    state.mcpServers = [];
-    state.tools = [];
-
-    // The next message — a different session, same project — rebuilds the
-    // connection before its request is built, then announces it afterwards.
-    await state.sessionHooks.prompt({ sessionID: 's2', prompt: { text: '继续改代码' } });
-
-    expect(state.mcp).toBe(mcpAfterCommand + 1);
-    expect(state.mcpReload).toBeGreaterThan(1);
-    expect(state.prompts).toHaveLength(promptsAfterCommand + 1);
-    const notice = state.prompts.at(-1);
-    expect(notice.sessionID).toBe('s2');
-    expect(notice.delivery).toBe('queue');
-    expect(notice.metadata.displayText).toContain('自动重新连接');
-
-    await cleanup();
-  });
-
-  it('leaves a marked project alone while the IDE MCP is connected', async () => {
+  it('reopens the project when the IDE is up but the project is not open', async () => {
     const fake = await startFakeIde();
     running = fake.server;
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
 
     await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
-    const mcpAfterCommand = state.mcp;
-    const promptsAfterCommand = state.prompts.length;
 
-    // Server reports connected: nothing to rebuild, no notice.
-    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: '继续' } });
+    // The IDE reports "project not open" in two shapes; both must reopen it.
+    // Real text captured from IDEA 2026.2.3 (see the B-scenario probe).
+    const variants = [
+      'Unable to determine the target project for the current MCP tool call.',
+      "`projectPath`=`/p` doesn't correspond to any open project.",
+    ];
+    for (const message of variants) {
+      openCalls.length = 0;
+      const event = { tool: 'idea_read_file', sessionID: 's1', status: 'error', error: { message } };
+      await state.toolHook(event);
 
-    expect(state.mcp).toBe(mcpAfterCommand);
-    expect(state.prompts).toHaveLength(promptsAfterCommand);
+      expect(openCalls.length).toBeGreaterThan(0);
+      expect(event.error.message).toContain('重新打开');
+    }
 
     await cleanup();
   });
 
-  it('trusts MCP status over the tool list, so a business error never reconnects', async () => {
+  it('does not reconnect for an unmarked project or a non-IDEA tool', async () => {
     const fake = await startFakeIde();
     running = fake.server;
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
-    const mcpAfterCommand = state.mcp;
-
-    // The server is connected but its tool catalog happens to be empty at this
-    // instant. Business errors only happen with a live server, so a missing
-    // tool list must never be mistaken for a dropped connection.
-    state.mcpServers = [{ name: 'idea', status: { status: 'connected' } }];
-    state.tools = [];
-    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: '继续' } });
-
-    expect(state.mcp).toBe(mcpAfterCommand);
-
-    await cleanup();
-  });
-
-  it('does not auto-recover a project that never ran /open-in-idea', async () => {
-    const fake = await startFakeIde();
-    running = fake.server;
-    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
-    const cleanup = await plugin.setup(ctx);
-
-    // No mark, no connected server: the project was never opted in, so nothing
-    // happens even though the endpoint is live.
-    state.mcpServers = [];
-    state.tools = [];
-    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: 'hi' } });
-
-    expect(state.mcp).toBe(0);
-    expect(state.prompts).toHaveLength(0);
-
-    await cleanup();
-  });
-
-  it('never lets its own notice re-trigger auto-recovery', async () => {
-    const fake = await startFakeIde();
-    running = fake.server;
-    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
-    const cleanup = await plugin.setup(ctx);
-
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
-    state.mcpServers = [];
-    state.tools = [];
-    const mcpAfterCommand = state.mcp;
-    const promptsAfterCommand = state.prompts.length;
-
-    await state.sessionHooks.prompt({
+    // Unmarked project: the plugin stays out of the way even on a connection error.
+    const unmarked = {
+      tool: 'idea_read_file',
       sessionID: 's1',
-      prompt: { text: '【插件通知】检测到 IDE MCP...' },
-      metadata: { displayText: 'IDE MCP 已连接', comments: [] },
-    });
+      status: 'error',
+      error: { message: 'MCP server "idea" is not available' },
+    };
+    await state.toolHook(unmarked);
+    expect(state.mcp).toBe(0);
+    expect(unmarked.error.message).toBe('MCP server "idea" is not available');
 
+    // Marked project, but the failed tool is not an IDEA tool.
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    const mcpAfterCommand = state.mcp;
+    const foreign = {
+      tool: 'edit',
+      sessionID: 's1',
+      status: 'error',
+      error: { message: 'MCP server "idea" is not available' },
+    };
+    await state.toolHook(foreign);
     expect(state.mcp).toBe(mcpAfterCommand);
-    expect(state.prompts).toHaveLength(promptsAfterCommand);
+    expect(foreign.error.message).toBe('MCP server "idea" is not available');
 
     await cleanup();
   });
 
-  it('stays silent when auto-recovery cannot reach the IDE', async () => {
+  it('leaves the error untouched when the reconnect cannot reach the IDE', async () => {
     const { ctx, state } = fakeCtx({ ports: [1], mcpProbeTimeoutMs: 10, mcpStartTimeoutMs: 50, openInIde: false });
     const cleanup = await plugin.setup(ctx);
 
     await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
-    const promptsAfterCommand = state.prompts.length;
-    state.mcpServers = [];
-    state.tools = [];
 
-    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: 'hi' } });
+    const event = {
+      tool: 'idea_read_file',
+      sessionID: 's1',
+      status: 'error',
+      error: { message: 'MCP server "idea" is not available' },
+    };
+    await state.toolHook(event);
 
-    // Only the command's own notice exists; a failed recovery adds nothing.
-    expect(state.prompts).toHaveLength(promptsAfterCommand);
+    // No reconnect happened, so the original error stays.
+    expect(event.error.message).toBe('MCP server "idea" is not available');
 
     await cleanup();
   });
@@ -698,7 +822,7 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('auto-recovers from a persisted project mark after a restart', async () => {
+  it('does not auto-register from a persisted mark at setup', async () => {
     const port = await freePort();
     const fake = await startFakeIde(port);
     running = fake.server;
@@ -707,19 +831,17 @@ describe('plugin setup', () => {
     state.storage.set(`project/${projectPath}`, true);
     const cleanup = await plugin.setup(ctx);
 
-    state.mcpServers = [];
-    state.tools = [];
-    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: '继续' } });
+    // setup reads the mark (for skills) but does not connect by itself; the MCP
+    // is registered by `/open-in-idea` (or on a classified tool failure).
+    expect(state.mcp).toBe(0);
 
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
     expect(state.mcp).toBe(1);
-    expect(state.prompts).toHaveLength(1);
-    expect(state.prompts[0].delivery).toBe('queue');
-    expect(state.prompts[0].metadata.displayText).toContain('自动重新连接');
 
     await cleanup();
   });
 
-  it('close-in-idea clears the mark so the project stops auto-recovering', async () => {
+  it('close-in-idea unregisters the IDE MCP and clears the mark', async () => {
     const port = await freePort();
     const fake = await startFakeIde(port);
     running = fake.server;
@@ -728,54 +850,59 @@ describe('plugin setup', () => {
 
     await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
     expect(state.storage.get(`project/${projectPath}`)).toBe(true);
+    const disposedBefore = state.mcpDisposed;
 
     await state.commands.get('close-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
-    expect(state.storage.has(`project/${projectPath}`)).toBe(false);
-    expect(state.prompts.at(-1).metadata.displayText).toContain('已关闭当前项目的 IDEA 接入标记');
 
-    // Even with the server down, an unmarked project is no longer rebuilt.
-    state.mcpServers = [];
-    state.tools = [];
+    expect(state.storage.has(`project/${projectPath}`)).toBe(false);
+    expect(state.mcpDisposed).toBeGreaterThan(disposedBefore);
+    expect(state.prompts.at(-1).metadata.displayText).toContain('已注销 IDE MCP 并清除项目标记');
+
+    // Unmarked: a later connection failure is left alone.
     const mcpAfterClose = state.mcp;
-    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: '继续' } });
+    const event = {
+      tool: 'idea_read_file',
+      sessionID: 's1',
+      status: 'error',
+      error: { message: 'MCP server "idea" is not available' },
+    };
+    await state.toolHook(event);
     expect(state.mcp).toBe(mcpAfterClose);
+    expect(event.error.message).toBe('MCP server "idea" is not available');
 
     await cleanup();
   });
 
-  it('reads the project mark once per invalidation', async () => {
+  it('registers context, prompt and tool hooks', async () => {
+    const { ctx, state } = fakeCtx();
+    const cleanup = await plugin.setup(ctx);
+
+    expect(state.sessionHooks.context).toBeTypeOf('function');
+    expect(state.sessionHooks.prompt).toBeTypeOf('function');
+    expect(state.toolHook).toBeTypeOf('function');
+
+    await cleanup();
+  });
+
+  it('resolves the project mark once and keeps it in sync on writes', async () => {
     const fake = await startFakeIde();
     running = fake.server;
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
 
-    // setup resolves the mark once; later prompts reuse the cache.
+    // setup resolves the mark once; the tool hook reuses the cache.
     expect(state.storageGets).toBe(1);
-    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: '一' } });
-    await state.sessionHooks.prompt({ sessionID: 's2', prompt: { text: '二' } });
+    const ok = { tool: 'idea_read_file', sessionID: 's1', status: 'completed' };
+    await state.toolHook(ok);
     expect(state.storageGets).toBe(1);
 
-    // A command persists and invalidates, so the next prompt reads once more.
+    // The command writes through: the next failed call still needs no storage read.
     await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
-    await state.sessionHooks.prompt({ sessionID: 's3', prompt: { text: '三' } });
-    expect(state.storageGets).toBe(2);
-
-    await cleanup();
-  });
-
-  it('does nothing on a prompt in an unmarked non-JetBrains project', async () => {
-    const plain = mkdtempSync(path.join(tmpdir(), 'no-idea-'));
-    const { ctx, state } = fakeCtx({ directory: plain });
-    const cleanup = await plugin.setup(ctx);
-
-    // setup reads the mark once; a prompt reuses the cache and never probes.
-    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: 'hi' } });
-
+    const err = { tool: 'idea_read_file', sessionID: 's1', status: 'error', error: { message: 'File not found' } };
+    await state.toolHook(err);
     expect(state.storageGets).toBe(1);
-    expect(state.mcp).toBe(0);
 
     await cleanup();
-    rmSync(plain, { recursive: true, force: true });
   });
 
   it('does not launch the IDE when openInIde is false', async () => {
@@ -851,12 +978,106 @@ describe('plugin setup', () => {
     rmSync(bare, { recursive: true, force: true });
   });
 
-  it('never schedules periodic work (no timers) in manual mode', async () => {
+  it('schedules exactly one timer (the heartbeat) and clears it on cleanup', async () => {
     const spy = vi.spyOn(globalThis, 'setInterval');
     const { ctx } = fakeCtx();
     const cleanup = await plugin.setup(ctx);
-    expect(spy).not.toHaveBeenCalled();
-    await cleanup();
+
+    expect(spy).toHaveBeenCalledTimes(1);
     spy.mockRestore();
+
+    const clear = vi.spyOn(globalThis, 'clearInterval');
+    await cleanup();
+    expect(clear).toHaveBeenCalled();
+    clear.mockRestore();
+  });
+
+  it('kicks the IDEA MCP after the heartbeat misses, then rebuilds on the next message', async () => {
+    const port = await freePort();
+    const fake = await startFakeIde(port);
+    running = fake.server;
+    const { ctx, state } = fakeCtx({
+      ports: [port],
+      toolRefreshTimeoutMs: 50,
+      mcpProbeTimeoutMs: 10,
+      heartbeatIntervalMs: 5,
+      heartbeatFailures: 2,
+    });
+    const cleanup = await plugin.setup(ctx);
+    const waitFor = async (predicate, timeout = 2000) => {
+      const deadline = Date.now() + timeout;
+      while (Date.now() < deadline) {
+        if (predicate()) return true;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      return false;
+    };
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    const disposedAfterOpen = state.mcpDisposed;
+    const transformsAfterOpen = state.mcp;
+
+    // The IDE dies: its port stops answering.
+    await new Promise((resolve) => fake.server.close(resolve));
+
+    // Two misses -> the server is deactivated. That kills the zombie bridge and
+    // removes the idea_* tools, so the model cannot call into a dead pipe.
+    expect(await waitFor(() => state.mcpDisposed > disposedAfterOpen)).toBe(true);
+
+    // The IDE comes back on the same port. The endpoint returning is NOT enough:
+    // the latch means no rebuild happens without a user message.
+    const revived = await startFakeIde(port);
+    running = revived.server;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(state.mcp).toBe(transformsAfterOpen);
+
+    // A plugin notice must NOT rebuild, or recovery would feed on itself...
+    await state.sessionHooks.prompt({
+      sessionID: 's1',
+      prompt: { text: '【插件通知】IDE MCP 已连接' },
+      metadata: { displayText: 'IDE MCP 已连接' },
+    });
+    expect(state.mcp).toBe(transformsAfterOpen);
+
+    // ...but a real user message must, even though OpenCode also sets
+    // `metadata.displayText` on it (regression: matching displayText silently
+    // skipped every real message, so the rebuild never ran).
+    await state.sessionHooks.prompt({
+      sessionID: 's1',
+      prompt: { text: '继续' },
+      metadata: { displayText: '继续' },
+    });
+    expect(state.mcp).toBeGreaterThan(transformsAfterOpen);
+
+    // ...and clears the latch, so later messages are cheap no-ops.
+    const afterRebuild = state.mcp;
+    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: '再继续' } });
+    expect(state.mcp).toBe(afterRebuild);
+
+    await cleanup();
+  });
+
+  it('never kicks or rebuilds for a marked project that was never opened', async () => {
+    const { ctx, state } = fakeCtx({
+      ports: [1],
+      mcpProbeTimeoutMs: 5,
+      heartbeatIntervalMs: 5,
+      heartbeatFailures: 2,
+    });
+    state.storage.set(`project/${projectPath}`, true);
+    const cleanup = await plugin.setup(ctx);
+
+    // Several ticks with the port down, but nothing is registered: no kick.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(state.mcp).toBe(0);
+    expect(openCalls.length).toBe(0);
+
+    // No latch was set, so a message does nothing either — the plugin never
+    // launches IDEA on behalf of a project that was never opened.
+    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: 'hi' } });
+    expect(state.mcp).toBe(0);
+    expect(openCalls.length).toBe(0);
+
+    await cleanup();
   });
 });

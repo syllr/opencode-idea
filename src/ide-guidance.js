@@ -83,6 +83,16 @@ export const MCP_RECOVERY_GUIDANCE = [
 ].join('\n');
 
 /**
+ * Recovery instruction for a marked project, where the plugin reconnects the
+ * IDE MCP on its own. The model must not fall back to "ask the user" when a
+ * single connection error is all it saw — the reconnect is already happening.
+ */
+export const MCP_RECOVERY_GUIDANCE_MARKED = [
+  '### IDEA MCP failure recovery',
+  'This project is IDEA-connected and the plugin reconnects the IDE MCP automatically. When an idea_* call fails with a connection error (for example `MCP server "idea" is not available`), do not run extra probes or wait in tool calls: the reconnect is already under way, so retry the operation once. Only if it still fails, tell the user that IDEA MCP is unavailable and to run /open-in-idea.',
+].join('\n');
+
+/**
  * Push the guidance onto a session `system` array. Called for every primary
  * model request, so it stays idempotent per request.
  *
@@ -97,9 +107,13 @@ export function appendIdeGuidance(system, projectPath) {
   system.push({ type: 'text', text });
 }
 
-/** @param {unknown} system */
-export function appendIdeRecoveryGuidance(system) {
+/**
+ * @param {unknown} system
+ * @param {{ marked?: boolean }} [options] `marked` picks the auto-reconnect variant
+ */
+export function appendIdeRecoveryGuidance(system, { marked = false } = {}) {
   if (!Array.isArray(system)) return;
-  if (system.some((part) => part?.text === MCP_RECOVERY_GUIDANCE)) return;
-  system.push({ type: 'text', text: MCP_RECOVERY_GUIDANCE });
+  const text = marked ? MCP_RECOVERY_GUIDANCE_MARKED : MCP_RECOVERY_GUIDANCE;
+  if (system.some((part) => part?.text === text)) return;
+  system.push({ type: 'text', text });
 }

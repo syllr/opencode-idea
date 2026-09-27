@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MCP_RECOVERY_GUIDANCE,
+  MCP_RECOVERY_GUIDANCE_MARKED,
   appendIdeGuidance,
   appendIdeRecoveryGuidance,
   buildIdeGuidance,
@@ -164,5 +165,14 @@ describe('appendIdeRecoveryGuidance', () => {
     appendIdeRecoveryGuidance(system);
     appendIdeRecoveryGuidance(system);
     expect(system).toEqual([{ type: 'text', text: MCP_RECOVERY_GUIDANCE }]);
+  });
+
+  it('uses the auto-reconnect variant for a marked project', () => {
+    const system = [];
+    appendIdeRecoveryGuidance(system, { marked: true });
+    appendIdeRecoveryGuidance(system, { marked: true });
+    expect(system).toEqual([{ type: 'text', text: MCP_RECOVERY_GUIDANCE_MARKED }]);
+    expect(MCP_RECOVERY_GUIDANCE_MARKED).toContain('reconnects the IDE MCP automatically');
+    expect(MCP_RECOVERY_GUIDANCE_MARKED).toContain('retry the operation once');
   });
 });

@@ -2,12 +2,16 @@
 // per-directory launch guard.
 
 import { EventEmitter } from 'node:events';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_IDE_APP,
   createLaunchGuard,
   openInIde,
   resolveIdeApp,
+  resolveIdeExecutable,
 } from '../src/ide-launcher.js';
 
 /** A spawn stub that records calls and closes with `code`. */
@@ -35,6 +39,25 @@ describe('resolveIdeApp', () => {
 
   it('disables launching with false', () => {
     expect(resolveIdeApp(false)).toBeUndefined();
+  });
+});
+
+describe('resolveIdeExecutable', () => {
+  it('finds the launcher binary inside the app bundle', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'apps-'));
+    const macos = path.join(root, 'IntelliJ IDEA.app', 'Contents', 'MacOS');
+    mkdirSync(macos, { recursive: true });
+    writeFileSync(path.join(macos, 'idea'), '');
+    chmodSync(path.join(macos, 'idea'), 0o755);
+
+    expect(resolveIdeExecutable('IntelliJ IDEA', { dirs: [root] })).toBe(path.join(macos, 'idea'));
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('returns undefined when the app is unknown or absent', () => {
+    expect(resolveIdeExecutable(undefined)).toBeUndefined();
+    expect(resolveIdeExecutable('Not Installed 12345', { dirs: [] })).toBeUndefined();
   });
 });
 
