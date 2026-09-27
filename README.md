@@ -8,18 +8,21 @@ OpenCode 插件,面向 JetBrains 项目 (IntelliJ IDEA / PyCharm / WebStorm 等)
    (正常回退,无需声明)。
 3. **注入 IDE 环境变量** —— 从 IDE 集成终端读取它实际运行的环境,注入每个 OpenCode shell。
 
-非 JetBrains 项目完全不受影响。 **全手动**:插件启动不探测、不连接 IDE,只有跑 `/open-in-idea` 才接入;接入之后也没有
-任何自主动作(环境变量只在 `/open-in-idea` 时刷新)。
+非 JetBrains 项目完全不受影响。 **手动接入**:插件启动不探测、不连接 IDE,只有跑 `/open-in-idea` 才接入。跑过一次后,该**项目**
+被「标记」(持久化在 `ctx.storage`,重启 OpenCode 后仍在):之后每条用户消息都默认 IDE 仍在,一旦发现 IDE MCP 未连接,插件会在
+构建本次请求前自动重跑一遍接入流程并按需补一条通知。`/close-in-idea` 删除该标记。没跑过 `/open-in-idea` 的项目保持全手动、零自主动作。
 
 ## 工作原理
 
 ```text
-setup(启动):
-  a. 读 IDE 集成终端环境 → 通过 shell create.before 钩子注入每个 shell(null: 未连 IDE 时为空)
-  b. 注册 /open-in-idea 命令 + session context 钩子(注入引导)
+setup(启动, 每项目一次):
+  a. 读项目标记(ctx.storage: project/<项目路径>; OpenCode 重启后仍生效)
+  b. 读 IDE 集成终端环境 → 通过 shell create.before 钩子注入每个 shell(null: 未连 IDE 时为空)
+  c. 注册 /open-in-idea 与 /close-in-idea 命令 + session context/prompt 钩子
   不探测、不注册 MCP
 
 /open-in-idea(手动触发):
+  0. 写项目标记 = true(持久化)+ 清内存缓存(下次读取者回源)
   1. 探测本地 JetBrains IDE MCP 服务(/stream)
   2. 已就绪 → 直接连接
   3. 未就绪 → open -a "IntelliJ IDEA" <项目目录>(复用已运行实例),然后立即提示:
@@ -30,6 +33,16 @@ setup(启动):
        b. 读 IDE 终端环境 → 更新注入每个 shell 的环境变量
        c. 启用系统提示引导(直接调用 `idea_*` 工具)+ IDEA MCP 工具描述前缀
   6. 发一条结果通知(用户看到干净气泡,模型只回"收到")
+
+/close-in-idea(手动触发):
+  1. 删项目标记 + 清内存缓存
+  2. 发一条结果通知(不改动已建立的连接)
+
+后续用户消息(仅在被标记的项目里):
+  1. 项目已标记 → 默认 IDE 仍在线
+  2. 查 OpenCode 里 `idea` MCP server 状态;不是 connected/pending(真断了)→ 在 prompt 钩子里同步重跑上面的接入流程
+  3. 成功 → 本条消息即可用 `idea_*` 工具,并补一条"已自动重新连接"通知(排在用户消息之后)
+  4. 失败 → 静默,沿用 fast-fail 恢复提示(不会每条消息都重复拉起 IDE)
 ```
 
 ## 在 IDE 中打开项目 (`/open-in-idea`)
@@ -52,6 +65,11 @@ Brave Mode 后再次执行 `/open-in-idea` 即可接上。
 
 **热更新会断开**:插件源码变更会触发 V2 热重载,注册随旧实例一起释放,`activePort` 归零。这是手动模式的预期行为 ——
 **改完插件后重跑一次 `/open-in-idea`** 即可恢复。
+
+## 关闭接入 (`/close-in-idea`)
+
+输入 `/close-in-idea`:删除当前项目的接入标记(持久化 + 内存缓存一并清),之后 IDE MCP 即使断开也**不再自动重连**。命令只删标记,
+**不主动断开已建立的连接**——当前已注册的工具会保留到连接自然中断为止。想重新接入,再次执行 `/open-in-idea`。
 
 ## IDE 工具优先 (直接调用引导)
 
@@ -78,7 +96,7 @@ IDE MCP 可用时,插件通过 **系统提示注入**提高模型主动使用 ID
 ## Run Configuration 管理 (skill)
 
 IDE MCP 只能 **查**(`get_run_configurations`)和 **执行**(`execute_run_configuration`)run configuration, **没有增删改**
-。插件在 **JetBrains 项目**(存在 `.idea`)里注册一个 `idea-run-config` skill 来补上这块:
+。插件在**被标记的项目**里注册一个 `idea-run-config` skill 来补上这块:
 
 - 只操作 **项目级** `.run/<name>.run.xml`(可提交 git、团队共享), **不碰** `.idea/workspace.xml`;
 - 不内置任何按类型的模板 —— 先找项目里的 **真实样本**(`**/*.run.xml`,或让用户在 IDEA 里勾 "Store as project file"
@@ -86,9 +104,9 @@ IDE MCP 只能 **查**(`get_run_configurations`)和 **执行**(`execute_run_conf
 - 写完必须用 `idea_get_run_configurations` **校验它能被列出**、并用 `idea_execute_run_configuration` **实跑确认**;
 - 改配置用 `idea_apply_patch` **定向改 option**,不整文件重写。
 
-skill 由 `ctx.skill.transform` 在插件 `setup` 时注册, **与 `/open-in-idea` 无关**;非 JetBrains 项目不受影响。文档放在
-`skills/<id>/SKILL.md`(每个 skill 一个目录,`name` / `description` 走 YAML frontmatter),由 `src/skill/loader.js` 扫描加载 ——
-**加新 skill 只需加一个目录,不用改代码**。
+**skill 的生命周期跟随项目标记**:`/open-in-idea` 打标记时注册、`/close-in-idea` 清标记时注销;曾被标记过的项目在
+`setup` 时(读回标记)就会注册。未标记的项目不受影响。文档放在 `skills/<id>/SKILL.md`(每个 skill 一个目录,`name` /
+`description` 走 YAML frontmatter),由 `src/skill/loader.js` 扫描加载 —— **加新 skill 只需加一个目录,不用改代码**。
 
 ## 环境变量注入
 
@@ -212,16 +230,23 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
 
 ## 行为
 
-- **JetBrains 项目**:启动即注入 IDE 终端环境 (若此前已连过 IDE);`/open-in-idea` 接入 IDE MCP + 启用引导。
-- **非 JetBrains 项目**:不改环境、不注册、不注入任何 IDEA 提示 (每请求零开销)。
-- **手动接入 + 零自主动作**:启动 **不探测、不连接 IDE MCP**;注册、**环境重读**、引导注入全部由 `/open-in-idea` 触发。
+- **被标记的项目**:启动读回标记后挂上 shell 环境钩子 (环境值待接入后填充)、注册 `idea-run-config` skill;
+  `/open-in-idea` 接入 IDE MCP + 启用引导。
+- **未标记的项目**:不改环境、不注册、不注入任何 IDEA 提示 (每请求零开销;setup 时只做一次项目标记读取)。
+- **手动接入**:启动 **不探测、不连接 IDE MCP**;注册、**环境重读**、引导注入全部由 `/open-in-idea` 触发。
   `context` 钩子按「每次模型调用」触发 (含工具续跑),是**请求的纯函数**:它只看本次请求自带的工具快照 ——
-  有 `idea_*` 就剥离隐藏工具并注入引导,没有就只给恢复提示。**不做任何 I/O,没有缓存状态,没有定时器,没有事件订阅**。
-  一次失败的调用不会触发探测或注销,断开的连接也不会被自动重连 —— **恢复的唯一方式是用户再次执行 `/open-in-idea`**。
+  有 `idea_*` 就剥离隐藏工具并注入引导;没有则只在项目被标记时给恢复提示。**不做任何 I/O(get 只看内存缓存),没有定时器,
+  没有事件订阅**。一次失败的调用不会触发探测或注销。
+- **项目标记自动重连**:`/open-in-idea` 会持久化一个**项目级**标记(插件名下 KV,key 为 `project/<项目根路径>`,重启 OpenCode 后
+  仍在),并在内存缓存。之后每条用户消息经 `prompt` 钩子处理时,先查 OpenCode 里 `idea` MCP server 的状态:不是
+  `connected`/`pending`(真断了)才同步重跑一遍完整接入流程 (探测 → `open -a` → 等 MCP → 注册 + `tool.reload`),让**这条消息
+  本身**就能用上 IDEA 工具;恢复成功后补一条会话通知。`/close-in-idea` 删标记后即不再自愈。失败时沿用启动保护的冷却与次数上限
+  (`launchCooldownMs` / `launchMaxAttempts`),不会每条消息都重复拉起 IDE。
+- **判定只看 MCP 状态,不看工具报错**:是否重连只取决于 `idea` MCP server 的连接状态(`ctx.mcp.list()`)。工具调用的业务报错
+  (如 `File not found`)只可能发生在 server 仍 `connected` 时,所以**永远不会**被误判成断开;插件也不注册 `tool.execute.after`
+  钩子,一次失败的调用不会触发探测或注销。
 - **`/open-in-idea`**:手动打开当前项目并即时加载能力 (已在 IDE 打开时则只重新加载);MCP 未开启时只发一次提示并
-  fast-fail,用户手动开启 MCP + Brave Mode 后重试。
-- **不响应工具报错**:插件**不注册** `tool.execute.after` 钩子。一次 `idea_*` 调用失败 (业务错误如 `File not found`、
-  或偶发传输抖动) 不会触发任何探测、注销或重连 —— 连接状态只由 `/open-in-idea` 决定。
+  fast-fail,用户手动开启 MCP + Brave Mode 后重试。**`/close-in-idea`**:删项目标记,不改动已建立的连接。
 
 ## 限制
 
@@ -240,7 +265,14 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
 - 探测只确认「MCP 服务是否在监听」,不校验「当前项目是否已在 IDE 打开」;MCP 关闭时会用一次短探测并立即给出设置提示。
 - OpenCode 的 MCP 自动重连**只覆盖 legacy Streamable HTTP 的 session 过期**(`SessionExpiredError`:有 session id + 404 /
   "Server not initialized" → `recover()` + 重试该次调用);modern 端点 (IDE 2026.2,protocol 2025-06-18,不带 session id)
-  的连接被关只会置 `failed` 并移除工具,**不会自动重连**。插件刻意不补这个缺口:恢复一律走手动 `/open-in-idea`。
+  的连接被关只会置 `failed` 并移除工具,**不会自动重连**。**被标记的项目**由插件在 `prompt` 钩子里查 MCP 状态并按需重跑接入
+  流程补这个缺口;未标记的项目仍走手动 `/open-in-idea`。
+- 项目标记存在插件名下 KV (`plugin:opencode-idea:project/<项目根路径>`)。插件实例按 **Location**(项目/打开目录)创建,标记按
+  **项目根路径**共享;但两个不同 Location(例如项目根与某子目录)各有自己的内存缓存 —— 在其中一个执行 open/close 命令,另一个
+  实例要等它下次回源(目前只在 setup 读一次)才会看到。单目录打开项目的常见用法不受影响。
+- `/close-in-idea` **只删标记,不断开已建立的连接**:已注册的 IDEA 工具会保留到连接自然中断,期间标记与实际连接可能短暂不一致。
+- 插件**完全不再检查 `.idea` 目录**:是否是 IDEA 项目只由项目标记(`/open-in-idea` 设置、`/close-in-idea` 清除)决定。
+  (`/open-in-idea` 会让 IDEA 打开并导入该项目,`.idea` 由 IDEA 自己生成,插件无需也不应据此判断。)
 - 打开 IDE 仅实现 macOS (`open -a`);首次打开若弹 Trust 对话框,需确认后重试。
 - IDE MCP 没有「打开项目」工具,因此打开动作走 OS/CLI,而非 MCP。
 - 插件热重载会断开 IDE 连接,需重跑 `/open-in-idea`。
