@@ -30,16 +30,46 @@
 
 ### 发布鉴权（重要）
 
-npm 发布要求**带 2FA 的登录态**。以下情况一定会 403：
+**优先直接用 `~/.npmrc` 里的 token 发布，不要 `npm login`。**
 
-- `~/.npmrc` 里存在 `//registry.npmjs.org/:_authToken=npm_xxx`，且该 token 是「bypass 2FA」的 granular token。
-- 此时 `npm login` 的登录态会被这行 token 覆盖，`--otp=xxxxxx` 也会被忽略，命令直接报 `Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages`。
+`~/.npmrc` 中的 `//registry.npmjs.org/:_authToken=npm_xxx` 就是**可用的发布凭据**，发布时直接读它即可，不需要、也不应该再跑 `npm login`：
 
-正确做法：
+```bash
+grep _authToken ~/.npmrc          # 有 token 就直接发
+npm whoami                        # 确认身份正常（如 shenyuanlaolarou）
+npm publish                       # 或 npm run release
+```
 
-1. 删除 bypass token：`npm config delete //registry.npmjs.org/:_authToken`
-2. 确认已删除：`grep _authToken ~/.npmrc || echo "已删除"`
-3. 重新登录：`npm login`
-4. 再执行 `npm run release`
+- 该 token 必须是**带 bypass 2FA 的 granular token**（在有 2FA 的账号上，这是能非交互发布的凭据）。
+- 不要用 `npm login` 覆盖它：登录态会盖掉 token，或让凭据来源变得不确定。
+- **不要擅自删除这行 token**。它一旦被删，登录态也随之失效（`ENEEDAUTH`），反而要重新手工配置，把一个能发的环境改坏。
 
-不要用 `--force`，也不要用 bypass token 覆盖已发布版本。
+只有出现下面这条 403 时，才说明凭据本身有问题（token 缺失、被撤销、权限不含该包、或没开 bypass 2FA）：
+
+```
+Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages.
+```
+
+此时的处理顺序：
+
+1. 先确认 token 是否还在：`grep _authToken ~/.npmrc`
+2. 不在 → 让用户在 npm 生成**带 bypass 2FA** 的 granular token（对该包 Read and write），再写入 `~/.npmrc`（本机配置变更，需用户授权）
+3. 在但仍 403 → 让用户检查该 token 的权限与 bypass 2FA 开关，必要时重建 token
+
+不要用 `--force`，也不要用 token 覆盖已发布版本。
+
+### 发布结果校验的坑
+
+`npm publish` 返回 `202` 是**接受并异步处理**，版本会先进入 **staged** 状态，`dist-tags` 与 `versions` 可能几分钟后才更新。所以：
+
+- 刚发布后查不到新版本，**不等于失败**，先轮询等一会儿再判断。
+- 此时若重复 `npm publish`，会收到 `409 Cannot publish over previously staged version "x.y.z"` —— 这条**恰恰证明前一次已经提交成功**，不是新错误。
+- 校验方法：
+
+```bash
+for i in {1..6}; do
+  latest=$(npm view opencode-idea dist-tags.latest)
+  [ "$latest" = "<新版本>" ] && break
+  sleep 20
+done
+```
