@@ -92,22 +92,30 @@ describe('buildIdeGuidance', () => {
     }
   });
 
-  it('routes project commands through the IDE terminal', () => {
+  it('names the terminal tool and keeps the native shell as the default', () => {
     const text = buildIdeGuidance(PROJECT);
     expect(text).toContain('### 终端');
     expect(text).toContain('idea_execute_terminal_command');
+    expect(text).toContain('操作系统级的杂活');
     expect(text).toContain('executeInShell: true');
     expect(text).toContain('reuseExistingTerminalWindow');
   });
 
-  it('scopes the terminal rule by dependency, not by an example list', () => {
+  it('scopes the terminal rule to the dev toolchain of each project type', () => {
     const text = buildIdeGuidance(PROJECT);
-    // The rule is "depends on the project toolchain"; naming a few tools would
-    // read as an exhaustive list and push every other tool back to the native
-    // shell, so the guidance states the criterion and a negative case instead.
-    expect(text).toContain('项目的工具链');
-    expect(text).toContain('不是语言或工具名');
-    expect(text).toContain('原生 `shell` 即可');
+    // The rule is "is this the project's own language or dev tool", decided per
+    // project type rather than by runtime-sensitivity files: a Java or Go project
+    // has no .tool-versions, so that criterion would not decide anything there.
+    // An unstated catch-all would send every command the model is unsure about
+    // to the IDE terminal, so the negative case is stated too.
+    expect(text).toContain('语言按项目类型认定');
+    expect(text).toContain('pom.xml');
+    expect(text).toContain('go.mod');
+    expect(text).toContain('操作系统级通用命令');
+    expect(text).toContain('一次性脚本');
+    expect(text).not.toContain('一切命令执行都用它');
+    expect(text).not.toContain('不要退回原生 `shell`');
+    expect(text).not.toContain('.tool-versions');
   });
 
   it('scopes the in-project rule to code and file operations', () => {
