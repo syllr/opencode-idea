@@ -35,6 +35,16 @@ afterEach(async () => {
   }
 });
 
+/**
+ * Start a fake IDE whose single project IS the test project, so the serving
+ * branch resolves it and skips the redundant `open -a`.
+ */
+async function startFakeIdeForProject(port) {
+  const fake = await startFakeIde(port);
+  fake.setProjectOpen(projectPath, true);
+  return fake;
+}
+
 /** Reserve a free localhost port (closed immediately, reused by the fake IDE). */
 function freePort() {
   return new Promise((resolve) => {
@@ -55,7 +65,6 @@ function fakeCtx(options = {}) {
     toolList: 0,
     toolsReadyAfter,
     tools: [],
-    shellHook: undefined,
     sessionHook: undefined,
     sessionHooks: {},
     toolHook: undefined,
@@ -114,7 +123,6 @@ function fakeCtx(options = {}) {
       },
       shell: {
         hook: async (name, callback) => {
-          state.shellHook = callback;
           return { dispose: () => {} };
         },
       },
@@ -182,9 +190,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx();
     const cleanup = await plugin.setup(ctx);
 
-    // Unmarked project: no shell env hook and no IDE connection until
-    // `/open-in-idea` runs.
-    expect(state.shellHook).toBeUndefined();
+    // Unmarked project: no IDE connection until `/open-in-idea` runs.
     expect(state.mcp).toBe(0);
     expect(state.commands.has('open-in-idea')).toBe(true);
     expect(state.commands.has('close-in-idea')).toBe(true);
@@ -243,6 +249,61 @@ describe('plugin setup', () => {
     expect(prompt.text).toContain('请只回复"收到"');
     expect(prompt.metadata.displayText).toContain('IDE MCP 已连接');
     expect(Array.isArray(prompt.metadata.comments)).toBe(true);
+
+    await cleanup();
+  });
+
+  it('opens the project even when the IDE MCP endpoint is already serving', async () => {
+    const fake = await startFakeIdeForProject();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
+    const cleanup = await plugin.setup(ctx);
+
+    openCalls.length = 0;
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+
+    // The fake IDE answers `get_project_modules` with a real result, which means
+    // the project WAS resolved — so it must NOT be opened again. This is the
+    // regression the probe exists for: a redundant `open -a` makes the IDE run a
+    // short reopen-then-dispose cycle.
+    expect(openCalls).toHaveLength(0);
+    expect(state.prompts[0].metadata.displayText).toContain('IDE MCP 已连接');
+
+    await cleanup();
+  });
+
+  it('opens the project when the IDE is up but the project is not open', async () => {
+    const fake = await startFakeIde();
+    fake.setProjectOpen(false);
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
+    const cleanup = await plugin.setup(ctx);
+
+    openCalls.length = 0;
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+
+    // The IDE reports "cannot determine the target project", so the command must
+    // ask the running instance to open THIS project.
+    expect(openCalls).toHaveLength(1);
+    expect(openCalls[0][0]).toBe(projectPath);
+    expect(state.prompts[0].metadata.displayText).toContain('IDE MCP 已连接');
+
+    await cleanup();
+  });
+
+  it('does not ask to open the project while serving when launching is disabled', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], openInIde: false, toolRefreshTimeoutMs: 100 });
+    const cleanup = await plugin.setup(ctx);
+
+    openCalls.length = 0;
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+
+    // `openInIde: false` still connects to an already-running endpoint, but must
+    // never ask the OS to open the project.
+    expect(openCalls).toHaveLength(0);
+    expect(state.mcp).toBe(1);
 
     await cleanup();
   });
@@ -422,9 +483,7 @@ describe('plugin setup', () => {
     // Version control goes through the native tool, and the router dispatcher is
     // redundant while every routed tool is exposed directly. The Debugger, Dev
     // Kit MCP, Inspection KTS MCP and Python Environment MCP groups are hidden as
-    // a whole, data sources are created/edited by the user in the IDE, and the
-    // terminal tool is only needed by the plugin's own IDE-env read (which calls
-    // the MCP endpoint directly, not through the model tool list).
+    // a whole, and data sources are created/edited by the user in the IDE.
     expect(request.tools).not.toHaveProperty('idea_git_status');
     expect(request.tools).not.toHaveProperty('idea_execute_tool');
     expect(request.tools).not.toHaveProperty('idea_xdebug_get_stack');
@@ -433,8 +492,12 @@ describe('plugin setup', () => {
     expect(request.tools).not.toHaveProperty('idea_get_python_environment');
     expect(request.tools).not.toHaveProperty('idea_get_repositories');
     expect(request.tools).not.toHaveProperty('idea_create_database_connection');
-    expect(request.tools).not.toHaveProperty('idea_execute_terminal_command');
     expect(request.tools).toHaveProperty('idea_read_file');
+
+    // The IDE terminal IS exposed: project commands (java / python / npm) must
+    // run with the SDKs the user configured in the IDE, so the model uses the
+    // IDE's integrated terminal instead of the native shell.
+    expect(request.tools).toHaveProperty('idea_execute_terminal_command');
 
     await cleanup();
   });

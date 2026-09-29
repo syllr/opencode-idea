@@ -197,19 +197,20 @@ export async function callTool(port, projectPath, name, args = {}, options = {})
   const fetchImpl = options.fetchImpl ?? fetch;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? CALL_TIMEOUT_MS);
-  const post = (payload) =>
+  const post = (payload, sessionId) =>
     fetchImpl(`http://127.0.0.1:${port}${MCP_STREAM_PATH}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json, text/event-stream',
         [PROJECT_HEADER]: projectPath,
+        ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {}),
       },
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
   try {
-    await post({
+    const initialized = await post({
       jsonrpc: '2.0',
       id: 1,
       method: 'initialize',
@@ -219,12 +220,20 @@ export async function callTool(port, projectPath, name, args = {}, options = {})
         clientInfo: { name: 'opencode-idea', version: '0.0.11' },
       },
     });
-    const response = await post({
-      jsonrpc: '2.0',
-      id: 2,
-      method: 'tools/call',
-      params: { name, arguments: args },
-    });
+    // The IDE's Streamable-HTTP endpoint binds follow-up requests to the session
+    // created by `initialize`: without echoing its `Mcp-Session-Id` header the
+    // server rejects the call with "Bad Request: Server not initialized"
+    // (verified against IntelliJ IDEA 2026.2.3).
+    const sessionId = initialized.headers?.get?.('mcp-session-id') ?? undefined;
+    const response = await post(
+      {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      },
+      sessionId,
+    );
     if (!response.ok) return undefined;
     const message = await parseToolResponse(response);
     if (!message || message.error) return undefined;

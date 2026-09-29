@@ -1,12 +1,15 @@
 # opencode-idea
 
-OpenCode 插件,面向 JetBrains 项目 (IntelliJ IDEA / PyCharm / WebStorm 等),做三件事:
+OpenCode 插件,面向 JetBrains 项目 (IntelliJ IDEA / PyCharm / WebStorm 等),做两件事:
 
 1. **接入 IDE MCP** —— 用 `/open-in-idea` 把当前项目在 IntelliJ IDEA 中打开,并把这个 IDE 的 MCP 服务 (60 个工具:
    检索、读、改、构建、重构、调试、数据库……)注册进 OpenCode。
 2. **优先使用 IDE 工具** —— IDE 可用时,向模型注入"项目内操作优先使用 IDEA MCP"的系统提示引导 + 能力映射;IDE 不可用时回退原生工具
    (正常回退,无需声明)。
-3. **注入 IDE 环境变量** —— 从 IDE 集成终端读取它实际运行的环境,注入每个 OpenCode shell。
+
+> **项目命令走 IDE 终端**:跑 `java` / `python` / `npm` 这类项目命令时,引导模型用 `idea_execute_terminal_command`
+> (`executeInShell: true`)而不是原生 shell —— 它在 IDE 集成终端里执行,**天然继承用户在 IDE 里配好的 JDK / Node / Python 版本**
+> (含 fnm / SDKMAN 这类靠 shell init 切版本的场景)。详见「项目命令执行」。
 
 非 JetBrains 项目完全不受影响。 **手动接入**:插件启动不探测、不连接 IDE,只有跑 `/open-in-idea` 才接入。跑过一次后,该**项目**
 被「标记」(持久化在 `ctx.storage`,重启 OpenCode 后仍在):之后插件在后台**每 5s 探活**该 IDE——**掉线就注销 `idea` MCP**(杀掉不会自愈的
@@ -18,14 +21,15 @@ stdio 僵尸桥 + 移除 `idea_*` 工具,让模型调不到、**不会挂起**),
 ```text
 setup(启动, 每项目一次):
   a. 读项目标记(ctx.storage: project/<项目路径>; OpenCode 重启后仍生效)
-  b. 读 IDE 集成终端环境 → 通过 shell create.before 钩子注入每个 shell(null: 未连 IDE 时为空)
-  c. 注册 /open-in-idea 与 /close-in-idea 命令 + session context 钩子 + tool execute.after 钩子
+  b. 注册 /open-in-idea 与 /close-in-idea 命令 + session context 钩子 + tool execute.after 钩子
   不探测、不注册 MCP
 
 /open-in-idea(手动触发, 阻塞到就绪):
   1. 写项目标记 = true + 同步内存缓存;注册 `idea-run-config` skill
   2. 探测本地 JetBrains IDE MCP 服务(/stream)
-  3. 未就绪 → open -a "IntelliJ IDEA" <项目目录>(复用已运行实例),然后轮询等到 MCP 就绪(冷启动约数十秒,上限 60s)
+     - 已就绪 → 再问 IDE「当前项目是否已打开」(`get_project_modules`,带项目路径)
+       · 已打开 → 不重复 open;未打开 → open -a 打开
+     - 未就绪(冷启动)→ open -a 拉起,再轮询等到就绪(上限 60s)
   4. **先注销旧的 idea MCP(杀掉旧的 stdio 桥子进程),再重新注册**
      (`idea stdioMcpServer`,env 带项目路径 + 端口;每项目一个子进程)
      —— 每次执行都重建,因为断掉的桥不会自愈、也不能靠 refresh 复活
@@ -57,12 +61,14 @@ setup(启动, 每项目一次):
 
 在会话里输入 `/open-in-idea`:
 
-1. 先探测 `/stream`;已就绪 → 直接进入下一步;
-2. 未就绪 → 用 `open -a "IntelliJ IDEA" <项目目录>` 拉起或激活 IDEA —— **复用已运行的实例**(不会重复开新实例),然后
-   **轮询等到 MCP 就绪**(冷启动约数十秒,上限 60s);
-3. 等不到(例如 IDE 里 MCP 服务未开启)→ 提示在 IDEA 的 `Settings → MCP Server` 开启 MCP 服务并启用 **Brave Mode**,用户设置好后
+1. **让运行中的 IDEA 实例打开/激活当前项目**:`open -a "IntelliJ IDEA" <项目目录>` —— **复用已运行的实例**(不会重复开新实例),
+   项目已打开时只把它切到前台。**无论 MCP 是否已就绪都会执行这一步**:端点能应答只说明 IDEA 在运行(可能开的是**别的**项目),
+   不代表当前项目已打开;
+2. 再探测 `/stream`;已就绪 → 直接进入下一步;
+3. 未就绪 → 说明 IDEA 是冷启动,继续用 `open -a` 拉起并**轮询等到 MCP 就绪**(冷启动约数十秒,上限 60s);
+4. 等不到(例如 IDE 里 MCP 服务未开启)→ 提示在 IDEA 的 `Settings → MCP Server` 开启 MCP 服务并启用 **Brave Mode**,用户设置好后
    再次执行 `/open-in-idea`;
-4. 就绪后 **先注销旧的 `idea` MCP(杀掉旧的 stdio 桥子进程)→ 再重新注册**(每次执行都重建,因为断掉的桥不会自愈),然后重读
+5. 就绪后 **先注销旧的 `idea` MCP(杀掉旧的 stdio 桥子进程)→ 再重新注册**(每次执行都重建,因为断掉的桥不会自愈),然后重读
    IDE 环境、启用系统引导,并**等到 `idea_*` 工具进入注册表**才返回。
 
 > **通知不触发 AI 干活**:默认 `feedback: "message"` 把结果作为一条 **标注清楚的通知**发到会话里 —— 用户看到干净的通知气泡
@@ -118,20 +124,26 @@ IDE MCP 只能 **查**(`get_run_configurations`)和 **执行**(`execute_run_conf
 `setup` 时(读回标记)就会注册。未标记的项目不受影响。文档放在 `skills/<id>/SKILL.md`(每个 skill 一个目录,`name` /
 `description` 走 YAML frontmatter),由 `src/skill/loader.js` 扫描加载 —— **加新 skill 只需加一个目录,不用改代码**。
 
-## 环境变量注入
+## 项目命令执行 (IDE 终端)
 
-**唯一来源:IDE 集成终端**(`execute_terminal_command printenv`)。它反映 IDE 实际运行的环境 —— 这些环境往往在 .idea
-配置里读不到。
+跑项目相关的命令时,模型使用 **`idea_execute_terminal_command`**,而不是 OpenCode 原生 shell。判据是**命令是否依赖项目的
+工具链 / 运行时 / 依赖环境**,而不是语言或工具名:
 
-抽取的变量 (`src/mcp/ide-env.js` 的 `SDK_ENV_KEYS`):`JAVA_HOME` / `JRE_HOME` / `JDK_HOME` / `VIRTUAL_ENV` / `PYTHONPATH` /
-`PYTHONHOME` / `GOROOT` / `GOPATH` / `GOBIN` / `NODE_PATH` / `NVM_BIN` / `NVM_DIR` / `MAVEN_HOME` / `M2_HOME` /
-`GRADLE_HOME` / `SDKMAN_DIR` / `CONDA_PREFIX`。
+- **走 IDE 终端**:任何会调用项目工具链的命令 —— Java / Python / Node / Go 的运行时,以及 Maven / Gradle、uv / pip /
+  poetry、cargo、bundler、make / cmake、包管理器、构建、测试、代码生成等。
+- **走原生 shell**:纯操作系统级的通用命令(`ls` / `cat` / `cp` / `mkdir` / `git` 等)。
 
-- 注入通过 V2 的 `shell` `create.before` 钩子:只补这些变量 + 前置 PATH,不覆盖你原有的 PATH。
-- 需要 IDE MCP 可达 + **Brave Mode**;拿不到时环境为空 (不影响其他功能)。
+原因:
 
-> 与 [opencode-env-loader](https://github.com/syllr/opencode-env-loader) 的关系:两者独立。env-loader 负责
-> `.opencode/env-loader/*` 的 **人工** KEY=VALUE 覆盖;本插件负责从 **IDE 实际环境**推导。可以同时使用。
+- **`executeInShell: true`**(必开):命令在用户真实 shell(`zsh`/`bash`)里执行,**继承 IDE 集成终端的环境** —— 也就是用户在
+  IDE 里配好的 JDK / Node / Python / Go / Maven / uv 等。原生 shell 未必能拿到同一套版本,尤其是 fnm / SDKMAN / pyenv 这类
+  "选择写在 shell init 里"的版本管理器,靠几个环境变量复现不出来。
+- `timeout`(毫秒)按预期耗时给足;`maxLinesCount` 控制返回行数,超 2000 行会截断。
+- `reuseExistingTerminalWindow: true` 复用同一个 IDE 终端窗口,不刷屏。
+- 返回 `command_exit_code` + `command_output`;`cd` **不跨调用保留**,多步操作用 `&&` 串在一条命令里。
+- 需要 IDE 里开启 **Brave Mode**,否则每条命令都要用户确认一次。
+
+引导文本由 `src/ide-guidance.js` 注入(`### 终端` 段),只在 IDE MCP 可用时生效。
 
 ## 前置条件
 
@@ -232,7 +244,6 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
       "package": "opencode-idea",
       "options": {
         "ports": [64342], // IDE MCP 端口;默认 [64342]
-        "injectEnv": true,
         "injectGuidance": true, // IDE 可用时向系统提示注入「优先使用 IDEA MCP」引导
         "openInIde": "idea", // false 关闭;或任意 macOS 应用名(如 "IntelliJ IDEA")
         "transport": "stdio", // "stdio"(默认,本地桥,不会空闲断流)| "http"(远程 Streamable HTTP)
@@ -255,7 +266,6 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
 | 选项                  | 类型                 | 默认        | 说明                                                                                    |
 | --------------------- | -------------------- | ----------- | --------------------------------------------------------------------------------------- |
 | `ports`               | `number[]`           | `[64342]`   | 依次探测的 IDE MCP 端口                                                                 |
-| `injectEnv`           | `boolean`            | `true`      | 是否注入 IDE 终端环境变量                                                               |
 | `injectGuidance`      | `boolean`            | `true`      | IDE 可用时是否向系统提示注入「优先使用 IDEA MCP」引导                                   |
 | `openInIde`           | `boolean \| string`  | `"idea"`    | 拉起哪个 IDE;`false` 关闭,`"idea"` 映射到 IntelliJ IDEA                                 |
 | `transport`           | `"stdio" \| "http"`  | `"stdio"`   | `stdio` 注册 IDE 自带的 stdio 桥(本地子进程,不会空闲断流);`http` 用远程 Streamable HTTP |
@@ -301,13 +311,15 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
 - skill 定义的字段名**以 schema 为准**,不要照官方文档:`Skill.Info` 需要 `path` (AbsolutePath),文档里写的 `location`
   不存在 —— 用错会让 `ctx.skill.transform` 抛 `SchemaError`,而**任何 transform 失败都会禁用整个插件**(0.0.6 就是这样丢了
   `/open-in-idea`)。同理,`Skill.Info` 的完整字段是 `id` / `name` / `description?` / `autoinvoke?` / `path` / `content`。
-- 环境变量依赖 `execute_terminal_command` + Brave Mode;拿不到时环境为空。
+- 项目命令走 `idea_execute_terminal_command` + **Brave Mode**;没开 Brave Mode 时每条命令都要用户确认一次。
 - 一批用不到的 IDEA MCP 工具被硬编码隐藏 (`src/plugin.js` 的 `HIDDEN_IDEA_TOOLS`,共 31 个):VCS (`idea_git_status` /
   `idea_get_repositories`,版本控制走原生 `git`)、Router 派发工具 (`idea_execute_tool`,未启用 router-only 时冗余)、Debugger
   (全部 `idea_xdebug_*`)、Dev Kit MCP、Inspection KTS MCP、解释器环境 MCP、以及数据库的建/改数据源 (数据源由用户在
-  IDEA 里配置,AI 只读和查询)。`idea_execute_terminal_command` 也不暴露给模型 —— 它只由插件内部读取 IDE 环境,而那是插件直接调
-  MCP,不经过模型工具表。
-- 探测只确认「MCP 服务是否在监听」,不校验「当前项目是否已在 IDE 打开」;MCP 关闭时会用一次短探测并立即给出设置提示。
+  IDEA 里配置,AI 只读和查询)。**`idea_execute_terminal_command` 不隐藏**:项目命令要在 IDE 环境里跑,模型需要它。
+- 探测只确认「MCP 服务是否在监听」;**「当前项目是否已在 IDE 打开」靠一次项目作用域的 MCP 调用判断**
+  (`get_project_modules`,带 `IJ_MCP_SERVER_PROJECT_PATH`):返回模块 = 已打开 → 跳过 `open -a`;报
+  `Unable to determine the target project` = 未打开 → `open -a` 打开。MCP 关闭时会用一次短探测并立即给出设置提示。
+  项目刚打开时的短暂"项目未就绪"由工具失败分类兜底(「IDE 在、但项目没打开」→ 重新打开并让模型重试)。
 - IDE **2026.2+** 提供官方 stdio 桥 (`idea stdioMcpServer`),插件默认用它注册。stdio 是子进程管道,不像 Streamable HTTP 那样
   会空闲断流;但它**启动时要求 IDE MCP 已在监听**,所以 `/open-in-idea` 必须先等就绪再注册(冷启动约数十秒)。`transport: "http"`
   可切回远程 Streamable HTTP(OpenCode 会因连接关闭把 server 置 failed 并移除工具,不自动重连)。

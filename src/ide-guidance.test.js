@@ -92,10 +92,22 @@ describe('buildIdeGuidance', () => {
     }
   });
 
-  it('says nothing about languages or frameworks', () => {
+  it('routes project commands through the IDE terminal', () => {
     const text = buildIdeGuidance(PROJECT);
-    expect(text).not.toMatch(/\bJS\b/);
-    expect(text).not.toMatch(/Python|Java|Kotlin|npm/);
+    expect(text).toContain('### 终端');
+    expect(text).toContain('idea_execute_terminal_command');
+    expect(text).toContain('executeInShell: true');
+    expect(text).toContain('reuseExistingTerminalWindow');
+  });
+
+  it('scopes the terminal rule by dependency, not by an example list', () => {
+    const text = buildIdeGuidance(PROJECT);
+    // The rule is "depends on the project toolchain"; naming a few tools would
+    // read as an exhaustive list and push every other tool back to the native
+    // shell, so the guidance states the criterion and a negative case instead.
+    expect(text).toContain('项目的工具链');
+    expect(text).toContain('不是语言或工具名');
+    expect(text).toContain('原生 `shell` 即可');
   });
 
   it('scopes the in-project rule to code and file operations', () => {
@@ -104,7 +116,6 @@ describe('buildIdeGuidance', () => {
     expect(text).not.toContain('## 例外');
     expect(text).not.toContain('版本控制用原生');
     expect(text).not.toContain('idea_git_status');
-    expect(text).not.toContain('idea_execute_terminal_command');
   });
 
   it('routes database work through the IDE Database tools', () => {

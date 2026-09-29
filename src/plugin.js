@@ -1,28 +1,29 @@
 // opencode-idea — OpenCode plugin entry.
 //
 // For a project the user opted into IDEA this plugin:
-//   1. injects the IDE integrated-terminal environment (JAVA_HOME / GOROOT /
-//      Node / Maven / ...) into every OpenCode shell;
-//   2. registers the IDE MCP server with OpenCode — by default as the IDE's
+//   1. registers the IDE MCP server with OpenCode — by default as the IDE's
 //      stdio bridge (`idea stdioMcpServer`), scoped to the project through
 //      `IJ_MCP_SERVER_PROJECT_PATH` — injects direct-call guidance for IDEA MCP
 //      tools, and updates only IDEA MCP tool descriptions;
-//   3. registers the `/open-in-idea` command, which opens the current project
+//   2. registers the `/open-in-idea` command, which opens the current project
 //      in IntelliJ IDEA (reusing a running instance), loads the IDE
 //      capabilities immediately, and marks the project as an IDEA project;
 //      `/close-in-idea` clears that mark;
-//   4. registers the `idea-run-config` skill (marked projects only), which
+//   3. registers the `idea-run-config` skill (marked projects only), which
 //      teaches the model how to manage `.run/*.run.xml` run configurations — a
 //      capability the IDE MCP server does not expose.
 //
 // A project that was never marked is left untouched. Everything is manual:
-// setup does NOT probe or connect the IDE (only the IDE-terminal env is read
-// when a probe is requested). `/open-in-idea` probes, opens the IDE, and loads
-// the IDE MCP + guidance on demand.
+// setup does NOT probe or connect the IDE. `/open-in-idea` probes, opens the
+// IDE, and loads the IDE MCP + guidance on demand.
 //
 // `/open-in-idea` opens the project in the IDE, waits until its MCP endpoint is
 // ready, registers `idea` (stdio, project-scoped) and marks the project in
 // `ctx.storage`; `/close-in-idea` unregisters the server and clears the mark.
+// A live endpoint alone does NOT mean our project is open there (the running IDE
+// may have a different project open), so the open flow asks the IDE directly —
+// one project-scoped MCP call — and runs `open -a` only when the project is not
+// open yet.
 // The mark gates the IDEA skills and the failure-driven recovery. After a manual
 // open, an `idea_*` call that fails because the IDE MCP is not usable (the server
 // dropped, or the project is not open in the IDE) re-runs the open flow; a plain
@@ -39,13 +40,12 @@
 import {
   DEFAULT_PORTS,
   IDEA_SERVER_NAME,
+  callTool,
   findIdePort,
   serverConfig,
   stdioServerConfig,
 } from './mcp/idea.js';
-import { readIdeTerminalEnv } from './mcp/ide-env.js';
 import { currentProjectPath } from './project.js';
-import { applyEnv, mergeEnv } from './env.js';
 import {
   createLaunchGuard,
   DEFAULT_IDE_APP,
@@ -106,9 +106,18 @@ const IDEA_READY_TOOL_IDS = new Set(['idea_read_file', 'idea_apply_patch']);
  * - Inspection KTS MCP: inspection.kts authoring helpers (PSI tree, API docs,
  *   examples, run). Also IntelliJ Platform plugin-development only.
  * - Python Environment MCP: Python interpreter detection and configuration.
- *   Hidden; the IDE-injected shell env already carries the SDK paths.
+ *   Hidden; project commands run through the IDE terminal instead, which is
+ *   already launched with the IDE's real environment.
  * - Database data sources: connections are configured by the user in the IDE,
  *   so the AI only reads and queries them; create/edit stay hidden.
+ *
+ * NOT hidden: `idea_execute_terminal_command`. Project commands must run with
+ * the SDKs the user configured in the IDE (JDK, Node, Python, ...), so the model
+ * uses the IDE's integrated terminal for them. `executeInShell: true` runs the
+ * command in the user's real shell (`zsh`/`bash`), which inherits the IDE
+ * environment — including version managers such as fnm / SDKMAN whose selection
+ * lives in shell init and cannot be reconstructed from a handful of variables.
+ * Requires Brave Mode in the IDE; without it the IDE asks for confirmation.
  */
 export const HIDDEN_IDEA_TOOLS = [
   // VCS
@@ -116,11 +125,6 @@ export const HIDDEN_IDEA_TOOLS = [
   'idea_get_repositories',
   // Router
   'idea_execute_tool',
-  // Terminal: the plugin reads the IDE env through its own direct MCP call
-  // (`src/mcp/ide-env.js`), so the model never needs this tool. Measured value for
-  // the agent is nil: ~60s hard cutoff with no way to read the terminal buffer,
-  // and the native shell already keeps the output tail plus a full-output file.
-  'idea_execute_terminal_command',
   // Debugger
   'idea_xdebug_control_session',
   'idea_xdebug_evaluate_expression',
@@ -333,7 +337,6 @@ export default {
    *   location?: unknown,
    *   options?: {
    *     ports?: number[],
-   *     injectEnv?: boolean,
    *     openInIde?: boolean | string,
    *     launchCooldownMs?: number,
    *     launchMaxAttempts?: number,
@@ -402,7 +405,6 @@ export default {
 
     const options = ctx.options || {};
     const ports = asArray(options.ports, DEFAULT_PORTS);
-    const injectEnv = options.injectEnv !== false;
     const injectGuidance = options.injectGuidance !== false;
     const ideApp = resolveIdeApp(options.openInIde);
     // Transport for the IDE MCP server. `stdio` (default) registers the IDE's
@@ -435,12 +437,9 @@ export default {
       cooldownMs: asPositiveNumber(options.launchCooldownMs, DEFAULT_LAUNCH_COOLDOWN_MS),
       maxAttempts: asPositiveNumber(options.launchMaxAttempts, DEFAULT_LAUNCH_MAX_ATTEMPTS),
     });
-    let currentEnv = { env: {}, prependPath: [] };
 
     /** @type {Array<{ dispose: () => Promise<void> | void }>} */
     let registrations = [];
-    /** @type {{ dispose: () => Promise<void> | void } | undefined} */
-    let shellRegistration;
     /** @type {{ dispose: () => Promise<void> | void } | undefined} */
     let sessionRegistration;
     /** @type {{ dispose: () => Promise<void> | void } | undefined} */
@@ -573,20 +572,8 @@ export default {
       const port = probeIde ? await findIdePort(ports, { timeoutMs: mcpProbeTimeoutMs }) : undefined;
       const isJetBrains = markCache === true || port !== undefined;
       if (!isJetBrains) {
-        currentEnv = { env: {}, prependPath: [] };
         await deactivateIde();
         return false;
-      }
-
-      // Environment: read from the IDE integrated terminal, the single source
-      // of truth for the environment the IDE actually runs with (version-managed
-      // Node, goenv Go, SDKMAN Java, Maven, ...). Only available once the IDE is
-      // connected, which is why the manual `/open-in-idea` drives it.
-      const terminal = port === undefined ? {} : await readIdeTerminalEnv(port, projectPath);
-      currentEnv = mergeEnv([{ env: terminal }]);
-
-      if (injectEnv && !shellRegistration) {
-        shellRegistration = await ctx.shell.hook('create.before', (input) => applyEnv(input, currentEnv));
       }
 
       // Always tear the server down and register it again. A stdio bridge whose
@@ -635,6 +622,35 @@ export default {
       return undefined;
     };
 
+    /**
+     * Is `projectPath` actually OPEN in the IDE that serves `port`?
+     *
+     * A live endpoint only means the IDE is RUNNING — it may have a different
+     * project open (or sit on the Welcome screen), while everything we do is
+     * scoped to THIS project. So ask the IDE directly with one project-scoped
+     * call: the server resolves the project from `IJ_MCP_SERVER_PROJECT_PATH`
+     * BEFORE running the tool, and for a project that is not open it fails with
+     * "Unable to determine the target project ..." — the same shape
+     * `classifyIdeaFailure` maps to `project`. Any other outcome (a real result,
+     * or an unrelated tool error) means the project WAS resolved, i.e. open.
+     *
+     * A transport failure (`undefined`) counts as "not confirmed open", so the
+     * caller still asks the IDE to open the project: `open -a` is idempotent,
+     * and the only cost is a redundant focus.
+     *
+     * @param {number} port
+     */
+    const isProjectOpen = async (port) => {
+      const result = await callTool(port, projectPath, 'get_project_modules', {}).catch(() => undefined);
+      if (!result) return false;
+      if (result.isError !== true) return true;
+      const text = (result.content ?? [])
+        .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+        .map((part) => part.text)
+        .join('\n');
+      return classifyIdeaFailure({ message: text }) !== 'project';
+    };
+
     // Re-entrant: repeat invocations share one open request so the IDE is not
     // spawned twice while the application is starting.
     /** @type {Promise<IdeCommandResult> | undefined} */
@@ -659,6 +675,14 @@ export default {
         if (serving !== undefined) {
           guard.reset();
           launchNoticeSent = false;
+          // The endpoint being up proves only that the IDE is RUNNING — it may
+          // have a DIFFERENT project open. Ask the IDE whether THIS project is
+          // open, and only request an open when it is not: for an already-open
+          // project the IDE runs a short reopen-then-dispose cycle on a
+          // redundant open event, so skipping it is a real saving.
+          if (ideApp && !(await isProjectOpen(serving))) {
+            await openInIde(projectPath, { app: ideApp });
+          }
           return { status: 'connected', port: serving, unavailableNoticeSent: false };
         }
         if (!ideApp) return { status: 'disabled' };
@@ -937,13 +961,6 @@ export default {
     return async () => {
       disposed = true;
       if (heartbeatTimer) clearInterval(heartbeatTimer);
-      if (shellRegistration) {
-        try {
-          await shellRegistration.dispose();
-        } catch {
-          // best effort
-        }
-      }
       if (sessionRegistration) {
         try {
           await sessionRegistration.dispose();
