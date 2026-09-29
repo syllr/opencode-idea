@@ -57,7 +57,14 @@ function freePort() {
 }
 
 function fakeCtx(options = {}) {
-  const { toolsReadyAfter = 1, directory = projectPath, ...ctxOptions } = options;
+  const {
+    toolsReadyAfter = 1,
+    directory = projectPath,
+    // What the IDE's MCP catalog exposes. Overridable so a test can pin what
+    // "the IDE is serving" means without depending on tool names.
+    ideaTools = ['idea_read_file', 'idea_apply_patch', 'idea_create_new_file'],
+    ...ctxOptions
+  } = options;
   const state = {
     mcp: 0,
     mcpReload: 0,
@@ -89,11 +96,7 @@ function fakeCtx(options = {}) {
         },
         reload: async () => {
           state.toolReload += 1;
-          state.tools = [
-            { id: 'idea_read_file' },
-            { id: 'idea_apply_patch' },
-            { id: 'idea_create_new_file' },
-          ];
+          state.tools = ideaTools.map((id) => ({ id }));
         },
         hook: async (name, callback) => {
           state.toolHook = callback;
@@ -605,14 +608,24 @@ describe('plugin setup', () => {
     expect(serving.system).toHaveLength(2);
     expect(serving.system[1].text).toContain('必须使用');
 
-    // Not serving: OpenCode's registry has already dropped the IDEA tools, so a
-    // request that carries none IS the "IDE is gone" case. The plugin takes no
-    // action of its own and stops promising tools the model cannot call.
+    // Not serving after serving: OpenCode's registry has already dropped the IDEA
+    // tools, so a request that carries none IS the "the bridge is gone" case —
+    // and it can happen while the port still answers, which the heartbeat cannot
+    // see. The plugin stops promising tools the model cannot call and latches the
+    // rebuild itself (no teardown here, so `mcpReload` stays put).
     const gone = { system: [], tools: { read: {} } };
     await state.sessionHook(gone);
     expect(gone.system).toHaveLength(1);
     expect(gone.system[0].text).toContain('IDEA MCP failure recovery');
+    // The reconnecting variant, not "retry the operation once": a call made in
+    // this request can only fail with `No tool named ... available`.
+    expect(gone.system[0].text).toContain('Do NOT call any idea_* tool');
     expect(state.mcpReload).toBe(1);
+
+    // The latch is what makes the next message reconnect. Missing it is exactly
+    // what left the session dead until the user ran `/open-in-idea` by hand.
+    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: '继续' } });
+    expect(state.mcpReload).toBe(2);
 
     await cleanup();
   });
@@ -1005,6 +1018,19 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
+  it('registers the standalone-mode skill for a project marked in an earlier run', async () => {
+    const { ctx, state } = fakeCtx();
+    state.storage.set(`project/${projectPath}`, true);
+    const cleanup = await plugin.setup(ctx);
+
+    // Every shipped skill follows the project mark, so the standalone rule
+    // generator is available wherever the run-config skill is.
+    expect(state.skills.has('idea-standalone')).toBe(true);
+    expect(state.skills.get('idea-standalone').content).toContain('.opencode/rules/');
+
+    await cleanup();
+  });
+
   it('registers the run-configuration skill when /open-in-idea marks the project', async () => {
     const { ctx, state } = fakeCtx({ openInIde: false });
     const cleanup = await plugin.setup(ctx);
@@ -1064,7 +1090,7 @@ describe('plugin setup', () => {
       toolRefreshTimeoutMs: 50,
       mcpProbeTimeoutMs: 10,
       heartbeatIntervalMs: 5,
-      heartbeatFailures: 2,
+      heartbeatFailures: 1,
     });
     const cleanup = await plugin.setup(ctx);
     const waitFor = async (predicate, timeout = 2000) => {
@@ -1120,12 +1146,36 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
+  it('does not pin readiness to specific idea_* tool names', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    // The IDE can rename a tool, and the user can switch one off on the IDE's
+    // Exposed Tools page. Readiness follows the `idea_` prefix, so whatever the
+    // catalog actually exposes is what counts. With a fixed pair of names this
+    // command ended in `tools-loading` ("工具列表尚未完成注册,请稍后再次执行
+    // /open-in-idea") on every run, and re-running never helped.
+    const { ctx, state } = fakeCtx({
+      ports: [fake.port],
+      toolRefreshTimeoutMs: 100,
+      ideaTools: ['idea_read_file', 'idea_diagnostics'],
+    });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+
+    const feedback = state.prompts.map((entry) => entry?.text ?? '').join('\n');
+    expect(feedback).toContain('IDE MCP 已连接');
+    expect(feedback).not.toContain('尚未完成注册');
+
+    await cleanup();
+  });
+
   it('never kicks or rebuilds for a marked project that was never opened', async () => {
     const { ctx, state } = fakeCtx({
       ports: [1],
       mcpProbeTimeoutMs: 5,
       heartbeatIntervalMs: 5,
-      heartbeatFailures: 2,
+      heartbeatFailures: 1,
     });
     state.storage.set(`project/${projectPath}`, true);
     const cleanup = await plugin.setup(ctx);
@@ -1140,6 +1190,105 @@ describe('plugin setup', () => {
     await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: 'hi' } });
     expect(state.mcp).toBe(0);
     expect(openCalls.length).toBe(0);
+
+    await cleanup();
+  });
+
+  it('reconnects on the next message after a failed reconnect left no tools', async () => {
+    const port = await freePort();
+    const fake = await startFakeIde(port);
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [port], mcpProbeTimeoutMs: 200, openInIde: false });
+    state.storage.set(`project/${projectPath}`, true);
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    // The session is serving — remember it the way a real request would.
+    await state.sessionHooks.context({ system: [], tools: { read: {}, idea_read_file: {} } });
+
+    // The IDE goes away and an idea_* call fails. The failure path tries to
+    // reconnect, but `reconcileOnce` tears the registration down FIRST and then
+    // finds no port, so it stops there: no tools, and — the actual bug — no
+    // latch either. The heartbeat cannot help here, because it only fires when a
+    // registered bridge misses the port.
+    await new Promise((resolve) => fake.server.close(resolve));
+    await state.toolHook({
+      tool: 'idea_read_file',
+      sessionID: 's1',
+      status: 'error',
+      error: { message: 'MCP server "idea" is not available' },
+    });
+    const afterFailure = state.mcp;
+
+    // A request now arrives with no idea_* tools at all. This is the state that
+    // used to do nothing: the next message was a no-op, and the session stayed
+    // dead until `/open-in-idea` was run by hand.
+    await state.sessionHooks.context({ system: [], tools: { read: {} } });
+    // Guard the setup itself: the session really was serving before the drop.
+    expect(afterFailure).toBeGreaterThan(0);
+
+    // The IDE comes back; the next message reconnects off that latch.
+    const revived = await startFakeIde(port);
+    running = revived.server;
+    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: '继续' } });
+    expect(state.mcp).toBeGreaterThan(afterFailure);
+
+    await cleanup();
+  });
+
+  it('reconnects on its own when a request arrives without the tools', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], mcpProbeTimeoutMs: 200, toolRefreshTimeoutMs: 200 });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    // The session is serving...
+    await state.sessionHooks.context({ system: [], tools: { read: {}, idea_read_file: {} } });
+    const served = state.mcp;
+
+    // ...and this request has no idea_* tool at all. No user message is involved:
+    // waiting for one is the gap that left the session dead, because the `prompt`
+    // hook for a message runs BEFORE the request that reveals the loss.
+    await state.sessionHooks.context({ system: [], tools: { read: {} } });
+
+    const deadline = Date.now() + 2000;
+    while (state.mcp <= served && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(state.mcp).toBeGreaterThan(served);
+
+    await cleanup();
+  });
+
+  it('reconnects when the tools vanish but the IDE port still answers', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({
+      ports: [fake.port],
+      mcpProbeTimeoutMs: 200,
+      toolRefreshTimeoutMs: 200,
+      heartbeatIntervalMs: 5,
+      heartbeatFailures: 1,
+    });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    const afterOpen = state.mcp;
+
+    // The bridge child died: OpenCode dropped its tools from the local registry,
+    // while the IDE endpoint — everything the heartbeat used to look at — still
+    // answers. This is the state that made the model call a tool that no longer
+    // existed. The heartbeat must notice the near end and rebuild by itself.
+    state.tools = [];
+
+    const deadline = Date.now() + 2000;
+    while (state.mcp <= afterOpen && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(state.mcp).toBeGreaterThan(afterOpen);
+    // The reconnect republished the catalog.
+    expect(state.tools.some((tool) => tool.id?.startsWith('idea_'))).toBe(true);
 
     await cleanup();
   });

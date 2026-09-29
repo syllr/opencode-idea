@@ -61,13 +61,12 @@ export function buildIdeGuidance(projectPath) {
     `- \`idea_execute_run_configuration\`:跑已有配置;Shell Script 要 \`EXECUTE_IN_TERMINAL: false\`;覆盖参数(\`programArguments\` / \`workingDirectory\` / \`envs\`)需配置支持 \`supportsDynamicLaunchOverrides\`。`,
     ``,
     `### 终端`,
-    `- \`idea_execute_terminal_command\` 用于项目的开发语言与开发工具链;原生 \`shell\` 用于操作系统级的杂活。`,
-    `  - 走 IDE 终端:执行本项目开发语言的运行时与开发工具,语言按项目类型认定 ——`,
-    `    \`pom.xml\` / \`build.gradle\` → \`java\` / \`mvn\` / \`gradle\`;\`package.json\` → \`node\` / \`npm\` / \`pnpm\` / \`yarn\` / \`npx\`;`,
-    `    \`pyproject.toml\` / \`requirements.txt\` → \`python\` / \`pip\` / \`uv\` / \`poetry\` / \`pytest\`;\`go.mod\` → \`go\`;\`Cargo.toml\` → \`cargo\`;\`composer.json\` → \`php\` / \`composer\`;`,
-    `    前端项目 → \`vite\` / \`webpack\` / \`esbuild\` / \`tsc\` 等构建与测试命令。`,
-    `  - 走原生 \`shell\`:\`ls\` / \`cd\` / \`cp\` / \`rm\` / \`git\` / \`grep\` / \`jq\` / \`ps\` / \`curl\` / \`wc\` 等操作系统级通用命令;`,
-    `    以及把语言当一次性脚本干非开发任务的杂活(如 \`python3 -c\` 改一个文件、\`node -e\` 打印一段内容)。`,
+    `- 白名单制:命令用于本项目自身的构建 / 测试 / 运行,且首个可执行文件命中下表,才用 \`idea_execute_terminal_command\`;其余一律走原生 \`shell\`。`,
+    `- 白名单(按本项目类型取对应一行) ——`,
+    `  - Node / 前端(\`package.json\`):\`node\` / \`npm\` / \`npx\` / \`pnpm\` / \`yarn\` / \`vite\` / \`webpack\` / \`esbuild\` / \`tsc\` / \`jest\` / \`vitest\`。`,
+    `  - Java(\`pom.xml\` / \`build.gradle\`):\`java\` / \`javac\` / \`mvn\` / \`mvnw\` / \`gradle\` / \`gradlew\`。`,
+    `  - Python(\`pyproject.toml\` / \`requirements.txt\`):\`python\` / \`python3\` / \`pip\` / \`pip3\` / \`uv\` / \`poetry\` / \`pytest\`。`,
+    `  - Go(\`go.mod\`):\`go\` / \`gofmt\` / \`golangci-lint\`。`,
     `  - \`executeInShell: true\`:在用户真实 shell 里执行,继承 IDE 配好的运行时环境;原生 shell 可能用错版本。`,
     `  - 按预期耗时传 \`timeout\`(毫秒),长任务给足;必要时传 \`maxLinesCount\` 控制返回行数。`,
     `  - 连续命令传 \`reuseExistingTerminalWindow: true\`;结果带 \`command_exit_code\` 与 \`command_output\`,\`cd\` 不跨调用保留,多步用 \`&&\`。`,
@@ -105,6 +104,19 @@ export const MCP_RECOVERY_GUIDANCE_MARKED = [
 ].join('\n');
 
 /**
+ * Recovery instruction for a marked project whose idea_* tools are NOT in this
+ * request's tool list. The connection dropped and the plugin is already
+ * reconnecting, but the reconnect only lands on a LATER request — so within this
+ * one a call can only fail with `No tool named "..." is currently available`.
+ * Saying "retry" here (as the MARKED variant does) is what makes the model fire
+ * exactly that doomed call.
+ */
+export const MCP_RECOVERY_GUIDANCE_RECONNECTING = [
+  '### IDEA MCP failure recovery',
+  'No idea_* tool is in this request: the IDE connection dropped and the plugin is reconnecting in the background. Do NOT call any idea_* tool now — it will fail with `No tool named "..." is currently available` — and do not fall back to shell/read/write for in-project work. Continue with what you can, or tell the user the IDE is reconnecting; if idea_* tools are still missing on a later message, ask the user to run /open-in-idea.',
+].join('\n');
+
+/**
  * Push the guidance onto a session `system` array. Called for every primary
  * model request, so it stays idempotent per request.
  *
@@ -121,11 +133,17 @@ export function appendIdeGuidance(system, projectPath) {
 
 /**
  * @param {unknown} system
- * @param {{ marked?: boolean }} [options] `marked` picks the auto-reconnect variant
+ * @param {{ marked?: boolean, serving?: boolean }} [options] `marked` picks the
+ *   auto-reconnect variant; `serving: false` additionally picks the variant for
+ *   a request that has no idea_* tools at all, where a call can only fail.
  */
-export function appendIdeRecoveryGuidance(system, { marked = false } = {}) {
+export function appendIdeRecoveryGuidance(system, { marked = false, serving = true } = {}) {
   if (!Array.isArray(system)) return;
-  const text = marked ? MCP_RECOVERY_GUIDANCE_MARKED : MCP_RECOVERY_GUIDANCE;
+  const text = marked
+    ? serving
+      ? MCP_RECOVERY_GUIDANCE_MARKED
+      : MCP_RECOVERY_GUIDANCE_RECONNECTING
+    : MCP_RECOVERY_GUIDANCE;
   if (system.some((part) => part?.text === text)) return;
   system.push({ type: 'text', text });
 }

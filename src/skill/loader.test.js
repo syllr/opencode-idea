@@ -6,6 +6,7 @@ describe('shipped skills', () => {
   it('loads every skill directory into a Skill.Info-shaped definition', () => {
     const skills = readSkills();
     expect(skills.map((skill) => skill.id)).toContain('idea-run-config');
+    expect(skills.map((skill) => skill.id)).toContain('idea-standalone');
 
     const skill = readSkill('idea-run-config');
     // `Skill.Info` requires exactly these keys (see @opencode/schema/skill):
@@ -39,6 +40,17 @@ describe('shipped skills', () => {
     expect(content).toContain('ShConfigurationType');
     expect(content).toContain('CompoundRunConfiguration');
     expect(content).toContain('只做项目级配置');
+  });
+
+  it('keeps the standalone skill teaching the four-part rule', () => {
+    const content = readSkill('idea-standalone').content;
+    // The rule the skill authors is only useful if it pins all four parts.
+    expect(content).toContain('.opencode/rules/idea-standalone.md');
+    expect(content).toContain('idea_get_run_configurations');
+    expect(content).toContain('idea_execute_run_configuration');
+    expect(content).toContain('热重载');
+    expect(content).toContain('第四段');
+    expect(content).toContain('alwaysApply');
   });
 
   it('fails loudly when a SKILL.md has no usable metadata', () => {

@@ -48,10 +48,12 @@ setup(启动, 每项目一次):
   2. 触发成功 → 把该错误改写为"已重连 / 已重新打开,请重试",模型同一回合重试;失败 → 保持原错误
 
 后台探活(心跳;仅"已标记 + 桥已注册"的项目):
-  1. 每 5s 探测 IDE 端口(/stream);连续 2 次不通 →
+  1. 每 5s 探测一次 IDE 端口(/stream);探一次不通 →
   2. **注销 `idea` MCP**:杀掉僵尸桥子进程 + 从注册表移除 `idea_*` 工具
      (→ 模型调不到,也就不会挂起;这一步是"从根上避免挂起"的关键)
-  3. 锁存 `needRebuild = true`(不会因端口恢复而清,因为桥不会自愈)
+  3. 锁存 `needRebuild = true`(不会因端口恢复而清,因为桥不会自愈);
+     同理,任一请求若发现「本会话曾有工具、本请求没有」也置同一锁存——
+     端口还在答、只是桥子进程死了这类情况,心跳看不到
   4. 下一条用户消息:纯内存读到锁存 → 自动重跑接入流程(IDE 不在则 `open -a` 拉起),成功后清锁存
      —— 全程静默,用户无感
   ※ 这是**每个 Location(项目)各跑一份**探活;IDE 只有一个,所以所有项目的桥几乎同时被注销、再各自重建
@@ -124,14 +126,33 @@ IDE MCP 只能 **查**(`get_run_configurations`)和 **执行**(`execute_run_conf
 `setup` 时(读回标记)就会注册。未标记的项目不受影响。文档放在 `skills/<id>/SKILL.md`(每个 skill 一个目录,`name` /
 `description` 走 YAML frontmatter),由 `src/skill/loader.js` 扫描加载 —— **加新 skill 只需加一个目录,不用改代码**。
 
+## Standalone 模式纪律 (skill)
+
+本机直跑应用的**项目级纪律**由 `idea-standalone` skill 固化:它为项目生成/维护一份 rule,落在项目根
+**`.opencode/rules/idea-standalone.md`**,四段结构固定 ——
+
+1. **什么是 standalone 模式**:**standalone = 通过 IDEA 启动**(每个应用的入口是 IDEA run configuration),应用在本机进程
+   直跑(不容器化、不部署),只启动其中一部分是常态;启停一律由用户在 IDEA 里手动完成,AI 不得代为启停(含经
+   `idea_execute_run_configuration`),判断需要重启时先取得用户明确授权;
+2. **启动哪些应用**:一行一个应用,启动路径**只能是 IDEA run configuration**(配置名必须能在 `idea_get_run_configurations`
+   里查到;缺配置先走 `idea-run-config` skill 建 `.run/*.run.xml`),端口与被依赖的先后顺序一并写明;
+3. **热重载矩阵**:逐应用标"是 / 否" —— 带 HMR 的 dev server 改动后**不用**提示重启;`go run .` 这类无热重载的进程改动后
+   **必须**显式点名「需要重启 <应用>」,不得在未提示的情况下宣称"改完可验证";
+4. **项目补充条款**:文件写入位置、测试纪律、访问归属、dev 模式特有限制等,按用户给的条款逐条续写、保留原意。
+
+事实一律先查后写:配置名来自 `idea_get_run_configurations`,热重载列来自运行方式,端口读不到就问用户 —— 不猜。
+
 ## 项目命令执行 (IDE 终端)
 
-跑项目相关的命令时,模型使用 **`idea_execute_terminal_command`**,而不是 OpenCode 原生 shell。判据是**命令是否依赖项目的
-工具链 / 运行时 / 依赖环境**,而不是语言或工具名:
+跑项目相关的命令时,模型使用 **`idea_execute_terminal_command`**,而不是 OpenCode 原生 shell。判据是**白名单**:命令用于本项目
+自身的构建 / 测试 / 运行,且首个可执行文件命中下表,才走 IDE 终端;其余一律走原生 shell。
 
-- **走 IDE 终端**:任何会调用项目工具链的命令 —— Java / Python / Node / Go 的运行时,以及 Maven / Gradle、uv / pip /
-  poetry、cargo、bundler、make / cmake、包管理器、构建、测试、代码生成等。
-- **走原生 shell**:纯操作系统级的通用命令(`ls` / `cat` / `cp` / `mkdir` / `git` 等)。
+- **Node / 前端**(`package.json`):`node` / `npm` / `npx` / `pnpm` / `yarn` / `vite` / `webpack` / `esbuild` / `tsc` /
+  `jest` / `vitest`。
+- **Java**(`pom.xml` / `build.gradle`):`java` / `javac` / `mvn` / `mvnw` / `gradle` / `gradlew`。
+- **Python**(`pyproject.toml` / `requirements.txt`):`python` / `python3` / `pip` / `pip3` / `uv` / `poetry` / `pytest`。
+- **Go**(`go.mod`):`go` / `gofmt` / `golangci-lint`。
+- 白名单未覆盖的语言暂走原生 shell,遇到后再补进上表。
 
 原因:
 
@@ -253,7 +274,7 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
         "mcpProbeTimeoutMs": 1000, // 单个 MCP 端口的短探测超时
         "executionTimeoutMs": 600000, // 单次 idea_* 工具调用硬上限;默认 10 分钟(OpenCode 默认 12 小时)
         "heartbeatIntervalMs": 5000, // 后台端口探活间隔
-        "heartbeatFailures": 2, // 连续失败几次后注销 idea MCP
+        "heartbeatFailures": 1, // 探活失败几次后注销 idea MCP(默认一次即注销)
         "feedback": "message", // "message"(默认,会话通知,AI 只回"收到")| false(静默)
       },
     },
@@ -275,7 +296,7 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
 | `mcpProbeTimeoutMs`   | `number`             | `1000`      | 单个 MCP 端口的短探测超时                                                               |
 | `executionTimeoutMs`  | `number`             | `600000`    | 单次 `idea_*` 工具调用的硬上限(毫秒);防止桥挂起后无限等待(OpenCode 默认 12 小时)        |
 | `heartbeatIntervalMs` | `number`             | `5000`      | 后台 IDE 端口探活间隔(毫秒);仅"已标记 + 桥已注册"的项目有效                             |
-| `heartbeatFailures`   | `number`             | `2`         | 连续探活失败几次后注销 `idea` MCP(杀僵尸桥 + 移除工具),下一条消息自动重建               |
+| `heartbeatFailures`   | `number`             | `1`         | 探活失败几次后注销 `idea` MCP(杀僵尸桥 + 移除工具),下一条消息自动重建                   |
 | `feedback`            | `"message" \| false` | `"message"` | 结果反馈:`message` 会话通知(用户可见,AI 只回"收到");`false` 静默                        |
 
 ## 行为
@@ -288,9 +309,13 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
   僵尸桥只要重跑一次命令就能恢复。命令返回即可用;`/close-in-idea` 注销 `idea` + 删标记 + 清环境。
 - **`context` 钩子是请求的纯函数**:按「每次模型调用」触发 (含工具续跑),只看本次请求自带的工具快照 —— 有 `idea_*` 就剥离隐藏
   工具并注入引导;没有则只在项目被标记时给恢复提示。该钩子本身**不做任何 I/O**(只看内存缓存),也不订阅任何事件。
-- **后台心跳(仅"已标记 + 桥已注册"的项目)**:每 `heartbeatIntervalMs`(默认 5s)探一次 IDE 端口;连续 `heartbeatFailures`
-  (默认 2)次不通就**注销 `idea` MCP** —— 杀掉僵尸桥子进程 + 移除 `idea_*` 工具,于是模型**调不到、也就不会挂起** —— 并锁存
+- **后台心跳(仅"已标记 + 桥已注册"的项目)**:每 `heartbeatIntervalMs`(默认 5s)探一次 IDE 端口;`heartbeatFailures`
+  (默认 1)次不通就**注销 `idea` MCP** —— 杀掉僵尸桥子进程 + 移除 `idea_*` 工具,于是模型**调不到、也就不会挂起** —— 并锁存
   `needRebuild`。下一条用户消息在 `prompt` 钩子里读到锁存 → 自动重跑接入流程(IDE 不在则 `open -a` 拉起),成功后清锁存。**全程静默**。
+  锁存还有**第二个来源**:`context` 钩子(每个 agent-loop step 都跑)发现「本会话见过 `idea_*` 工具、本请求却没有」也置位 ——
+  心跳只认"端口不通",而桥子进程自己死了、或一次失败的重连把注册拆掉(`reconcileOnce` 先拆后建,建不起来就只剩拆)时端口可能还是通的,
+  这两种情况以前**不会置锁存**,于是下一条消息什么都不做,只能手动 `/open-in-idea`。工具缺失时注入的恢复引导也改为**明确禁止**
+  调用 `idea_*`(此前复用"重试一次"的文案,反而诱导模型去调一个不在工具表里的工具,得到 `No tool named ... available`)。
   探活是**每个 Location(项目)各一份**;IDE 只有一个,所以 IDE 一挂、所有项目的桥几乎同时被注销,再由各自的消息触发重建。
 - **失败触发的自动接入(仅被标记项目)**:`tool.execute.after` 钩子监听 `idea_*` 工具报错并**分类**:
   - IDE MCP 不可用(掉了)→ 重跑 `/open-in-idea` 的接入流程;
@@ -327,7 +352,8 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
   以及**调用进行中**IDE 挂(在 IDE 里跑 `sleep 120` 时 `kill` 掉 IDEA),桥都只在 stderr 打一行错误(`SseClientTransport is closed!` /
   `Request timeout has expired`),**stdout 一个字节都不回**。而且**重开 IDEA 也不会自愈**(实测:重开 IDEA 后连续探测 5 分钟仍全部 TIMEOUT);
   OpenCode 依旧显示 connected,`refresh`/`reload` 只会 `reconcile`,配置没变就跳过,不会重启它。所以:
-  - **后台心跳(见上)自动兜底**:5s 探活、连续 2 次不通就注销 `idea`(杀僵尸桥 + 移除工具),下一条消息自动重建 —— 常态下**不需要用户手动做什么**;
+  - **后台心跳(见上)自动兜底**:5s 探活、探一次不通就注销 `idea`(杀僵尸桥 + 移除工具);此外任一请求发现工具缺失也会置锁存,
+    两种情况都是下一条消息自动重建 —— 常态下**不需要用户手动做什么**;
   - 手动重建仍可用:重开 IDEA 后再执行一次 `/open-in-idea`(先注销旧 `idea`、再重新注册);
   - 插件给 `idea` server 配 `executionTimeoutMs`(默认 **10 分钟**)作为硬上限:兜住"心跳尚未触发、工具已在途"的那次挂起,不再沿用 OpenCode 默认的 12 小时;
   - "IDE 被关掉 → 工具挂起"这类**不会**走工具失败分类(没有 error);能自动分类处理的是"IDE 在、项目没打开"和"server 掉了(启动即失败)"。

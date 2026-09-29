@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MCP_RECOVERY_GUIDANCE,
   MCP_RECOVERY_GUIDANCE_MARKED,
+  MCP_RECOVERY_GUIDANCE_RECONNECTING,
   appendIdeGuidance,
   appendIdeRecoveryGuidance,
   buildIdeGuidance,
@@ -92,30 +93,17 @@ describe('buildIdeGuidance', () => {
     }
   });
 
-  it('names the terminal tool and keeps the native shell as the default', () => {
+  it('names the terminal tool and gates it behind a per-language whitelist', () => {
     const text = buildIdeGuidance(PROJECT);
     expect(text).toContain('### 终端');
     expect(text).toContain('idea_execute_terminal_command');
-    expect(text).toContain('操作系统级的杂活');
+    expect(text).toContain('白名单制');
+    expect(text).toContain('Node / 前端');
+    expect(text).toContain('Java(');
+    expect(text).toContain('Python(');
+    expect(text).toContain('Go(');
     expect(text).toContain('executeInShell: true');
     expect(text).toContain('reuseExistingTerminalWindow');
-  });
-
-  it('scopes the terminal rule to the dev toolchain of each project type', () => {
-    const text = buildIdeGuidance(PROJECT);
-    // The rule is "is this the project's own language or dev tool", decided per
-    // project type rather than by runtime-sensitivity files: a Java or Go project
-    // has no .tool-versions, so that criterion would not decide anything there.
-    // An unstated catch-all would send every command the model is unsure about
-    // to the IDE terminal, so the negative case is stated too.
-    expect(text).toContain('语言按项目类型认定');
-    expect(text).toContain('pom.xml');
-    expect(text).toContain('go.mod');
-    expect(text).toContain('操作系统级通用命令');
-    expect(text).toContain('一次性脚本');
-    expect(text).not.toContain('一切命令执行都用它');
-    expect(text).not.toContain('不要退回原生 `shell`');
-    expect(text).not.toContain('.tool-versions');
   });
 
   it('scopes the in-project rule to code and file operations', () => {
@@ -193,5 +181,13 @@ describe('appendIdeRecoveryGuidance', () => {
     expect(system).toEqual([{ type: 'text', text: MCP_RECOVERY_GUIDANCE_MARKED }]);
     expect(MCP_RECOVERY_GUIDANCE_MARKED).toContain('reconnects the IDE MCP automatically');
     expect(MCP_RECOVERY_GUIDANCE_MARKED).toContain('retry the operation once');
+  });
+
+  it('forbids idea_* calls when the tools are absent from the request', () => {
+    const system = [];
+    appendIdeRecoveryGuidance(system, { marked: true, serving: false });
+    appendIdeRecoveryGuidance(system, { marked: true, serving: false });
+    expect(system).toEqual([{ type: 'text', text: MCP_RECOVERY_GUIDANCE_RECONNECTING }]);
+    expect(MCP_RECOVERY_GUIDANCE_RECONNECTING).toContain('Do NOT call any idea_* tool');
   });
 });
