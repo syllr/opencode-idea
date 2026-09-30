@@ -3,28 +3,20 @@
 // HOW THE IDE MCP SERVER WORKS (verified against a real IntelliJ IDEA 2026.2
 // server):
 //
-//   * The IDE exposes a local MCP server. IntelliJ 2026.2+ exposes the modern
-//     Streamable-HTTP endpoint at `http://127.0.0.1:<port>/stream`; older builds
-//     only had the legacy SSE endpoint at `/sse`.
-//   * The project a call targets is selected by the project path: the HTTP
-//     header `IJ_MCP_SERVER_PROJECT_PATH` for the remote transport, or the
-//     `IJ_MCP_SERVER_PROJECT_PATH` environment variable for the stdio bridge
-//     (see `serverConfig` / `stdioServerConfig`).
+//   * The IDE exposes a local MCP server at the Streamable-HTTP endpoint
+//     `http://127.0.0.1:<port>/stream` (IntelliJ 2026.2+). That is the only
+//     transport this plugin supports. The IDE's `stdioMcpServer` bridge was
+//     dropped: both transports die with the project's Location services, and the
+//     HTTP one at least reports a dead endpoint as an ordinary tool error
+//     (which the plugin then heals) instead of hanging silently.
+//   * The project a call targets is selected by the project path, carried in the
+//     HTTP header `IJ_MCP_SERVER_PROJECT_PATH` (see `serverConfig`).
 //   * Availability probe: a single `initialize` POST to `/stream` succeeds when
 //     the MCP server is up. We do NOT check whether a specific project is open —
 //     the user triggers `/open-in-idea` for the project they want, so "server is
 //     up" is the only thing worth knowing.
 
 export const PROJECT_HEADER = 'IJ_MCP_SERVER_PROJECT_PATH';
-
-/** Environment variable the IDE's stdio bridge uses to select the project. */
-export const PROJECT_ENV = 'IJ_MCP_SERVER_PROJECT_PATH';
-
-/** Environment variable the IDE's stdio bridge uses to reach the running server. */
-export const PORT_ENV = 'IJ_MCP_SERVER_PORT';
-
-/** Argument that puts the IDE launcher into its stdio MCP bridge mode. */
-export const STDIO_ARG = 'stdioMcpServer';
 
 /** OpenCode MCP server name registered for the IDE. */
 export const IDEA_SERVER_NAME = 'idea';
@@ -66,47 +58,12 @@ export function serverConfig(port, projectPath, options = {}) {
 }
 
 /**
- * Build the OpenCode MCP server config for the IDE's **stdio bridge**.
- *
- * The IDE launcher (`<App>.app/Contents/MacOS/<binary>`) with the
- * `stdioMcpServer` argument runs a small proxy that speaks MCP over
- * stdin/stdout and connects to the running IDE MCP server selected by the
- * environment. That makes the client side a child-process pipe instead of a
- * Streamable-HTTP stream, so it does not suffer the idle-close that the remote
- * transport does. The project and port are carried in the environment, matching
- * what the remote config carries in a header and URL.
- *
- * @param {string} executable absolute path to the IDE launcher
- * @param {number} port IDE MCP port to bridge to
- * @param {string} projectPath project root the bridge should target
- * @param {{ executionTimeoutMs?: number }} [options]
- */
-export function stdioServerConfig(executable, port, projectPath, options = {}) {
-  /** @type {Record<string, unknown>} */
-  const config = {
-    type: 'local',
-    // OpenCode's `LocalConfig.command` is a STRING ARRAY holding the executable
-    // followed by its arguments (`client.ts` does `const [command, ...args] =
-    // config.command`). There is no separate `args` field — passing one, or a
-    // bare string command, fails schema validation and the server never spawns.
-    command: [executable, STDIO_ARG],
-    environment: {
-      [PROJECT_ENV]: projectPath,
-      [PORT_ENV]: String(port),
-    },
-    codemode: false,
-  };
-  return withExecutionTimeout(config, options);
-}
-
-/**
  * Attach OpenCode's per-server execution timeout to an MCP config.
  *
- * OpenCode defaults this to **12 hours**. The IDE's stdio bridge never answers a
- * call whose upstream IDE connection has dropped (it logs on stderr but sends no
- * JSON-RPC response), so without a cap a call made after the IDE died would sit
- * unresolved for the whole default. A finite cap turns that permanent hang into
- * an ordinary timeout error.
+ * OpenCode defaults this to **12 hours**. A wedged IDE MCP server can accept the
+ * POST and never answer it, so without a cap a call made after the IDE died
+ * would sit unresolved for the whole default. A finite cap turns that hang into
+ * an ordinary timeout error the plugin can classify and heal from.
  *
  * @param {Record<string, unknown>} config
  * @param {{ executionTimeoutMs?: number }} options

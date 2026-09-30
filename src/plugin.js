@@ -1,10 +1,10 @@
 // opencode-idea — OpenCode plugin entry.
 //
 // For a project the user opted into IDEA this plugin:
-//   1. registers the IDE MCP server with OpenCode — by default as the IDE's
-//      stdio bridge (`idea stdioMcpServer`), scoped to the project through
-//      `IJ_MCP_SERVER_PROJECT_PATH` — injects direct-call guidance for IDEA MCP
-//      tools, and updates only IDEA MCP tool descriptions;
+//   1. registers the IDE MCP server with OpenCode as the IDE's Streamable-HTTP
+//      endpoint, scoped to the project through the `IJ_MCP_SERVER_PROJECT_PATH`
+//      header; injects direct-call guidance for IDEA MCP tools; and updates only
+//      IDEA MCP tool descriptions;
 //   2. registers the `/open-in-idea` command, which opens the current project
 //      in IntelliJ IDEA (reusing a running instance), loads the IDE
 //      capabilities immediately, and marks the project as an IDEA project;
@@ -18,20 +18,27 @@
 // IDE, and loads the IDE MCP + guidance on demand.
 //
 // `/open-in-idea` opens the project in the IDE, waits until its MCP endpoint is
-// ready, registers `idea` (stdio, project-scoped) and marks the project in
+// ready, registers `idea` (remote, project-scoped) and marks the project in
 // `ctx.storage`; `/close-in-idea` unregisters the server and clears the mark.
 // A live endpoint alone does NOT mean our project is open there (the running IDE
 // may have a different project open), so the open flow asks the IDE directly —
 // one project-scoped MCP call — and runs `open -a` only when the project is not
 // open yet.
-// The mark gates the IDEA skills and the failure-driven recovery. After a manual
-// open, an `idea_*` call that fails because the IDE MCP is not usable (the server
-// dropped, or the project is not open in the IDE) re-runs the open flow; a plain
-// business error is classified apart and left alone. Because a stdio bridge whose
-// IDE connection drops never reports it (it hangs), a background heartbeat probes
-// the IDE endpoint and, once it is clearly gone, deactivates the server — killing
-// the zombie bridge and removing the tools so a call cannot hang — and the next
-// user message rebuilds it.
+//
+// Recovery is request-driven: there is NO background polling. The mark gates it,
+// and it fires from three places, each observing a real fact:
+//   * the `prompt` hook, when the project is marked but this plugin instance has
+//     no `idea` server at all. That is exactly what a fresh instance looks like
+//     after OpenCode evicted the project's Location services (the Location's
+//     LayerMap uses `idleTimeToLive: "60 minutes"`) or after the process
+//     restarted — setup deliberately does not connect, so without this the
+//     session would stay tool-less until the user ran `/open-in-idea` by hand.
+//     `prompt` is awaited before the request is built, so the message that
+//     triggers it already carries the tools;
+//   * the `context` hook, when a request that HAD `idea_*` tools no longer does;
+//   * the `execute.after` hook, when an `idea_*` call fails in a way that means
+//     the IDE MCP is not usable (the server dropped, or the project is not open
+//     in the IDE). A plain business error is classified apart and left alone.
 //
 // `Plugin.define` from `@opencode/plugin` is an identity function, so a plain
 // `{ id, setup }` object is the whole plugin contract. Exporting it directly
@@ -43,15 +50,12 @@ import {
   callTool,
   findIdePort,
   serverConfig,
-  stdioServerConfig,
 } from './mcp/idea.js';
 import { currentProjectPath } from './project.js';
 import {
   createLaunchGuard,
-  DEFAULT_IDE_APP,
   openInIde,
   resolveIdeApp,
-  resolveIdeExecutable,
 } from './ide-launcher.js';
 import {
   appendIdeGuidance,
@@ -69,25 +73,15 @@ const DEFAULT_MCP_PROBE_TIMEOUT_MS = 1000;
 const DEFAULT_MCP_START_TIMEOUT_MS = 60000;
 const MCP_START_POLL_MS = 1000;
 const DEFAULT_TOOL_REFRESH_TIMEOUT_MS = 5000;
-const TOOL_REFRESH_POLL_MS = 25;
-// Hard cap on ONE IDE MCP tool call. OpenCode's own default is 12 hours, and the
-// IDE's stdio bridge NEVER answers a call once its upstream IDE connection has
-// dropped (it logs on stderr but sends no JSON-RPC response) — so a call made
+// 等工具目录落地时的轮询间隔。这是一次**有界等待**(见 waitForIdeaTools),不是
+// 状态轮询:100ms 足够快,又不会在 5s 上限内空转几十次。
+const TOOL_REFRESH_POLL_MS = 100;
+// Hard cap on ONE IDE MCP tool call. OpenCode's own default is 12 hours, and a
+// wedged IDE MCP server can accept a POST and never answer it — so a call made
 // after the IDE died would otherwise sit unresolved for 12h. 10 minutes is far
-// beyond any normal IDE tool and turns that permanent hang into a normal error.
+// beyond any normal IDE tool and turns that hang into a normal error the failure
+// classifier can act on.
 const DEFAULT_EXECUTION_TIMEOUT_MS = 600000;
-// Background IDE liveness probe. The stdio bridge NEVER reports a dropped IDE
-// connection (it just hangs), so the plugin watches the IDE endpoint itself.
-// ONE miss is already conclusive: a healthy localhost endpoint answers in
-// milliseconds, and a single probe already tolerates up to `mcpProbeTimeoutMs`
-// (1s). Requiring consecutive misses would only widen the window in which a
-// call already made against the zombie bridge keeps hanging. So on a miss the
-// plugin deactivates the `idea` server — killing the zombie bridge child AND
-// removing the `idea_*` tools, so the model can never call into a dead pipe —
-// and latches a rebuild for the next user message (the bridge never heals on
-// its own).
-const DEFAULT_HEARTBEAT_INTERVAL_MS = 5000;
-const DEFAULT_HEARTBEAT_FAILURES = 1;
 // Every IDE tool comes from the MCP server the plugin registers as `idea`, and
 // OpenCode namespaces a server's tools with its name — so `idea_*` IS the whole
 // set, the same predicate the request hooks use. "Ready" means at least one of
@@ -207,7 +201,10 @@ function toolIds(tools) {
  * - `project`: the IDE is up but the requested project is not open in it, e.g.
  *   "`projectPath`=... doesn't correspond to any open project." Re-opening the
  *   project fixes it.
- * - `mcp`: the IDE MCP server itself is gone (dropped / transport closed).
+ * - `mcp`: the IDE MCP server itself is gone — the endpoint stopped answering,
+ *   the transport closed, or the connection was refused. See the marker list in
+ *   the body; it includes the connect failure OpenCode's own MCP client emits
+ *   (`Unable to connect…`, and the structural `code: "ConnectionRefused"`).
  *
  * Everything else is `none`.
  *
@@ -218,11 +215,10 @@ function classifyIdeaFailure(error) {
   const message = typeof error?.message === 'string' ? error.message : '';
   // "Project not open in the IDE" comes in two shapes, both meaning the same
   // thing and both fixed by opening the project again:
-  //   - the called tool carried no `projectPath`, so the server could not pick
-  //     one: "Unable to determine the target project for the current MCP tool
-  //     call." (this is what the plugin's stdio registration produces, since it
-  //     sets the project through env, not through the call)
-  //   - an explicit `projectPath` was passed but is not open: "`projectPath`=...
+  //   - the server could not pick a project for the call: "Unable to determine
+  //     the target project for the current MCP tool call." (the project path in
+  //     the request header did not resolve — the IDE may still be opening it)
+  //   - the project was resolved but is not open: "`projectPath`=...
   //     doesn't correspond to any open project."
   if (
     message.includes('Unable to determine the target project') ||
@@ -230,20 +226,35 @@ function classifyIdeaFailure(error) {
   ) {
     return 'project';
   }
-  // Only transport-level markers, which OpenCode / the IDE bridge emit
-  // themselves. The message of an MCP *tool error* is the tool's own content
-  // (`tool/mcp.ts` turns `result.isError` into `ToolFailure({ message: <text> })`),
-  // so a generic string such as "Connection refused" from a SQL or run-config
-  // tool would otherwise be misread as a dropped connection and rebuild a
-  // healthy bridge.
+  // Only transport-level markers, which OpenCode's own MCP client emits. The
+  // message of an MCP *tool error* is the tool's own content (`tool/mcp.ts`
+  // turns `result.isError` into `ToolFailure({ message: <text> })`), so a
+  // generic string such as "Connection refused" from a SQL or run-config tool
+  // would otherwise be misread as a dropped connection and rebuild a healthy
+  // server.
+  //
+  // MEASURED (2026-09-30, OpenCode 2.0.19, IDE process killed): a dead remote
+  // MCP endpoint does NOT produce any of the shapes above. OpenCode's client
+  // reports its own connect failure instead:
+  //
+  //   level=WARN message="mcp http request failed"
+  //     errors="[{\"type\":\"TypeError\",
+  //               \"message\":\"Unable to connect. Is the computer able to access the url?\",
+  //               \"code\":\"ConnectionRefused\",\"errno\":0}]"
+  //
+  // so the text is matched on its stable prefix, and the underlying `code` is
+  // accepted as a structural signal too (a wording change must not silently
+  // disable the heal).
   if (
     message.includes(`MCP server "${IDEA_SERVER_NAME}" is not available`) ||
     message.includes('MCP server is not connected') ||
     message.includes('Error POSTing to endpoint') ||
-    message.includes('SseClientTransport is closed')
+    message.includes('Unable to connect')
   ) {
     return 'mcp';
   }
+  const causeCode = error?.error?.code ?? error?.cause?.code ?? error?.code;
+  if (causeCode === 'ConnectionRefused' || causeCode === 'ECONNREFUSED') return 'mcp';
   return 'none';
 }
 
@@ -360,10 +371,6 @@ export default {
    *     mcpStartTimeoutMs?: number,
    *     toolRefreshTimeoutMs?: number,
    *     executionTimeoutMs?: number,
-   *     heartbeatIntervalMs?: number,
-   *     heartbeatFailures?: number,
-   *     transport?: 'stdio' | 'http',
-   *     ideExecutable?: string,
    *     feedback?: false | 'message',
    *   },
    *   command?: {
@@ -423,28 +430,12 @@ export default {
     const ports = asArray(options.ports, DEFAULT_PORTS);
     const injectGuidance = options.injectGuidance !== false;
     const ideApp = resolveIdeApp(options.openInIde);
-    // Transport for the IDE MCP server. `stdio` (default) registers the IDE's
-    // stdio bridge as a local server: the client side is a child-process pipe,
-    // which — unlike the remote Streamable-HTTP stream — does not get closed
-    // while idle and never reconnected. `http` keeps the older remote config.
-    const transport = options.transport === 'http' ? 'http' : 'stdio';
-    const ideExecutable = typeof options.ideExecutable === 'string'
-      ? options.ideExecutable
-      // Resolve independently of `openInIde`: that option only controls whether
-      // the plugin may LAUNCH the IDE, not which transport the MCP server uses.
-      // Falling back to the default app when launching is disabled keeps stdio
-      // the default there too (otherwise `openInIde: false` silently registered
-      // the remote HTTP transport).
-      : resolveIdeExecutable(ideApp ?? DEFAULT_IDE_APP);
-    const useStdio = transport === 'stdio' && typeof ideExecutable === 'string';
     const mcpProbeTimeoutMs = asPositiveNumber(options.mcpProbeTimeoutMs, DEFAULT_MCP_PROBE_TIMEOUT_MS);
     const mcpStartTimeoutMs = asPositiveNumber(options.mcpStartTimeoutMs, DEFAULT_MCP_START_TIMEOUT_MS);
     const toolRefreshTimeoutMs = asPositiveNumber(options.toolRefreshTimeoutMs, DEFAULT_TOOL_REFRESH_TIMEOUT_MS);
-    // Cap on a single IDE tool call, so a bridge that hangs (IDE died) fails in
-    // finite time instead of OpenCode's 12h default. See DEFAULT_EXECUTION_TIMEOUT_MS.
+    // Cap on a single IDE tool call, so a wedged server fails in finite time
+    // instead of OpenCode's 12h default. See DEFAULT_EXECUTION_TIMEOUT_MS.
     const executionTimeoutMs = asPositiveNumber(options.executionTimeoutMs, DEFAULT_EXECUTION_TIMEOUT_MS);
-    const heartbeatIntervalMs = asPositiveNumber(options.heartbeatIntervalMs, DEFAULT_HEARTBEAT_INTERVAL_MS);
-    const heartbeatFailures = asPositiveNumber(options.heartbeatFailures, DEFAULT_HEARTBEAT_FAILURES);
     // "message" (default) injects a clearly-labelled notification that the
     // model only acknowledges ("收到"); the user sees the clean notice via
     // metadata.displayText. false is silent.
@@ -469,15 +460,10 @@ export default {
     let skillsRegistered = false;
     let disposed = false;
 
-    // Background heartbeat state (see DEFAULT_HEARTBEAT_INTERVAL_MS).
-    /** @type {ReturnType<typeof setInterval> | undefined} */
-    let heartbeatTimer;
-    let heartbeatMisses = 0;
-    // Latches when the IDE was seen down and the server was deactivated. It is
-    // cleared ONLY by a successful rebuild — never by the endpoint coming back —
-    // because the bridge does not heal on its own. It is set from TWO places:
-    // the heartbeat (the IDE port stopped answering) and the `context` hook (a
-    // request arrived without the `idea_*` tools).
+    // Latches when a request showed the `idea_*` tools are gone. It is cleared
+    // only by a successful rebuild. It is set from the `context` hook (a request
+    // that HAD the tools no longer does); the `prompt` hook also heals without
+    // this latch when the instance has no registration at all.
     let needsRebuild = false;
     // Set once a request in this session actually carried `idea_*` tools, so a
     // later request without them is a DROP of this session's own connection —
@@ -565,27 +551,6 @@ export default {
       return false;
     };
 
-    /**
-     * Does the local registry still list any of this server's tools?
-     *
-     * The IDE endpoint answering says nothing about the bridge OpenCode actually
-     * calls: when that child process dies, OpenCode drops every `idea_*` tool
-     * while the IDE keeps serving. The port probe reports "fine" and the model
-     * gets a tool list without the IDE — so this near end needs its own check,
-     * and it is a purely local read.
-     *
-     * Unavailable or failed reads report `true`: inventing a miss would tear down
-     * a working bridge, which is worse than skipping one tick.
-     */
-    const ideaToolsPresent = async () => {
-      if (typeof ctx.tool?.list !== 'function') return true;
-      try {
-        return toolIds(await ctx.tool.list()).some((id) => id.startsWith(IDEA_TOOL_PREFIX));
-      } catch {
-        return true;
-      }
-    };
-
     const refreshIdeTools = async () => {
       if (typeof ctx.mcp.reload === 'function') await ctx.mcp.reload();
       // Reconcile the MCP servers above, then replay the tool registry so the
@@ -597,9 +562,7 @@ export default {
     };
 
     const activateIde = async (port) => {
-      const config = useStdio
-        ? stdioServerConfig(ideExecutable, port, projectPath, { executionTimeoutMs })
-        : serverConfig(port, projectPath, { executionTimeoutMs });
+      const config = serverConfig(port, projectPath, { executionTimeoutMs });
       const mcpRegistration = await ctx.mcp.transform((editor) => {
         editor.set(IDEA_SERVER_NAME, config);
       });
@@ -619,15 +582,11 @@ export default {
         return false;
       }
 
-      // Always tear the server down and register it again. A stdio bridge whose
-      // IDE connection dropped becomes a permanent zombie: the child process is
-      // still alive, so OpenCode keeps reporting it as connected, never restarts
-      // it, and SKIPS a re-`set` whose config is unchanged (`reconcile()` compares
-      // the config). Disposing the registration removes the server from the
-      // reconciled config, which is what actually kills the child process — so a
-      // full rebuild is the only reliable way back to a working bridge.
-      // `/open-in-idea` is manual and rare; rebuilding an already-healthy bridge
-      // costs one restart, which is the right trade for never leaving a zombie.
+      // Always tear the server down and register it again. OpenCode's reconcile
+      // SKIPS a re-`set` whose config is unchanged, so re-registering without a
+      // teardown would leave a dropped server in place forever. `/open-in-idea`
+      // and the request hooks are rare; rebuilding costs one restart, which is
+      // the right trade for never leaving a dead registration behind.
       await deactivateIde();
       if (port === undefined) return false;
       return activateIde(port);
@@ -636,9 +595,7 @@ export default {
     // Serialize reconciles so overlapping callers can never register/activate
     // the IDE concurrently (which would leak registrations).
     let reconcileChain = Promise.resolve();
-    // Non-zero while a reconcile is queued or running. A rebuild tears the
-    // registration down before it registers again, so the tools are briefly
-    // absent on purpose — the heartbeat must not read that as a loss.
+    // Non-zero while a reconcile is queued or running.
     let reconcileBusy = 0;
     const enqueue = (task) => {
       reconcileBusy += 1;
@@ -824,7 +781,6 @@ export default {
           }
           if (result.port !== undefined) {
             needsRebuild = false;
-            heartbeatMisses = 0;
           }
         } catch {
           // best effort: the latch stays set, and the prompt hook retries
@@ -839,56 +795,6 @@ export default {
 
     // Setup never probes or connects the IDE — everything is on `/open-in-idea`.
     await reconcile({ probeIde: false });
-
-    /**
-     * One heartbeat tick. Only marked projects are watched, and it only acts
-     * when an `idea` server is actually registered: the point is to protect an
-     * ESTABLISHED connection. A project that never connected has no zombie to
-     * kill, and must not have IDEA launched on its behalf. The deactivation
-     * runs under the reconcile chain, so a tick cannot race `/open-in-idea`.
-     */
-    let heartbeatBusy = false;
-    const heartbeatTick = async () => {
-      if (disposed || heartbeatBusy) return;
-      if (markCache !== true || registrations.length === 0) {
-        heartbeatMisses = 0;
-        return;
-      }
-      heartbeatBusy = true;
-      try {
-        const port = await findIdePort(ports, { timeoutMs: mcpProbeTimeoutMs }).catch(() => undefined);
-        // Two independent failures to catch. The endpoint can stop answering (the
-        // IDE is gone), or it can keep answering while the bridge OpenCode calls
-        // has died — the second one is invisible to the probe AND to the model,
-        // which is why the local registry gets checked too.
-        if (port !== undefined && (reconcileBusy > 0 || (await ideaToolsPresent()))) {
-          heartbeatMisses = 0;
-          return;
-        }
-        heartbeatMisses += 1;
-        if (heartbeatMisses < heartbeatFailures) return;
-        // Either end is down. Deactivating kills the zombie bridge child and
-        // removes the `idea_*` tools, so the model cannot call into a dead pipe.
-        const kicked = await enqueue(async () => {
-          if (disposed || registrations.length === 0) return false;
-          await deactivateIde();
-          return true;
-        });
-        if (kicked) needsRebuild = true;
-        // The IDE is still reachable, so reconnecting needs no launch — reconnect
-        // now instead of leaving the session tool-less until the next message. A
-        // dead endpoint still waits for one: that path may `open -a`, and the
-        // heartbeat must never start the IDE on its own.
-        if (needsRebuild && port !== undefined) await reviveIde();
-      } finally {
-        heartbeatBusy = false;
-      }
-    };
-    heartbeatTimer = setInterval(() => {
-      heartbeatTick().catch(() => {});
-    }, heartbeatIntervalMs);
-    // Never keep the host process alive just to probe (also keeps tests from hanging).
-    if (typeof heartbeatTimer?.unref === 'function') heartbeatTimer.unref();
 
     const sendFeedback = async (input, result) => {
       if (feedback !== 'message' || typeof ctx.session?.prompt !== 'function') return false;
@@ -979,10 +885,10 @@ export default {
           description: '取消当前项目的 IDEA 接入:注销 IDE MCP 并清除项目标记',
           execute: async (input) => {
             await setMark(false);
-            // Unregister the IDE MCP server and clear the injected env. Reuses
-            // the serialized reconcile, so a concurrent rebuild (an in-flight
-            // `/open-in-idea`, or a heartbeat tick) cannot re-register the
-            // server after the mark is gone.
+            // Unregister the IDE MCP server. Reuses the serialized reconcile, so
+            // a concurrent rebuild (an in-flight `/open-in-idea`, or a
+            // request-time heal) cannot re-register the server after the mark is
+            // gone.
             await reconcile({ probeIde: false });
             await sendFeedback(input, { status: 'closed' });
           },
@@ -1003,21 +909,17 @@ export default {
     if (typeof ctx.session?.hook === 'function') {
       sessionRegistration = await ctx.session.hook('context', (event) => {
         const tools = event?.tools;
-        const serving = tools !== undefined && Object.keys(tools).some((name) => name.startsWith('idea_'));
+        const serving = tools !== undefined && Object.keys(tools).some((name) => name.startsWith(IDEA_TOOL_PREFIX));
         if (serving) {
           wasServing = true;
           removeIdeaToolDefinitions(tools, HIDDEN_IDEA_TOOLS);
         } else if (wasServing && tools !== undefined && markCache === true) {
-          // This session HAD the tools and this request does not. The heartbeat
-          // alone cannot catch every way that happens: a bridge child can die
-          // while the IDE port keeps answering, and a failed reconnect tears the
-          // registration down WITHOUT latching anything (`reconcileOnce` tears
-          // down first and then finds no port, so `kicked` never runs). Without
-          // a latch the `prompt` hook has nothing to fire on, so the next
-          // message would send the model a tool list without `idea_*` and
-          // recover nothing. Latch it here instead, where "is the IDE serving
-          // THIS request?" is a fact. `wasServing` keeps this from firing for a
-          // project that never connected in this session — setup deliberately
+          // This session HAD the tools and this request does not. Latch a
+          // rebuild here, where "is the IDE serving THIS request?" is a fact: a
+          // failed reconnect can tear the registration down without anything else
+          // noticing. `wasServing` keeps this from firing for a project that
+          // never connected in this session — the `prompt` hook covers that case
+          // (a fresh instance has no registration at all) and setup deliberately
           // does not connect on its own.
           needsRebuild = true;
           wasServing = false;
@@ -1037,14 +939,23 @@ export default {
         appendIdeGuidance(event?.system, projectPath);
       });
 
-      // Rebuild after a detected drop — the heartbeat (dead port) or the context
-      // hook above (tools gone from a request) latches `needsRebuild`. Reading
-      // only that in-memory latch keeps this a cheap no-op on every other
-      // message. OpenCode awaits `prompt` before the request is built, so when
-      // the IDE is back, the message that triggers this already carries working
-      // tools.
+      // 自愈入口(钩子型)。OpenCode 会 await `prompt`,所以在这里修好的连接会在
+      // **本次请求**里就带上 `idea_*` 工具,没有"先回一句正在重连、下一条才行"
+      // 的空窗。
+      //
+      // 两种"需要重连"的形状都从这里进:
+      //   * `needsRebuild` — 之前的请求已经证明工具没了;
+      //   * `registrations.length === 0` — 本插件实例压根没有 `idea` 服务器,这
+      //     正是 OpenCode 回收 Location 服务(LayerMap idleTimeToLive = 60 分钟)
+      //     或进程重启后新实例的样子。setup 故意不连接,没有这一步会话就会永久
+      //     没有工具,只能靠用户手敲 `/open-in-idea`。
+      //
+      // 只探测、不启动 IDE:走 `reconcile({ probeIde: true })`,而不是会 `open -a`
+      // 的 `reviveIde()` —— 一条用户消息不该把 IDEA 拉起来。
       promptRegistration = await ctx.session.hook('prompt', async (event) => {
-        if (disposed || !needsRebuild || markCache !== true) return;
+        if (disposed || markCache !== true) return;
+        const fresh = registrations.length === 0;
+        if (!needsRebuild && !fresh) return;
         // Never react to the plugin's own notices, or recovery would feed on
         // itself. Match the notice TEXT, never `metadata.displayText`: OpenCode
         // also sets `displayText` on ordinary user messages (it is the message
@@ -1052,15 +963,12 @@ export default {
         // — verified live, and it made this rebuild never run.
         const text = event?.prompt?.text;
         if (typeof text === 'string' && text.startsWith(NOTICE_PREFIX)) return;
-        // Awaited on purpose: the message that triggers this already carries
-        // working tools. A background attempt already in flight is joined — but
-        // joining is not trying: if that attempt had already failed, this message
-        // would be swallowed and would carry no tools, which is exactly the bug
-        // this hook exists to prevent. So when we joined one and the latch is
-        // still set, this message gets an attempt of its own.
-        const joined = reviveInFlight !== undefined;
-        await reviveIde();
-        if (joined && needsRebuild) await reviveIde();
+        try {
+          await reconcile({ probeIde: true });
+        } catch {
+          // best effort: the latch stays set and the next message retries
+        }
+        if (registrations.length > 0) needsRebuild = false;
       });
 
       // The only self-initiated action: when an `idea_*` call fails in a way
@@ -1091,7 +999,6 @@ export default {
 
     return async () => {
       disposed = true;
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (sessionRegistration) {
         try {
           await sessionRegistration.dispose();

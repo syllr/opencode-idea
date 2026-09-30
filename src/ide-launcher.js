@@ -12,8 +12,6 @@
 // unavailable; this module only requests opening/activating the project.
 
 import { spawn } from 'node:child_process';
-import { readdirSync, statSync } from 'node:fs';
-import path from 'node:path';
 
 /** Default macOS app name for IntelliJ IDEA. */
 export const DEFAULT_IDE_APP = 'IntelliJ IDEA';
@@ -35,62 +33,6 @@ export function resolveIdeApp(value) {
   if (value === false) return undefined;
   if (typeof value !== 'string') return DEFAULT_IDE_APP;
   return IDE_APPS[value.toLowerCase()] ?? value;
-}
-
-/** Preferred launcher binary name per app, used when `Contents/MacOS` has several. */
-const IDE_EXECUTABLES = {
-  'IntelliJ IDEA': 'idea',
-  PyCharm: 'pycharm',
-  'PyCharm Community': 'pycharm',
-  WebStorm: 'webstorm',
-  GoLand: 'goland',
-  CLion: 'clion',
-  PhpStorm: 'phpstorm',
-  RubyMine: 'rubymine',
-  Rider: 'rider',
-  DataGrip: 'datagrip',
-  'Android Studio': 'studio',
-};
-
-/**
- * Absolute path to the IDE launcher binary (`<App>.app/Contents/MacOS/<bin>`).
- * The stdio bridge is started by running this binary with `stdioMcpServer`.
- *
- * Returns undefined when the app bundle cannot be found — the caller then falls
- * back to the remote transport.
- *
- * @param {string | undefined} app macOS app name, e.g. "IntelliJ IDEA"
- * @param {{ dirs?: string[] }} [options] search roots (defaults to the two
- *   standard Applications folders); tests pass their own.
- * @returns {string | undefined}
- */
-export function resolveIdeExecutable(app, options = {}) {
-  if (typeof app !== 'string' || app.length === 0) return undefined;
-  const home = process.env.HOME;
-  const dirs = options.dirs ?? [home ? path.join(home, 'Applications') : undefined, '/Applications'].filter(
-    (value) => typeof value === 'string',
-  );
-  const preferred = IDE_EXECUTABLES[app];
-  for (const dir of dirs) {
-    const macos = path.join(dir, `${app}.app`, 'Contents', 'MacOS');
-    let entries;
-    try {
-      entries = readdirSync(macos);
-    } catch {
-      continue;
-    }
-    const executable = (name) => {
-      try {
-        const stats = statSync(path.join(macos, name));
-        return stats.isFile() && (stats.mode & 0o111) !== 0;
-      } catch {
-        return false;
-      }
-    };
-    const chosen = (preferred && entries.includes(preferred) && preferred) || entries.find(executable);
-    if (chosen) return path.join(macos, chosen);
-  }
-  return undefined;
 }
 
 /**
