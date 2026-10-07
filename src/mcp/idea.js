@@ -122,7 +122,7 @@ export async function probePort(port, options = {}) {
         params: {
           protocolVersion: PROTOCOL_VERSION,
           capabilities: {},
-          clientInfo: { name: 'opencode-idea', version: '0.0.15' },
+          clientInfo: { name: 'opencode-idea', version: '0.0.16' },
         },
       }),
       signal: controller.signal,
@@ -193,7 +193,7 @@ export async function callTool(port, projectPath, name, args = {}, options = {})
       params: {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: 'opencode-idea', version: '0.0.15' },
+        clientInfo: { name: 'opencode-idea', version: '0.0.16' },
       },
     });
     // The IDE's Streamable-HTTP endpoint binds follow-up requests to the session
