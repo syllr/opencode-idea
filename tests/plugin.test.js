@@ -7,10 +7,18 @@ import path from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 const openCalls = vi.hoisted(() => []);
+// The platform the mocked launcher pretends to run on. Tests that need a
+// platform without a launcher set this to e.g. 'win32'; afterEach restores it.
+const launcher = vi.hoisted(() => ({ platform: 'darwin' }));
 vi.mock('../src/ide-launcher.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
+    // Only macOS has `open -a`. Everywhere else no app resolves, and the
+    // command asks the user to open the IDE by hand.
+    autoLaunchSupported: () => launcher.platform === 'darwin',
+    resolveIdeApp: (value) =>
+      launcher.platform === 'darwin' ? actual.resolveIdeApp(value) : undefined,
     openInIde: async (...args) => {
       openCalls.push(args);
       return true;
@@ -28,6 +36,7 @@ afterAll(() => rmSync(projectPath, { recursive: true, force: true }));
 let running;
 afterEach(async () => {
   openCalls.length = 0;
+  launcher.platform = 'darwin';
   if (running) {
     await new Promise((resolve) => running.close(resolve));
     running = undefined;
@@ -306,6 +315,43 @@ describe('plugin setup', () => {
     // never ask the OS to open the project.
     expect(openCalls).toHaveLength(0);
     expect(state.mcp).toBe(1);
+
+    await cleanup();
+  });
+
+  it('asks the user to open the IDE on a platform without a launcher', async () => {
+    launcher.platform = 'win32';
+    const { ctx, state } = fakeCtx({
+      ports: [await freePort()],
+      mcpProbeTimeoutMs: 200,
+      toolRefreshTimeoutMs: 100,
+    });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+
+    // Nothing to launch and nothing to connect to. The notice must point at the
+    // manual path, and nothing may claim the IDE was opened.
+    expect(openCalls).toHaveLength(0);
+    expect(state.mcp).toBe(0);
+    expect(state.prompts[0].metadata.displayText).toContain('当前系统不支持自动打开 IDE');
+
+    await cleanup();
+  });
+
+  it('connects on a platform without a launcher when the user opened the IDE by hand', async () => {
+    launcher.platform = 'win32';
+    const port = await freePort();
+    running = (await startFakeIdeForProject(port)).server;
+    const { ctx, state } = fakeCtx({ ports: [port], mcpProbeTimeoutMs: 200, toolRefreshTimeoutMs: 100 });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+
+    // The whole point of the manual flow: a hand-opened IDE connects exactly as
+    // it does on macOS, and the plugin never tries to open it itself.
+    expect(state.mcp).toBe(1);
+    expect(openCalls).toHaveLength(0);
 
     await cleanup();
   });
@@ -847,6 +893,31 @@ describe('plugin setup', () => {
       expect(openCalls.length).toBeGreaterThan(0);
       expect(event.error.message).toContain('重新打开');
     }
+
+    await cleanup();
+  });
+
+  it('does not claim to reopen a project on a platform without a launcher', async () => {
+    launcher.platform = 'win32';
+    // IDE running, but THIS project is not open in it.
+    running = (await startFakeIde()).server;
+    const { ctx, state } = fakeCtx({ ports: [running.address().port], toolRefreshTimeoutMs: 100 });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+    expect(state.mcp).toBe(1);
+
+    openCalls.length = 0;
+    const message = 'Unable to determine the target project for the current MCP tool call.';
+    const event = { tool: 'idea_read_file', sessionID: 's1', status: 'error', error: { message } };
+    await state.toolHook(event);
+
+    // With no launcher there is nothing to call, so the plugin must NOT report
+    // the project as reopened — that would send the model round after round
+    // after a call that can never succeed. Leave the IDE's own error alone: it
+    // names the real cause, and the user opens the project by hand.
+    expect(openCalls).toHaveLength(0);
+    expect(event.error.message).toBe(message);
 
     await cleanup();
   });

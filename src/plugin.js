@@ -53,6 +53,7 @@ import {
 } from './mcp/idea.js';
 import { currentProjectPath } from './project.js';
 import {
+  autoLaunchSupported,
   createLaunchGuard,
   openInIde,
   resolveIdeApp,
@@ -296,7 +297,17 @@ function rewriteToolError(event, message) {
 
 /**
  * @typedef {{
- *   status: 'connected' | 'tools-loading' | 'mcp-unavailable' | 'launch-failed' | 'disabled' | 'closed',
+ *   status:
+ *     | 'connected'
+ *     | 'tools-loading'
+ *     | 'mcp-unavailable'
+ *     | 'launch-failed'
+ *     | 'disabled'
+ *     | 'manual-launch'
+ *     | 'closed',
+ *   // `manual-launch` = this platform has no launcher at all (the user must
+ *   // open the IDE by hand); `disabled` = the user turned launching off. Both
+ *   // mean "no app to open", so only `autoLaunchSupported()` tells them apart.
  *   port?: number,
  *   opened?: boolean,
  *   unavailableNoticeSent?: boolean
@@ -332,6 +343,8 @@ export function ideFeedback(result) {
       return '无法拉起 IntelliJ IDEA(未找到应用或启动失败)。请确认已安装 IDEA,或手动打开后重试 /open-in-idea。';
     case 'disabled':
       return '插件已通过 openInIde: false 关闭 IDE 启动。请手动打开 IntelliJ IDEA,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后重试 /open-in-idea。';
+    case 'manual-launch':
+      return '当前系统不支持自动打开 IDE(仅 macOS 实现了启动)。请手动打开 IntelliJ IDEA,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后再次执行 /open-in-idea。';
     case 'closed':
       return '已关闭当前项目的 IDEA 接入:已注销 IDE MCP 并清除项目标记。如需重新接入,请再次执行 /open-in-idea。';
     default:
@@ -692,7 +705,11 @@ export default {
           }
           return { status: 'connected', port: serving, unavailableNoticeSent: false };
         }
-        if (!ideApp) return { status: 'disabled' };
+        // No app to open. Either the user turned launching off, or this platform
+        // has no launcher — say which, so the notice is actionable.
+        if (!ideApp) {
+          return { status: autoLaunchSupported() ? 'disabled' : 'manual-launch' };
+        }
         if (guard.exhausted()) {
           await reportUnavailable(false);
           return { status: 'mcp-unavailable', opened: false, unavailableNoticeSent: launchNoticeSent };
@@ -983,9 +1000,14 @@ export default {
           if (!(await readMark())) return;
           const kind = classifyIdeaFailure(event.error);
           if (kind === 'none') return;
-          if (kind === 'project' && ideApp) {
-            // The IDE is up; the project simply is not open in it. Ask the IDE
-            // to open the project again, and tell the model to retry.
+          if (kind === 'project') {
+            // The IDE is up and answering; only the PROJECT is missing. That is
+            // never a connection problem, so this must never fall through to
+            // the reconnect below — on a platform with no launcher there is
+            // nothing to call, and falling through would report "reconnected"
+            // and send the model round after round after a call that can only
+            // fail. Leave the IDE's own message, which names the real cause.
+            if (!ideApp) return;
             await openInIde(projectPath, { app: ideApp });
             rewriteToolError(event, '该项目已在 IDEA 中重新打开,请重试刚才的操作。');
             return;

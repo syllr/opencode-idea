@@ -16,6 +16,23 @@ import { spawn } from 'node:child_process';
 /** Default macOS app name for IntelliJ IDEA. */
 export const DEFAULT_IDE_APP = 'IntelliJ IDEA';
 
+/**
+ * Can this platform launch the IDE at all?
+ *
+ * Launching goes through macOS `open -a`, which is the only launcher this
+ * plugin implements. On Windows there is no `open` command, so a spawn there
+ * fails with ENOENT — silently, as a rejected promise that resolves `false`.
+ * Rather than pretend, other platforms resolve no app at all and the caller
+ * asks the user to open the IDE by hand.
+ *
+ * A function, not a constant: the answer is read when a command runs, so tests
+ * can simulate another platform by replacing it. A constant would be bound at
+ * import time and never re-read.
+ */
+export function autoLaunchSupported() {
+  return process.platform === 'darwin';
+}
+
 /** Aliases accepted by the `openInIde` option. */
 export const IDE_APPS = {
   idea: 'IntelliJ IDEA',
@@ -26,10 +43,16 @@ export const IDE_APPS = {
 /**
  * Resolve the `openInIde` option to a macOS app name, or `undefined` to disable.
  *
+ * `undefined` covers two distinct reasons, and the caller tells them apart via
+ * `autoLaunchSupported()`: the user turned launching off, or this platform has
+ * no launcher. They deserve different user-facing wording.
+ *
  * @param {boolean | string | undefined} value
+ * @param {{ platform?: string }} [options]
  * @returns {string | undefined}
  */
-export function resolveIdeApp(value) {
+export function resolveIdeApp(value, { platform = process.platform } = {}) {
+  if (platform !== 'darwin') return undefined;
   if (value === false) return undefined;
   if (typeof value !== 'string') return DEFAULT_IDE_APP;
   return IDE_APPS[value.toLowerCase()] ?? value;

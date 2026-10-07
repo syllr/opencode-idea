@@ -18,6 +18,25 @@
 
 export const PROJECT_HEADER = 'IJ_MCP_SERVER_PROJECT_PATH';
 
+/**
+ * The project path in the form the IDE matches against.
+ *
+ * The IDE takes the project selector in system-independent form (forward
+ * slashes) — its own MCP client configuration ships
+ * `IJ_MCP_SERVER_PROJECT_PATH: "E:/gitea/secondev-demo"`, even on Windows.
+ * OpenCode's `location` is the platform-native path, so on Windows it carries
+ * backslashes (`E:\gitea\secondev-demo`) that the IDE does not necessarily
+ * match. Normalizing here keeps one spelling on the wire for BOTH senders
+ * below; they must agree, or the plugin asks about the project with one path
+ * and registers it with another and never matches. On macOS this is a no-op.
+ *
+ * @param {string} projectPath
+ * @returns {string}
+ */
+export function ideProjectPath(projectPath) {
+  return projectPath.replace(/\\/g, '/');
+}
+
 /** OpenCode MCP server name registered for the IDE. */
 export const IDEA_SERVER_NAME = 'idea';
 
@@ -51,7 +70,7 @@ export function serverConfig(port, projectPath, options = {}) {
   const config = {
     type: 'remote',
     url: `http://127.0.0.1:${port}${MCP_STREAM_PATH}`,
-    headers: { [PROJECT_HEADER]: projectPath },
+    headers: { [PROJECT_HEADER]: ideProjectPath(projectPath) },
     codemode: false,
   };
   return withExecutionTimeout(config, options);
@@ -160,7 +179,7 @@ export async function callTool(port, projectPath, name, args = {}, options = {})
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json, text/event-stream',
-        [PROJECT_HEADER]: projectPath,
+        [PROJECT_HEADER]: ideProjectPath(projectPath),
         ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {}),
       },
       body: JSON.stringify(payload),

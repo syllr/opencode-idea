@@ -31,6 +31,21 @@ describe('resolveIdeApp', () => {
   it('disables launching with false', () => {
     expect(resolveIdeApp(false)).toBeUndefined();
   });
+
+  it('resolves no app on platforms without a launcher', () => {
+    // Only macOS `open -a` is implemented. Elsewhere a spawn of `open` fails
+    // with ENOENT, so no app is resolved and the user is asked to open the IDE.
+    expect(resolveIdeApp(undefined, { platform: 'win32' })).toBeUndefined();
+    expect(resolveIdeApp('idea', { platform: 'win32' })).toBeUndefined();
+    expect(resolveIdeApp('idea', { platform: 'linux' })).toBeUndefined();
+  });
+
+  it('keeps resolving the app on macOS regardless of the option', () => {
+    expect(resolveIdeApp(undefined, { platform: 'darwin' })).toBe(DEFAULT_IDE_APP);
+    expect(resolveIdeApp('idea', { platform: 'darwin' })).toBe('IntelliJ IDEA');
+    // An explicit opt-out still wins on the platform that supports launching.
+    expect(resolveIdeApp(false, { platform: 'darwin' })).toBeUndefined();
+  });
 });
 
 describe('openInIde', () => {
