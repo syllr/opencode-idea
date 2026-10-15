@@ -254,16 +254,46 @@ describe('buildIdeGuidance', () => {
     expect(without).not.toContain('idea_create_shell_run_configuration');
   });
 
-  it('points the create-a-configuration hint at whichever route exists', () => {
-    // With the enhance plugin there is a tool for it; without one, hand-authored
-    // XML via the skill is the only route. Naming a tool that is not in the
-    // request would send the model at something it cannot call.
+  it('keeps every ### heading immediately followed by its own content', () => {
+    // The document's convention: `#`/`##` are followed by a blank line, `###` is
+    // not — a `###` block is a list under its heading with no gap. This is also
+    // the shape a stray blank line breaks, so it is worth pinning.
+    for (const text of [
+      buildIdeGuidance(PROJECT),
+      buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS }),
+    ]) {
+      const lines = text.split('\n');
+      for (const [index, line] of lines.entries()) {
+        if (!line.startsWith('### ')) continue;
+        expect(line, `第 ${index + 1} 行`).not.toBe('');
+        expect(lines[index + 1]?.trim(), `${line} 后面不该有空行`).not.toBe('');
+      }
+      expect(text).not.toContain('\n\n\n');
+    }
+  });
+
+  it('never lets the model author a run configuration itself', () => {
+    // Unconditional, both ways: a hand-written `.run/*.run.xml` is the fragile
+    // path — a wrong `type` makes the IDE ignore the whole file, silently.
+    for (const text of [
+      buildIdeGuidance(PROJECT),
+      buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS }),
+    ]) {
+      expect(text).toContain('**配置一律不由你写**');
+      expect(text).toContain('不要手写 `.run/*.run.xml`');
+      expect(text).not.toContain('idea-run-config');
+    }
+  });
+
+  it('sends Shell creation to the tool, and every other type to the user', () => {
     const withTool = buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS });
-    expect(withTool).toContain('新建方式:用 `idea_create_shell_run_configuration`(只支持 Shell 类型)');
+    expect(withTool).toContain('**只有 Shell 类型**是例外');
+    expect(withTool).toContain('用 `idea_create_shell_run_configuration`');
+    // The tool is the ONLY exception, so every other type is still the user's.
+    expect(withTool).toContain('**其他类型请用户在 IDEA 里建。**');
 
     const withoutTool = buildIdeGuidance(PROJECT);
-    expect(withoutTool).toContain('新建方式:请用户自己在 IDEA 里建');
-    expect(withoutTool).not.toContain('idea-run-config');
+    expect(withoutTool).toContain('缺配置就请用户在 IDEA 里建');
     expect(withoutTool).not.toContain('idea_create_shell_run_configuration');
   });
 

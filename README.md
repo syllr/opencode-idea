@@ -8,7 +8,7 @@ OpenCode 插件,面向 JetBrains 项目 (IntelliJ IDEA / PyCharm / WebStorm 等)
    (正常回退,无需声明)。
 
 > **需要项目环境的命令走 Run Configuration**:跑 `java` / `python` / `npm` 这类依赖项目配好的 JDK / Node / Python 版本的
-> 命令时,引导模型用 `idea_execute_run_configuration`(先在 IDEA 里配好 `.run/*.run.xml`),而不是原生 shell;不需要项目
+> 命令时,引导模型用 `idea_execute_run_configuration`(配置**由用户**先在 IDEA 里建好),而不是原生 shell;不需要项目
 > 环境的命令照常走原生 shell。**IDE 内置终端 (`idea_execute_terminal_command`) 已被隐藏** —— 实测它并不继承项目环境,
 > 对原生 shell 没有任何优势。详见「项目命令执行」。
 
@@ -191,8 +191,8 @@ opencode-idea 对这一组工具做三件事:
      —— 这正是它要解决的问题:外部杀掉的进程 IDE 并不知道,Run 窗口仍显示运行中,下次启动就会撞端口;
    - 「命令执行」段把**新建 run configuration 定性成重操作**:一个项目通常只建几个(固定要跑的构建 / 装依赖 / dev server),
      **不是随手一条命令就建一个**,而且要**先告诉用户建什么、为什么,取得同意再动手**。只有最后"用哪条路建"才按工具是否
-     存在分流:有 `create` 工具就指向它,没有就**让用户自己去 IDEA 里建** —— 引导不教模型手写 `.run/*.run.xml`。**没装插件时
-     绝不会提到那个工具。**
+     分成两条**无条件 + 有条件**:「配置一律不由你写」永远在;只有「Shell 例外,用 `idea_create_shell_run_configuration`」那一行
+     按工具是否存在分流,没有就换成「缺配置请用户在 IDEA 里建」。**没装插件时绝不会提到那个工具。**
 3. **工具名清单**写在 `src/mcp/enhance.js`(与原生 IDE 的 `src/mcp/idea.js` 分开放:原生走原生,插件的走插件的),
    与该仓库的 `RunLifecycleSchemas.kt` 保持同步。工具按**存在的子集**逐个点名(而不是「有就全写」),这样旧版本的配套
    插件少给一两个工具时,引导也不会提到它们。
@@ -206,8 +206,9 @@ opencode-idea 对这一组工具做三件事:
 
 所以插件的立场是:
 
-- **能建**(装了配套插件)→ 用工具,但**必须先取得用户同意**(新建是重操作,见上文);
-- **不能建**(没装插件,或要的不是 Shell 类型)→ **请用户自己在 IDEA 里建**,模型既不手搓启动命令,也不手写 `.run/*.run.xml`。
+- **配置一律不由 AI 动手** —— 不手写 `.run/*.run.xml`,也不手搓启动命令。这条无条件;
+- **Shell 类型**且装了配套插件 → 用 `idea_create_shell_run_configuration`(新建是重操作,**必须先取得用户同意**);
+- **其他类型,或没装插件** → **请用户在 IDEA 里建**,AI 只负责说明要建什么、为什么。
 
 > **曾经有一个 `idea-run-config` skill 教模型手写 `.run/*.run.xml`,已经删掉。** 理由:手写那条路很脆 —— `type` 写错 IDE 会
 > **静默忽略整个文件、日志里也不报**,模型的唯一判据只有"`idea_get_run_configurations` 里看不看得到";而它想补的"新建"能力现在
@@ -240,7 +241,7 @@ opencode-idea 对这一组工具做三件事:
 
 - 判据是:这条命令**依赖项目的运行时版本**。是 → run configuration;不是(看文件、git、临时脚本)→ 原生 shell。
 - run configuration 会继承开发时具体配的那套运行时,或者干脆是你那个应用配好的运行时,所以这就是个应用。
-- 配置必须**先在 IDEA 里存在**(项目级 `.run/*.run.xml`)。没有就先建一个,再跑;
+- 配置必须**先在 IDEA 里存在**(项目级 `.run/*.run.xml`,**由用户建**)。没有就请用户建一个,再跑;
 
 > 为什么不再用 IDE 终端:`idea_execute_terminal_command` 之前被当成"自动继承 IDE 项目环境"的通道而保留暴露,但实测
 > **它拿不到项目配好的 JDK / Node / Python 版本**,和原生 shell 没有区别。既然没有优势,就把它从模型可见的工具表里

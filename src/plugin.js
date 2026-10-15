@@ -876,9 +876,9 @@ export default {
     };
 
     // The shipped skills are static knowledge (`skills/<id>/SKILL.md`), e.g. the
-    // run-configuration workflow: where `.run/*.run.xml` live, how to bootstrap a
-    // schema from a real example, and how to verify a write. Registered only for
-    // a project that has been marked as an IDEA project, so unrelated projects
+    // standalone-mode discipline (every app starts from an IDEA run
+    // configuration, and starting one is the user's call). Registered only for a
+    // project that has been marked as an IDEA project, so unrelated projects
     // never see an IDEA-specific skill.
     //
     // Deliberately NOT wrapped in a catch: these are core features of the plugin,

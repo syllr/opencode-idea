@@ -54,9 +54,10 @@
 - 需要项目环境的命令(依赖 IDE 里配好的 JDK / Node / Python 版本等):用 `idea_execute_run_configuration`,不要用原生 `shell`。
 - run configuration 是**重资产**:一个项目通常只建几个(固定要跑的构建 / 装依赖 / dev server 之类),**不是随手一条命令就建一个**。
 - 要新建:先确认它**反复要用、且属于项目固定流程**;确认后**先告诉用户要建什么、为什么,取得同意再动手**,别自己决定。
+- **配置一律不由你写**:不要手写 `.run/*.run.xml`,也不要手搓启动命令。
 {{#if canCreateRunConfiguration}}
-- 新建方式:用 `idea_create_shell_run_configuration`(只支持 Shell 类型)。
+- **只有 Shell 类型**是例外:用 `idea_create_shell_run_configuration`。**其他类型请用户在 IDEA 里建。**
 {{else}}
-- 新建方式:请用户自己在 IDEA 里建 —— **不要自己写 `.run/*.run.xml`**,也不要手搓启动命令。
+- 缺配置就请用户在 IDEA 里建。
 {{/if}}
 - 不需要项目环境的命令:用原生 `shell`。
