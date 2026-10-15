@@ -223,11 +223,12 @@ opencode-idea 对这一组工具做三件事:
 本机直跑应用的**项目级纪律**由 `idea-standalone` skill 固化:它把这份纪律写进**项目根 `AGENTS.md`** 里由
 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 包裹的**标记块**(根 `AGENTS.md` 本来就是 AI 在本项目
 工作时必读的文件,所以不需要另建规则文件、也不需要 always-apply 开关;标记块是"以后改没改过"的判据)。骨架与各段写作规范在
-`skills/idea-standalone/assets/AGENTS.template.md`,**SKILL.md 只写流程、指向模板**,不重复骨架。四段固定 ——
+`skills/idea-standalone/assets/AGENTS.template.md`,**SKILL.md 只写流程、指向模板**,不重复骨架。三段固定 ——
 
-1. **什么是 standalone 模式**:**standalone = 通过 IDEA 启动**(每个应用的入口是 IDEA run configuration),应用在本机进程
-   直跑(不容器化、不部署),只启动其中一部分是常态;**启停只走这三个工具** —— 启动 / 重启用 `idea_rerun_run_configuration`
-   (**跑应用只能用它**),停止用 `idea_stop_run_configuration`,查状态用 `idea_list_running_configurations`;
+1. **什么是 standalone 模式**:**standalone = 启动收口只有 IDEA run configuration**(每个应用的启动入口是 run configuration,不是手搓命令行;
+   至于配置内部怎么起 —— 本机进程 / 容器 / 部署到远端 —— 由它自己决定,本段不预设),只启动其中一部分是常态;
+   **跑应用只用 `idea_rerun_run_configuration`**(在跑就重启、没在跑就启动)
+   —— 不必分辨启动还是重启,直接 rerun 就完事,常驻进程化 / 服务化的配置一律走这条;
    **`idea_execute_run_configuration` 不用于这里**(它是给命令 / Job 类型的配置跑的,对常驻进程只会起重复实例);也不绕开 IDEA 用
    `go run` / `pnpm dev` 这类裸命令或 `kill` / `pkill`;**重启不必先问** —— 改完代码要重启就直接 rerun,这条链是无人化的;
 2. **启动哪些应用**:一行一个应用,启动路径**只能是 IDEA run configuration**(配置名必须能在 `idea_get_run_configurations`

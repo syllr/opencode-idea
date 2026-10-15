@@ -1,13 +1,13 @@
 ---
 name: idea-standalone
-description: "为项目生成/维护 standalone(经 IDEA 启动、本机进程直跑)模式的纪律,写进**项目根 `AGENTS.md`** 里由 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 包裹的标记块。当用户要做 standalone 规范、要固化「本机跑哪几个应用」「哪些应用热重载、哪些改了必须重启」「启停走哪个工具」这类项目级纪律时使用。产物固定四段:standalone 是什么、经 IDEA run configuration 启动哪些应用、逐应用的热重载与重启提示纪律、用户补充的其它条款。"
+description: "为项目生成/维护 standalone(启动收口只有 IDEA run configuration)模式的纪律,写进**项目根 `AGENTS.md`** 里由 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 包裹的标记块。当用户要做 standalone 规范、要固化「本机跑哪几个应用」「哪些应用热重载、哪些改了必须重启」「启停走哪个工具」这类项目级纪律时使用。产物固定三段:standalone 是什么、经 IDEA run configuration 启动哪些应用、逐应用的热重载与重启提示纪律。"
 ---
 
 # idea-standalone — standalone 模式纪律
 
 ## 定位与管辖文档
 
-本 skill 为项目固化它在本机 **standalone 模式**(经 IDEA 启动、进程直跑)下怎么跑、AI 能做什么不能做什么。
+本 skill 为项目固化它 **standalone 模式**(启动收口只有 IDEA run configuration)下怎么跑、AI 能做什么不能做什么。
 
 - **产物位置固定:项目根 `AGENTS.md`**,作为其中一块,用 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 包裹。
   项目根 `AGENTS.md` 是 AI 在本项目工作时必读的文件,所以写在这里天然"总是生效",不需要额外的规则文件与开关。
@@ -26,11 +26,11 @@ description: "为项目生成/维护 standalone(经 IDEA 启动、本机进程�
 - 端口:先看上面那份启动细节里有没有;项目自身配置里也读不到就**问用户**,不要编。
 - `run configuration` 列表里缺某个应用:**交给用户** —— 请他在 IDEA 里自己建一个,然后**重新查一次**。不要手搓启动命令,也不要自己写 `.run/*.run.xml`。
 - 补齐缺口:哪些应用进 standalone、哪些配置名对不上、端口与热重载不确定 —— **逐条向用户确认**,不猜。
-- 生成或更新前先读 [assets/AGENTS.template.md](assets/AGENTS.template.md),确认四段与各段生成提示。
+- 生成或更新前先读 [assets/AGENTS.template.md](assets/AGENTS.template.md),确认三段与各段生成提示。
 
 ## 生成与更新
 
-1. 归属判断:属于四段骨架的内容写进 `idea-standalone` 标记块;不属于的(项目自己的其它纪律)留在标记外,本 skill 不写。
+1. 归属判断:属于三段骨架的内容写进 `idea-standalone` 标记块;不属于的(项目自己的其它纪律)留在标记外,本 skill 不写。
 2. 先读 [assets/AGENTS.template.md](assets/AGENTS.template.md),按其中的生成提示逐段填充。**`<!-- 生成提示:begin -->…<!-- 生成提示:end -->` 是给生成过程的说明,产物里整块删掉** —— 产物是给 AI 当规则读的,里面不该留指令。
    同时:**未涉及的表格行与小节整块删掉**,不留空标题、不留 `{...}`。
 3. **新增**(文件里还没有标记块):在 `AGENTS.md` **末尾追加**标记块,文件既有内容原样保留;文件不存在则创建它。
@@ -38,30 +38,3 @@ description: "为项目生成/维护 standalone(经 IDEA 启动、本机进程�
 4. **更新**(已有标记块):只替换 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 之间的内容,块外一字不动。
 5. 用原生 `edit` 做定向替换;文件不存在时才用 `write` 创建。**不要整文件重写**。
 6. 复读并核对:标记块内逐段与模板一致,块外内容与改动前逐字一致,报告产物清单。
-
-## 联动
-
-- **根 `AGENTS.md` 是共享文件**:`project-scaffold` 的宪法块、项目自己写的内容都在里面。本 skill 只动自己的标记块。
-- 与 `code-guide`(子目录 `AGENTS.md`)互不重叠:本 skill 只写项目根,且只在标记块内。
-
-## 完成判定
-
-- `AGENTS.md` 里存在且只存在一个 `idea-standalone` 标记块;块内四段齐全(第四段起为用户补充条款)。
-- 标记块内逐段按 [assets/AGENTS.template.md](assets/AGENTS.template.md) 的生成提示核对,结构一致,没有模板未定义的内容、没有残留 `{...}`。
-- **标记外的内容一字未改**;其他 skill 的标记块未被触碰。
-- 第二段表格里每个配置名都能在 `idea_get_run_configurations` 里查到 —— **查不到就是错的**,不许用"应该生效了"结案。
-- 配置名、端口、热重载三项都有依据,取自实际配置与代码。
-
-## 边界
-
-- 只写项目根 `AGENTS.md` 里属于自己的标记块;不写 `.opencode/`、不写全局配置目录、不改业务代码。
-- 标记之外一律不动,包括项目自己写的内容和其他 skill 的标记块。
-- 第二段的启动方式 **只能是 IDEA run configuration**;不写手搓启动命令。
-- **启停只走这三个工具**:启动 / 重启用 `idea_rerun_run_configuration`(在跑就重启、没在跑就启动),停止用 `idea_stop_run_configuration`,
-  查状态用 `idea_list_running_configurations`。**跑应用只能用 `idea_rerun_run_configuration`**。
-- **`idea_execute_run_configuration` 不用于 standalone 的应用**:它是给**命令 / Job 类型**的配置跑的,对常驻进程只会起出重复实例。
-- **不得绕过 IDEA**:不用 `go run` / `pnpm dev` / `uvicorn` / `python -m ...` 这类裸命令起进程,也不用 `kill` / `pkill` 杀业务进程 ——
-  外部杀掉的进程 IDE 并不知道,下次启动就撞端口。
-- **重启不必先问**:改完代码需要重启哪个应用,直接 `idea_rerun_run_configuration`,**不征求同意、不等待确认** —— 这条链是无人化的。
-- 上面那三个工具不在工具列表里时(没装配套插件):启停交回用户,请他在 IDEA 里手动做。
-- 配置名、端口、热重载三项不确定就问用户,不编。

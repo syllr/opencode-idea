@@ -4,6 +4,11 @@ import { describe, expect, it } from 'vitest';
 import { parseSkillFrontmatter, readSkill, readSkills, SKILL_FILE_NAME } from './loader.js';
 import { HIDDEN_IDEA_TOOLS } from '../plugin.js';
 
+const TEMPLATE = path.join(path.dirname(readSkill('idea-standalone').path), 'assets/AGENTS.template.md');
+
+/** Read the skeleton the skill must consult before writing anything. */
+const readTemplate = () => readFileSync(TEMPLATE, 'utf8');
+
 describe('shipped skills', () => {
   it('loads every skill directory into a Skill.Info-shaped definition', () => {
     const skills = readSkills();
@@ -49,34 +54,57 @@ describe('shipped skills', () => {
     // spawns a SECOND process instead of restarting the first. It belongs to
     // command/job configurations. Apps in standalone mode are the long-running
     // kind, so they go through rerun/stop.
-    for (const source of [
-      readSkill('idea-standalone').content,
-      readFileSync(path.join(path.dirname(readSkill('idea-standalone').path), 'assets/AGENTS.template.md'), 'utf8'),
-    ]) {
-      expect(source).toContain('idea_rerun_run_configuration');
-      expect(source).toContain('idea_stop_run_configuration');
-      expect(source).toContain('idea_list_running_configurations');
-      expect(source).toContain('**命令 / Job 类型**');
-    }
+    // Exactly one tool runs these apps. Start vs restart is not a distinction the
+    // model should have to make — rerun covers both, so the rule says so once.
+    expect(readTemplate()).toContain('**跑应用只用 `idea_rerun_run_configuration`**');
+    expect(readTemplate()).toContain('不必分辨"这是启动还是重启"');
+    expect(readTemplate()).toContain('**命令 / Job 类型**');
+    // Nothing else is offered as a way to run or stop them here.
+    expect(readTemplate()).not.toContain('idea_stop_run_configuration');
+    expect(readTemplate()).not.toContain('idea_list_running_configurations');
     // And the prohibition must be stated, not just implied.
-    expect(readSkill('idea-standalone').content).toContain('`idea_execute_run_configuration` 不用于');
+    expect(readTemplate()).toContain('不要用 `idea_execute_run_configuration` 跑这些应用');
+  });
+
+  it('pins the entry point, not the shape, of how an app runs', () => {
+    // A run configuration may start a local process, a container, or deploy to a
+    // remote host. The discipline is about the ONE entry point, so claiming the
+    // app must run as a local process would be both wrong and restrictive.
+    const template = readTemplate();
+    expect(template).toContain('**standalone = 启动收口只有 IDEA run configuration**');
+    expect(template).toContain('入口唯一');
+    expect(template).toContain('形态不限');
+    expect(template).toContain('容器');
+    expect(template).toContain('部署到远端');
+    for (const absolute of ['本机进程直跑', '不容器化', '不部署到远端']) {
+      expect(template, absolute).not.toContain(absolute);
+    }
+  });
+
+  it('gives the app table a pre-start flow column', () => {
+    // Some configurations assume something was done first (deps installed, built,
+    // a dependency service up). That something is usually not itself a run
+    // configuration, so the only place to say it is prose in this column.
+    const template = readTemplate();
+    expect(template).toContain('| 应用 | run configuration | 目录 | 端口 | 启动前流程 | 说明 |');
+    expect(template).toContain('**启动前流程**列');
+    // Usually empty, and ordered steps when not.
+    expect(template).toContain('多数应用留空');
+    expect(template).toContain('按顺序写清第 1 步、第 2 步、第 3 步');
   });
 
   it('restarts without asking, so the loop stays unattended', () => {
     // The point of routing restarts through the tool is that nobody has to be
     // there. A consent step would put a human back in the loop.
-    for (const source of [
-      readSkill('idea-standalone').content,
-      readFileSync(path.join(path.dirname(readSkill('idea-standalone').path), 'assets/AGENTS.template.md'), 'utf8'),
-    ]) {
-      expect(source).toContain('重启不必先问');
-      expect(source).toContain('无人化');
+    for (const source of [readSkill('idea-standalone').content, readTemplate()]) {
       expect(source).not.toContain('先取得用户明确授权');
       expect(source).not.toContain('取得明确授权');
       // The old blanket prohibition is gone, so nothing may still refer to it.
       expect(source).not.toContain('不得代为启停');
       expect(source).not.toContain('standalone 的禁令');
     }
+    expect(readTemplate()).toContain('重启不必先问');
+    expect(readTemplate()).toContain('无人化');
   });
 
   it('writes into the project AGENTS.md as a marked block, not a rule file', () => {
@@ -108,10 +136,18 @@ describe('shipped skills', () => {
     // Same wrapper the produced block uses, so a diff of the two is meaningful.
     expect(template.startsWith('<!-- idea-standalone:begin -->')).toBe(true);
     expect(template.trimEnd().endsWith('<!-- idea-standalone:end -->')).toBe(true);
-    // Four parts, and the two headings the skill's name promises.
-    for (const heading of ['### 一、', '### 二、', '### 三、', '### 四、']) {
-      expect(template).toContain(heading);
-    }
+
+    // Every heading is one level, and the four parts are numbered in order. Both
+    // halves matter: a lost section is invisible otherwise, and a level slip
+    // silently changes how the block nests inside the host AGENTS.md.
+    const headings = template.split('\n').filter((line) => /^#{1,6} /.test(line));
+    expect(headings).toEqual([
+      '# Standalone 模式纪律',
+      '## 一、什么是 standalone 模式',
+      '## 二、standalone 下启动哪些应用(必须经 IDEA run configuration)',
+      '## 三、热重载矩阵:改代码后要不要提醒重启',
+    ]);
+
     // Per-section guidance lives in the template, not in the skill.
     expect(template).toContain('<!-- 生成提示:begin -->');
     // The produced file is read by AIs as rules, so the instructions for the
