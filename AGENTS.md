@@ -35,14 +35,17 @@
 `~/.npmrc` 中的 `//registry.npmjs.org/:_authToken=npm_xxx` 就是**可用的发布凭据**，发布时直接读它即可，不需要、也不应该再跑 `npm login`：
 
 ```bash
-grep _authToken ~/.npmrc          # 有 token 就直接发
-npm whoami                        # 确认身份正常（如 shenyuanlaolarou）
-npm publish                       # 或 npm run release
+grep _authToken ~/.npmrc                                    # 有 token 就直接发
+npm whoami --registry=https://registry.npmjs.org            # 确认身份正常（如 shenyuanlaolarou）
+npm run release                                             # bump + test + publish + 校验 dist-tags
 ```
 
 - 该 token 必须是**带 bypass 2FA 的 granular token**（在有 2FA 的账号上，这是能非交互发布的凭据）。
 - 不要用 `npm login` 覆盖它：登录态会盖掉 token，或让凭据来源变得不确定。
 - **不要擅自删除这行 token**。它一旦被删，登录态也随之失效（`ENEEDAUTH`），反而要重新手工配置，把一个能发的环境改坏。
+- **`npm whoami` 必须带 `--registry=https://registry.npmjs.org`。** token 是按 registry 挂的（`//registry.npmjs.org/:_authToken`），而本机 `~/.npmrc` 的 `registry=` 可能指向镜像（如 `registry.npmmirror.com`）—— 不带 `--registry` 时 whoami 问的是镜像，必然回 `ENEEDAUTH`。**那条 `ENEEDAUTH` 只说明问错了 registry，不说明 token 不能用**，别据此重建 token。
+- **往哪发/查哪，都不依赖本机 `registry=`**：`package.json` 的 `publishConfig.registry` 固定了 publish 目标，`scripts/release.mjs` 的版本与 dist-tags 检查也显式查同一个 registry。所以 `~/.npmrc` 用镜像不影响发布，也不用每次手加 `npm_config_registry=...`。
+- 若确实要临时改一次：`npm_config_registry=https://registry.npmjs.org npm run release`（只影响这一次调用，不动本机配置）。
 
 只有出现下面这条 403 时，才说明凭据本身有问题（token 缺失、被撤销、权限不含该包、或没开 bypass 2FA）：
 

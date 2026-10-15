@@ -24,6 +24,14 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const PACKAGE_NAME = 'opencode-idea';
+// `publishConfig` in package.json pins where `npm publish` goes, but it does NOT
+// affect `npm view` — and the checks below have to ask the same registry we
+// publish to. They used to read whatever `registry` the developer's ~/.npmrc
+// pointed at; on a machine configured for a mirror that is a different (lagging)
+// copy of the metadata, so a version can look "already taken" or "not published
+// yet" purely because the mirror is behind. The version-existence skip and the
+// post-publish `latest` wait are both gates, so both need the source of truth.
+const PUBLISH_REGISTRY = 'https://registry.npmjs.org';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const args = new Set(process.argv.slice(2));
@@ -41,7 +49,7 @@ function run(command, commandArgs, options = {}) {
 
 function npmView(...spec) {
   try {
-    return execFileSync('npm', ['view', ...spec, '--json'], {
+    return execFileSync('npm', ['view', ...spec, '--json', `--registry=${PUBLISH_REGISTRY}`], {
       cwd: ROOT,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
