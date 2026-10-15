@@ -220,8 +220,10 @@ opencode-idea 对这一组工具做三件事:
 
 ## Standalone 模式纪律 (skill)
 
-本机直跑应用的**项目级纪律**由 `idea-standalone` skill 固化:它为项目生成/维护一份 rule,落在项目根
-**`.opencode/rules/idea-standalone.md`**,四段结构固定 ——
+本机直跑应用的**项目级纪律**由 `idea-standalone` skill 固化:它把这份纪律写进**项目根 `AGENTS.md`** 里由
+`<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 包裹的**标记块**(根 `AGENTS.md` 本来就是 AI 在本项目
+工作时必读的文件,所以不需要另建规则文件、也不需要 always-apply 开关;标记块是"以后改没改过"的判据)。骨架与各段写作规范在
+`skills/idea-standalone/assets/AGENTS.template.md`,**SKILL.md 只写流程、指向模板**,不重复骨架。四段固定 ——
 
 1. **什么是 standalone 模式**:**standalone = 通过 IDEA 启动**(每个应用的入口是 IDEA run configuration),应用在本机进程
    直跑(不容器化、不部署),只启动其中一部分是常态;启停一律由用户在 IDEA 里手动完成,AI 不得代为启停(含经
@@ -233,6 +235,7 @@ opencode-idea 对这一组工具做三件事:
 4. **项目补充条款**:文件写入位置、测试纪律、访问归属、dev 模式特有限制等,按用户给的条款逐条续写、保留原意。
 
 事实一律先查后写:配置名来自 `idea_get_run_configurations`,热重载列来自运行方式,端口读不到就问用户 —— 不猜。
+**只动自己的标记块**:根 `AGENTS.md` 是共享文件(`project-scaffold` 的宪法、项目自己的内容都在里面),标记之外一字不改。
 
 ## 项目命令执行 (Run Configuration)
 

@@ -1,93 +1,61 @@
 ---
 name: idea-standalone
-description: "为项目生成/维护 standalone(经 IDEA 启动、本机进程直跑)模式的纪律 rule,写在项目根 `.opencode/rules/idea-standalone.md`。当用户要做 standalone 规范、要固化「本机跑哪几个应用」「哪些应用热重载、哪些改了必须重启」「AI 能不能启停本机进程」这类项目级纪律时使用。产出必须写清四段:standalone 是什么、standalone 下经 IDEA run configuration 启动哪些应用、逐应用的热重载与重启提示纪律、以及用户补充的其它条款。"
+description: "为项目生成/维护 standalone(经 IDEA 启动、本机进程直跑)模式的纪律,写进**项目根 `AGENTS.md`** 里由 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 包裹的标记块。当用户要做 standalone 规范、要固化「本机跑哪几个应用」「哪些应用热重载、哪些改了必须重启」「AI 能不能启停本机进程」这类项目级纪律时使用。产物固定四段:standalone 是什么、经 IDEA run configuration 启动哪些应用、逐应用的热重载与重启提示纪律、用户补充的其它条款。"
 ---
 
-# Standalone 模式纪律 rule 生成器
+# idea-standalone — standalone 模式纪律
 
-## 产出物
+## 定位与管辖文档
 
-一份 **项目级 rule**:`<项目根>/.opencode/rules/idea-standalone.md`,把这个项目在 **本机 standalone 模式**下怎么跑、AI
-能做什么不能做什么固化下来。
+本 skill 为项目固化它在本机 **standalone 模式**(经 IDEA 启动、进程直跑)下怎么跑、AI 能做什么不能做什么。
 
-- 位置固定:`.opencode/rules/`(项目级规则目录),文件名 `idea-standalone.md`。
-- frontmatter 照抄项目里既有 rule 的格式 (`description` + `alwaysApply: true`)。
-- 只对这个项目生效; **不写**全局规则目录 (`~/.config/opencode/rules/`)。
+- **产物位置固定:项目根 `AGENTS.md`**,作为其中一块,用 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 包裹。
+  项目根 `AGENTS.md` 是 AI 在本项目工作时必读的文件,所以写在这里天然"总是生效",不需要额外的规则文件与开关。
+- **标记之内由本 skill 生成与维护;标记之外的项目内容一律不动。**
+- **目标产物的骨架、各段内容约定与写作规范以 [assets/AGENTS.template.md](assets/AGENTS.template.md) 为准**,本 skill 不另行维护
+  章节骨架或逐段规则;生成或更新前必须先读该文件,并严格沿用其中的标题层级、标记与生成提示。
+- 只对这个项目生效; **不写**全局配置目录 (`~/.config/opencode/`),也不另建规则文件。
 
-## 四段结构 (缺一不可)
+## 读取
 
-### 第一段:什么是 standalone 模式
+- 读 `<项目根>/AGENTS.md`,确认是否已存在 `idea-standalone` 标记块(更新)或需要在文件末尾追加(新增)。
+- 收集事实,**一律不猜**:
+  - `idea_get_run_configurations` → 真实存在的配置名(第二段 `run configuration` 列只能来自这里)。
+  - `idea_search_file` 传 `q="*.run.xml"` + `paths: [".run"]` → 每个配置实际干什么(命令 / 脚本 / npm script)。
+  - `package.json` / `pom.xml` / `go.mod` / `pyproject.toml` / `Cargo.toml` → 项目类型,决定第三段的热重载列。
+  - 端口:从 run configuration 的 option 或项目自身配置里读。
+- 需要 `run configuration` 但项目里没有:**交给用户** —— 请他在 IDEA 里自己建一个。不要手搓启动命令,也不要自己写 `.run/*.run.xml`。
+- 补齐缺口:哪些应用进 standalone、哪些配置名对不上、端口与热重载不确定 —— **逐条向用户确认**。
+- 生成或更新前先读 [assets/AGENTS.template.md](assets/AGENTS.template.md),确认四段与各段生成提示。
 
-**standalone = 通过 IDEA 启动** —— 应用在本机进程直跑,不容器化、不部署到远端。给"本项目在本机的运行形态"下定义,至少覆盖:
+## 生成与更新
 
-- **通过 IDEA 启动**:每个应用的启动入口就是 IDEA 的 run configuration(Run / Debug),不是手搓命令行。
-- **应用在本机进程直跑**:不容器化、不部署到远端。本机 **不跑**什么也要写明 (例如需要 GPU 的服务、或本机直连的远端数据库)。
-- **只启动其中一部分是常态** —— standalone 不要求所有应用都起来,用户可能只开一两个。
-- **启停一律由用户在 IDEA 手动完成**:AI 不得代为启停本机进程 —— 包括 `go run` / `pnpm dev` / `uvicorn` /
-  `python -m ...` 这类起进程、`kill` / `pkill` 业务进程,以及经 `idea_execute_run_configuration` 启停。AI 若判断需要重启,
-  **先向用户说明并取得明确授权**,绝不自行执行。
-- **与部署链纪律互不构成许可**:standalone 的禁令不适用于部署流程,部署链的步骤也不构成"可以动本机进程"的许可 —— 两阶段纪律互相独立。
+1. 归属判断:属于四段骨架的内容写进 `idea-standalone` 标记块;不属于的(项目自己的其它纪律)留在标记外,本 skill 不写。
+2. 先读 [assets/AGENTS.template.md](assets/AGENTS.template.md),按其中的生成提示逐段填充。**`<!-- 生成提示:begin -->…<!-- 生成提示:end -->` 是给生成过程的说明,产物里整块删掉** —— 产物是给 AI 当规则读的,里面不该留指令。
+   同时:**未涉及的表格行与小节整块删掉**,不留空标题、不留 `{...}`。
+3. **新增**(文件里还没有标记块):在 `AGENTS.md` **末尾追加**标记块,文件既有内容原样保留;文件不存在则创建它。
+   只替换标记内内容、不动标记外 —— 尤其**不要触碰**其他 skill 的标记块(例如 `project-scaffold`)。
+4. **更新**(已有标记块):只替换 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 之间的内容,块外一字不动。
+5. 用原生 `edit` 做定向替换;文件不存在时才用 `write` 创建。**不要整文件重写**。
+6. 复读并核对:标记块内逐段与模板一致,块外内容与改动前逐字一致,报告产物清单。
 
-### 第二段:standalone 下启动哪些应用 (必须经 IDEA run configuration)
+## 联动
 
-表格,一行一个应用:
+- **根 `AGENTS.md` 是共享文件**:`project-scaffold` 的宪法块、项目自己写的内容都在里面。本 skill 只动自己的标记块。
+- 与 `code-guide`(子目录 `AGENTS.md`)互不重叠:本 skill 只写项目根,且只在标记块内。
 
-| 应用 | run configuration | 目录 | 端口 | 说明 |
-| ---- | ----------------- | ---- | ---- | ---- |
+## 完成判定
 
-要点:
+- `AGENTS.md` 里存在且只存在一个 `idea-standalone` 标记块;块内四段齐全(第四段起为用户补充条款)。
+- 标记块内逐段按 [assets/AGENTS.template.md](assets/AGENTS.template.md) 的生成提示核对,结构一致,没有模板未定义的内容、没有残留 `{...}`。
+- **标记外的内容一字未改**;其他 skill 的标记块未被触碰。
+- 第二段表格里每个配置名都能在 `idea_get_run_configurations` 里查到 —— **查不到就是错的**,不许用"应该生效了"结案。
+- 配置名、端口、热重载三项都有依据,取自实际配置与代码。
 
-- `run configuration` 列 **必须是 `idea_get_run_configurations` 里真实存在的名字**(不凭印象写);**缺配置就交给用户**:
-  请他在 IDEA 里自己建一个,不要手搓启动命令,也不要自己写 `.run/*.run.xml`。
-- **启动路径只能是 IDEA run configuration**:不写 `pnpm dev &`、`nohup ... &` 这类后台命令,也不建议用户这么干。
-- 端口写清"固定 / 默认 / 被占用即启动失败"; **哪个应用必须先起来**也要写 (例如前端 dev server 的 proxy 指向本机后端)。
-- 端口读不到 (配置里没有、也没写在项目配置里)就 **问用户**,不要编。
+## 边界
 
-### 第三段:热重载矩阵 + 改代码后要不要提醒重启
-
-逐应用写清 **是 / 不是**热重载,以及对应的提醒纪律:
-
-| 应用                                                  | 热重载 | AI 改代码后                                           |
-| ----------------------------------------------------- | ------ | ----------------------------------------------------- |
-| 带 HMR 的 dev server(如 Vite)                         | 是     | 不提醒重启                                            |
-| 编译型 / 无热重载进程(如 `go run .`、`python -m ...`) | 否     | **必须**在回复里显式点名「需要重启 <应用>」并说明原因 |
-| 只能跑在远端、本机起不来的服务                        | 不适用 | 本机无法验证,按部署链部署后再验证                     |
-
-铁律:
-
-- 非热重载的应用改动后, **不得**在没有提示的情况下宣称"改动完成 / 可以去验证了";重启动作由用户手动做。
-- 热重载列必须有依据 (运行方式 → 有没有 HMR),不确定就问用户,不猜。
-- `go run .` 这类 **没有热重载**的写法要写进 rule,别让 AI 以为改了代码就自动生效。
-
-### 第四段起:项目补充条款
-
-用户针对这个项目给的其它纪律, **按顺序续写在后面**(第四段、第五段……),例如:
-
-- 文件写入位置 (禁止写哪些目录、跑测/调试产物必须落在哪儿)
-- 测试纪律 (用例归属、什么时候才允许新增 UT、端到端测试在哪台机器上跑)
-- 访问归属 (数据库 / 第三方接口只经哪个工具,不旁路直连)
-- dev 模式特有限制 (会真实计费的操作、凭据存储方式等)
-
-处理方式:用户给的条款 **逐条保留原意**、编号连续, **不合并不改写语义**。
-
-## 流程
-
-1. **收集事实 (不猜)**:
-   - `idea_get_run_configurations` → 真实存在的配置名 (第二段"run configuration"列只能来自这里)。
-   - `idea_search_file` 传 `q="*.run.xml"` + `paths: [".run"]` → 每个配置实际干什么 (命令 / 脚本 / npm script)。
-   - `package.json` / `pom.xml` / `go.mod` / `pyproject.toml` / `Cargo.toml` → 项目类型 → 决定第三段的热重载列。
-   - 端口:从 run configuration 的 option 或项目自身配置里读。
-2. **补齐缺口**:哪些应用进 standalone、哪些配置名对不上、端口与热重载不确定 —— 逐条向用户确认,不编。
-3. **写文件**:首次用 `idea_create_new_file` 写 `.opencode/rules/idea-standalone.md`;后续更新用 `idea_apply_patch`
-   **定向改**,不整文件重写。
-4. **校验**:第二段表格里每个配置名都能在 `idea_get_run_configurations` 里查到 —— **查不到就是错的**,不许用
-   "应该生效了"结案。
-
-## 铁律 (汇总)
-
-1. 四段结构不能缺:standalone 定义 → 应用与 run configuration → 热重载与重启提醒 → 用户补充条款。
-2. 第二段的启动方式 **只能是 IDEA run configuration**;不写手搓启动命令。
-3. AI 不启停本机进程 (含 `idea_execute_run_configuration`);判断需要重启时先取得用户明确授权。
-4. 配置名、端口、热重载三项都必须有依据;不确定就问用户。
-5. 用户补充条款保留原意、编号连续,不合并不改写。
-6. rule 只写项目级 `.opencode/rules/idea-standalone.md`,不写全局规则目录。
+- 只写项目根 `AGENTS.md` 里属于自己的标记块;不写 `.opencode/`、不写全局配置目录、不改业务代码。
+- 标记之外一律不动,包括项目自己写的内容和其他 skill 的标记块。
+- 第二段的启动方式 **只能是 IDEA run configuration**;不写手搓启动命令。
+- AI 不启停本机进程(含 `idea_execute_run_configuration`);判断需要重启时先取得用户明确授权。
+- 配置名、端口、热重载三项不确定就问用户,不编。

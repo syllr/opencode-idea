@@ -1251,7 +1251,7 @@ describe('plugin setup', () => {
     const cleanup = await plugin.setup(ctx);
 
     expect(state.skills.has('idea-standalone')).toBe(true);
-    expect(state.skills.get('idea-standalone').content).toContain('.opencode/rules/');
+    expect(state.skills.get('idea-standalone').content).toContain('<!-- idea-standalone:begin -->');
 
     await cleanup();
   });
