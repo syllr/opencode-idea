@@ -9,9 +9,9 @@
 //      in IntelliJ IDEA (reusing a running instance), loads the IDE
 //      capabilities immediately, and marks the project as an IDEA project;
 //      `/close-in-idea` clears that mark;
-//   3. registers the `idea-run-config` skill (marked projects only), which
-//      teaches the model how to manage `.run/*.run.xml` run configurations — a
-//      capability the IDE MCP server does not expose.
+//   3. registers the `idea-standalone` skill (marked projects only), which
+//      pins the project's local-run discipline: every app starts from an IDEA
+//      run configuration, and starting or restarting one is the user's call.
 //
 // A project that was never marked is left untouched. Everything is manual:
 // setup does NOT probe or connect the IDE. `/open-in-idea` probes, opens the

@@ -33,12 +33,12 @@ description: "为项目生成/维护 standalone(经 IDEA 启动、本机进程�
 表格,一行一个应用:
 
 | 应用 | run configuration | 目录 | 端口 | 说明 |
-|------|-------------------|------|------|------|
+| ---- | ----------------- | ---- | ---- | ---- |
 
 要点:
 
-- `run configuration` 列 **必须是 `idea_get_run_configurations` 里真实存在的名字**(不凭印象写);缺配置时先用
-  `idea-run-config` skill 建项目级 `.run/*.run.xml`,不要手搓启动命令。
+- `run configuration` 列 **必须是 `idea_get_run_configurations` 里真实存在的名字**(不凭印象写);**缺配置就交给用户**:
+  请他在 IDEA 里自己建一个,不要手搓启动命令,也不要自己写 `.run/*.run.xml`。
 - **启动路径只能是 IDEA run configuration**:不写 `pnpm dev &`、`nohup ... &` 这类后台命令,也不建议用户这么干。
 - 端口写清"固定 / 默认 / 被占用即启动失败"; **哪个应用必须先起来**也要写 (例如前端 dev server 的 proxy 指向本机后端)。
 - 端口读不到 (配置里没有、也没写在项目配置里)就 **问用户**,不要编。
@@ -48,7 +48,7 @@ description: "为项目生成/维护 standalone(经 IDEA 启动、本机进程�
 逐应用写清 **是 / 不是**热重载,以及对应的提醒纪律:
 
 | 应用                                                  | 热重载 | AI 改代码后                                           |
-|-------------------------------------------------------|--------|-------------------------------------------------------|
+| ----------------------------------------------------- | ------ | ----------------------------------------------------- |
 | 带 HMR 的 dev server(如 Vite)                         | 是     | 不提醒重启                                            |
 | 编译型 / 无热重载进程(如 `go run .`、`python -m ...`) | 否     | **必须**在回复里显式点名「需要重启 <应用>」并说明原因 |
 | 只能跑在远端、本机起不来的服务                        | 不适用 | 本机无法验证,按部署链部署后再验证                     |
@@ -73,10 +73,10 @@ description: "为项目生成/维护 standalone(经 IDEA 启动、本机进程�
 ## 流程
 
 1. **收集事实 (不猜)**:
-    - `idea_get_run_configurations` → 真实存在的配置名 (第二段"run configuration"列只能来自这里)。
-    - `idea_search_file` 传 `q="*.run.xml"` + `paths: [".run"]` → 每个配置实际干什么 (命令 / 脚本 / npm script)。
-    - `package.json` / `pom.xml` / `go.mod` / `pyproject.toml` / `Cargo.toml` → 项目类型 → 决定第三段的热重载列。
-    - 端口:从 run configuration 的 option 或项目自身配置里读。
+   - `idea_get_run_configurations` → 真实存在的配置名 (第二段"run configuration"列只能来自这里)。
+   - `idea_search_file` 传 `q="*.run.xml"` + `paths: [".run"]` → 每个配置实际干什么 (命令 / 脚本 / npm script)。
+   - `package.json` / `pom.xml` / `go.mod` / `pyproject.toml` / `Cargo.toml` → 项目类型 → 决定第三段的热重载列。
+   - 端口:从 run configuration 的 option 或项目自身配置里读。
 2. **补齐缺口**:哪些应用进 standalone、哪些配置名对不上、端口与热重载不确定 —— 逐条向用户确认,不编。
 3. **写文件**:首次用 `idea_create_new_file` 写 `.opencode/rules/idea-standalone.md`;后续更新用 `idea_apply_patch`
    **定向改**,不整文件重写。

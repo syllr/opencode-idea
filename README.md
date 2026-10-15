@@ -30,7 +30,7 @@ setup(启动, 每项目一次):
   不探测、不注册 MCP
 
 /open-in-idea(手动触发, 阻塞到就绪):
-  1. 写项目标记 = true + 同步内存缓存;注册 `idea-run-config` skill
+  1. 写项目标记 = true + 同步内存缓存;注册 `idea-standalone` skill
   2. 探测本地 JetBrains IDE MCP 服务(/stream)
      - 已就绪 → 再问 IDE「当前项目是否已打开」(`get_project_modules`,带项目路径)
        · 已打开 → 不重复 open;未打开 → open -a 打开
@@ -167,12 +167,12 @@ IDE 内置的 MCP Server 只能 **启动已有**的 run configuration(`execute_r
 也查不到运行状态**。配套的 IDEA 插件 [`idea-mcp-enhance`](https://github.com/syllr/idea-mcp-enhance)(IDEA 2026.2+,另装)
 补齐这四件事 —— 正好是「建 → 看 → 停 → 重启」一条链:
 
-| 工具 (OpenCode 里叫 `idea_*`)         | 作用                                                                                   |
-| ------------------------------------- | -------------------------------------------------------------------------------------- |
-| `idea_create_shell_run_configuration` | 新建**项目级** Shell 配置(写 `.run/<name>.run.xml`,可提交、团队共享);只支持 Shell 类型 |
-| `idea_list_running_configurations`    | **当前真正在跑**的配置:几个实例 / 各自 pid / 退出码。`>1` 个实例就是端口漂移的信号     |
-| `idea_stop_run_configuration`         | 停掉该配置的**全部**实例并等它们退出;没在跑也返回成功(幂等)                            |
-| `idea_rerun_run_configuration`        | 等同 IDE 的 **Rerun** 按钮:在跑就重启、没在跑就启动,读 `started` 判断是否真起来了      |
+| 工具 (OpenCode 里叫 `idea_*`)         | 作用                                                                                                                     |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `idea_create_shell_run_configuration` | 新建**项目级** Shell 配置(写 `.run/<name>.run.xml`);只支持 Shell 类型。**重操作 —— 只给固定流程建,且必须先取得用户同意** |
+| `idea_list_running_configurations`    | **当前真正在跑**的配置:几个实例 / 各自 pid / 退出码。`>1` 个实例就是端口漂移的信号                                       |
+| `idea_stop_run_configuration`         | 停掉该配置的**全部**实例并等它们退出;没在跑也返回成功(幂等)                                                              |
+| `idea_rerun_run_configuration`        | 等同 IDE 的 **Rerun** 按钮:在跑就重启、没在跑就启动,读 `started` 判断是否真起来了                                        |
 
 opencode-idea 对这一组工具做三件事:
 
@@ -181,28 +181,29 @@ opencode-idea 对这一组工具做三件事:
 2. **条件引导**:只有这次请求的工具快照里真的有它们,才在「运行配置」段里逐个点名。两个地方会跟着变:
    - 「运行配置」段写明**改完代码要重启无热重载的进程就用 `idea_rerun_run_configuration`,不要用 `pkill` / `kill` / shell**
      —— 这正是它要解决的问题:外部杀掉的进程 IDE 并不知道,Run 窗口仍显示运行中,下次启动就会撞端口;
-   - 「命令执行」段里那句"配置要先存在"的两条路线二选一:有 `create` 工具就指向它,没有就回落到"手写 `.run/*.run.xml`
-     - `idea-run-config` skill"。**没装插件时绝不会提到那个工具。**
+   - 「命令执行」段把**新建 run configuration 定性成重操作**:一个项目通常只建几个(固定要跑的构建 / 装依赖 / dev server),
+     **不是随手一条命令就建一个**,而且要**先告诉用户建什么、为什么,取得同意再动手**。只有最后"用哪条路建"才按工具是否
+     存在分流:有 `create` 工具就指向它,没有就**让用户自己去 IDEA 里建** —— 引导不教模型手写 `.run/*.run.xml`。**没装插件时
+     绝不会提到那个工具。**
 3. **工具名清单**写在 `src/mcp/enhance.js`(与原生 IDE 的 `src/mcp/idea.js` 分开放:原生走原生,插件的走插件的),
    与该仓库的 `RunLifecycleSchemas.kt` 保持同步。工具按**存在的子集**逐个点名(而不是「有就全写」),这样旧版本的配套
    插件少给一两个工具时,引导也不会提到它们。
 
 > 没装 `idea-mcp-enhance` 的 IDE 一切照旧:工具不存在,引导也不提,模型继续按原来的方式工作。
 
-## Run Configuration 管理 (skill)
+## Run Configuration:能建就用工具,不能建就交给用户
 
-内置 MCP 只能 **查**(`get_run_configurations`)和 **执行**(`execute_run_configuration`)run configuration。**增删改**在装了配套插件
-时能做一部分(新建 Shell 配置,见上面的「Run Configuration 全套」),不装时完全没有 —— 所以插件在**被标记的项目**里注册一个
-`idea-run-config` skill 来覆盖剩下的部分(任意类型的新建、修改、删除):
+内置 MCP 只能 **查**(`get_run_configurations`)和 **执行**(`execute_run_configuration`)run configuration;新建靠配套插件的
+`idea_create_shell_run_configuration`(只有 Shell 类型,见上面的「Run Configuration 全套」);**修改和删除永远没有工具**。
 
-- 只操作 **项目级** `.run/<name>.run.xml`(可提交 git、团队共享), **不碰** `.idea/workspace.xml`;
-- 不内置任何按类型的模板 —— 先找项目里的 **真实样本**(`**/*.run.xml`,或让用户在 IDEA 里勾 "Store as project file"
-  建一个)当参照,再写;
-- 写完必须用 `idea_get_run_configurations` **校验它能被列出**、并用 `idea_execute_run_configuration` **实跑确认**;
-- 改配置用 `idea_apply_patch` **定向改 option**,不整文件重写。
+所以插件的立场是:
 
-> **和 `create_shell_run_configuration` 的关系**:那个工具只做 **Shell 类型**、且只在装了配套插件时存在;skill 覆盖的是**全部类型**
-> 和**无插件**的情况,所以两者不是替代关系。引导文本会按当前请求里实际有哪个工具,把「配置要先存在」那一步指向对应的路线。
+- **能建**(装了配套插件)→ 用工具,但**必须先取得用户同意**(新建是重操作,见上文);
+- **不能建**(没装插件,或要的不是 Shell 类型)→ **请用户自己在 IDEA 里建**,模型既不手搓启动命令,也不手写 `.run/*.run.xml`。
+
+> **曾经有一个 `idea-run-config` skill 教模型手写 `.run/*.run.xml`,已经删掉。** 理由:手写那条路很脆 —— `type` 写错 IDE 会
+> **静默忽略整个文件、日志里也不报**,模型的唯一判据只有"`idea_get_run_configurations` 里看不看得到";而它想补的"新建"能力现在
+> 由配套插件提供。要配置但没有工具,就**交给用户**,比让模型猜 option 名可靠。
 
 **skill 的生命周期跟随项目标记**:`/open-in-idea` 打标记时注册、`/close-in-idea` 清标记时注销;曾被标记过的项目在
 `setup` 时(读回标记)就会注册。未标记的项目不受影响。文档放在 `skills/<id>/SKILL.md`(每个 skill 一个目录,`name` /
@@ -217,7 +218,7 @@ opencode-idea 对这一组工具做三件事:
    直跑(不容器化、不部署),只启动其中一部分是常态;启停一律由用户在 IDEA 里手动完成,AI 不得代为启停(含经
    `idea_execute_run_configuration`),判断需要重启时先取得用户明确授权;
 2. **启动哪些应用**:一行一个应用,启动路径**只能是 IDEA run configuration**(配置名必须能在 `idea_get_run_configurations`
-   里查到;缺配置先走 `idea-run-config` skill 建 `.run/*.run.xml`),端口与被依赖的先后顺序一并写明;
+   里查到;**缺配置就交给用户**去 IDEA 里建),端口与被依赖的先后顺序一并写明;
 3. **热重载矩阵**:逐应用标"是 / 否" —— 带 HMR 的 dev server 改动后**不用**提示重启;`go run .` 这类无热重载的进程改动后
    **必须**显式点名「需要重启 <应用>」,不得在未提示的情况下宣称"改完可验证";
 4. **项目补充条款**:文件写入位置、测试纪律、访问归属、dev 模式特有限制等,按用户给的条款逐条续写、保留原意。
@@ -231,7 +232,7 @@ opencode-idea 对这一组工具做三件事:
 
 - 判据是:这条命令**依赖项目的运行时版本**。是 → run configuration;不是(看文件、git、临时脚本)→ 原生 shell。
 - run configuration 会继承开发时具体配的那套运行时,或者干脆是你那个应用配好的运行时,所以这就是个应用。
-- 配置必须**先在 IDEA 里存在**(项目级 `.run/*.run.xml`,可提交 git、团队共享)。没有就先建一个,再跑;
+- 配置必须**先在 IDEA 里存在**(项目级 `.run/*.run.xml`)。没有就先建一个,再跑;
 
 > 为什么不再用 IDE 终端:`idea_execute_terminal_command` 之前被当成"自动继承 IDE 项目环境"的通道而保留暴露,但实测
 > **它拿不到项目配好的 JDK / Node / Python 版本**,和原生 shell 没有区别。既然没有优势,就把它从模型可见的工具表里
@@ -352,7 +353,7 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
 
 ## 行为
 
-- **被标记的项目**:启动读回标记后挂上 shell 环境钩子 (环境值待接入后填充)、注册 `idea-run-config` skill;IDE MCP 由
+- **被标记的项目**:启动读回标记后挂上 shell 环境钩子 (环境值待接入后填充)、注册 `idea-standalone` skill;IDE MCP 由
   `/open-in-idea` 注册。
 - **未标记的项目**:不改环境、不注册、不注入任何 IDEA 提示 (每请求零开销;setup 时只做一次项目标记读取)。
 - **手动接入 + 就绪即返回**:`/open-in-idea` 会 `open -a` 拉起 IDEA 并**等 IDE MCP 就绪**(冷启动数十秒,上限 60s);就绪后

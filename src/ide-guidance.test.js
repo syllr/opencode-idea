@@ -238,11 +238,32 @@ describe('buildIdeGuidance', () => {
     // XML via the skill is the only route. Naming a tool that is not in the
     // request would send the model at something it cannot call.
     const withTool = buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS });
-    expect(withTool).toContain('没有就用 `idea_create_shell_run_configuration` 建一个');
+    expect(withTool).toContain('新建方式:用 `idea_create_shell_run_configuration`(只支持 Shell 类型)');
 
     const withoutTool = buildIdeGuidance(PROJECT);
-    expect(withoutTool).toContain('见 idea-run-config skill');
+    expect(withoutTool).toContain('新建方式:请用户自己在 IDEA 里建');
+    expect(withoutTool).not.toContain('idea-run-config');
     expect(withoutTool).not.toContain('idea_create_shell_run_configuration');
+  });
+
+  it('frames creating a run configuration as heavy and consent-gated', () => {
+    // Measured misframing: "no configuration? create one" reads like a routine
+    // step, but a run configuration is a committed artefact a project has only a
+    // handful of. Both the command-execution section and the per-tool line must
+    // say so, and the consent requirement must not be dropped from either.
+    for (const text of [
+      buildIdeGuidance(PROJECT),
+      buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS }),
+    ]) {
+      expect(text).toContain('重资产');
+      expect(text).toContain('不是随手一条命令就建一个');
+      expect(text).toContain('取得同意再动手');
+    }
+
+    const withTool = buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS });
+    expect(withTool).toContain('**且建之前必须先取得用户同意**');
+    // The old framing must not creep back.
+    expect(withTool).not.toContain('没有就');
   });
 
   it('keeps the run-lifecycle tools inside the run configuration section', () => {

@@ -1232,59 +1232,56 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('registers the run-configuration skill for a project marked in an earlier run', async () => {
-    const { ctx, state } = fakeCtx();
-    state.storage.set(`project/${projectPath}`, true);
-    const cleanup = await plugin.setup(ctx);
-
-    const skill = state.skills.get('idea-run-config');
-    expect(skill).toBeTruthy();
-    expect(skill.description).toContain('run configuration');
-    expect(skill.content).toContain('.run/');
-    expect(skill.content).toContain('idea_get_run_configurations');
-
-    await cleanup();
-  });
-
   it('registers the standalone-mode skill for a project marked in an earlier run', async () => {
     const { ctx, state } = fakeCtx();
     state.storage.set(`project/${projectPath}`, true);
     const cleanup = await plugin.setup(ctx);
 
-    // Every shipped skill follows the project mark, so the standalone rule
-    // generator is available wherever the run-config skill is.
     expect(state.skills.has('idea-standalone')).toBe(true);
     expect(state.skills.get('idea-standalone').content).toContain('.opencode/rules/');
 
     await cleanup();
   });
 
-  it('registers the run-configuration skill when /open-in-idea marks the project', async () => {
+  it('ships no run-configuration skill at all', async () => {
+    // Removed deliberately: the IDE plugin owns Shell creation, edit/delete were
+    // always tool-less, and hand-authored `.run/*.run.xml` is the fragile path.
+    // Anything the agent cannot create now goes to the user.
+    const { ctx, state } = fakeCtx();
+    state.storage.set(`project/${projectPath}`, true);
+    const cleanup = await plugin.setup(ctx);
+
+    expect(state.skills.has('idea-run-config')).toBe(false);
+
+    await cleanup();
+  });
+
+  it('registers the standalone-mode skill when /open-in-idea marks the project', async () => {
     const { ctx, state } = fakeCtx({ openInIde: false });
     const cleanup = await plugin.setup(ctx);
     expect(state.skills.size).toBe(0);
 
     await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
 
-    expect(state.skills.get('idea-run-config')).toBeTruthy();
+    expect(state.skills.get('idea-standalone')).toBeTruthy();
 
     await cleanup();
   });
 
-  it('removes the run-configuration skill when /close-in-idea clears the mark', async () => {
+  it('removes the skills when /close-in-idea clears the mark', async () => {
     const { ctx, state } = fakeCtx({ openInIde: false });
     const cleanup = await plugin.setup(ctx);
 
     await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
-    expect(state.skills.has('idea-run-config')).toBe(true);
+    expect(state.skills.has('idea-standalone')).toBe(true);
 
     await state.commands.get('close-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
-    expect(state.skills.has('idea-run-config')).toBe(false);
+    expect(state.skills.has('idea-standalone')).toBe(false);
 
     await cleanup();
   });
 
-  it('skips the run-configuration skill for an unmarked project', async () => {
+  it('skips the skills for an unmarked project', async () => {
     const bare = mkdtempSync(path.join(tmpdir(), 'ojbm-bare-'));
     const { ctx, state } = fakeCtx({ directory: bare });
     const cleanup = await plugin.setup(ctx);

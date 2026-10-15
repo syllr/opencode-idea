@@ -5,15 +5,13 @@ import { parseSkillFrontmatter, readSkill, readSkills, SKILL_FILE_NAME } from '.
 describe('shipped skills', () => {
   it('loads every skill directory into a Skill.Info-shaped definition', () => {
     const skills = readSkills();
-    expect(skills.map((skill) => skill.id)).toContain('idea-run-config');
-    expect(skills.map((skill) => skill.id)).toContain('idea-standalone');
+    expect(skills.map((skill) => skill.id)).toEqual(['idea-standalone']);
 
-    const skill = readSkill('idea-run-config');
+    const skill = readSkill('idea-standalone');
     // `Skill.Info` requires exactly these keys (see @opencode/schema/skill):
     // `id` / `name` / `description?` / `autoinvoke?` / `path` / `content`.
     expect(Object.keys(skill).sort()).toEqual(['content', 'description', 'id', 'name', 'path']);
-    expect(skill.name).toBe('idea-run-config');
-    expect(skill.description).toContain('run configuration');
+    expect(skill.name).toBe('idea-standalone');
 
     // `path` must be an absolute path to a file that really ships.
     expect(skill.path.startsWith('/')).toBe(true);
@@ -25,36 +23,21 @@ describe('shipped skills', () => {
     expect(skill.content.startsWith('---')).toBe(false);
   });
 
-  it('keeps the run-config skill teaching the .run/ workflow', () => {
-    const content = readSkill('idea-run-config').content;
-    expect(content).toContain('只有 `.run/`');
-    expect(content).toContain('ProjectRunConfigurationManager');
-    expect(content).toContain('.idea/workspace.xml');
-    expect(content).toContain('idea_search_file');
-    expect(content).toContain('Store as project file');
-    expect(content).toContain('idea_get_run_configurations');
-    expect(content).toContain('idea_execute_run_configuration');
-    expect(content).toContain('/open-in-idea');
-    expect(content).toContain('EXECUTE_IN_TERMINAL');
-    expect(content).toContain('不是契约');
-    expect(content).toContain('ShConfigurationType');
-    expect(content).toContain('CompoundRunConfiguration');
-    expect(content).toContain('只做项目级配置');
+  it('ships no skill about authoring run configurations', () => {
+    // `idea-run-config` was removed deliberately: the IDE plugin owns Shell
+    // creation, editing and deleting were always tool-less, and teaching the
+    // model to hand-write `.run/*.run.xml` was the fragile half (a wrong `type`
+    // makes the IDE ignore the whole file, silently). Anything that needs a
+    // configuration the agent cannot create now goes to the user.
+    expect(readSkills().map((skill) => skill.id)).not.toContain('idea-run-config');
+    expect(() => readSkill('idea-run-config')).toThrow();
   });
 
-  it('routes Shell creation through the enhance tool when it is available', () => {
-    // The skill is registered for every marked project, but the tool only exists
-    // when the companion plugin is installed, so the skill branches on the tool
-    // list instead of assuming either way. Hand-writing XML stays the fallback.
-    const content = readSkill('idea-run-config').content;
-    expect(content).toContain('idea_create_shell_run_configuration');
-    expect(content).toContain('自己看一眼工具列表就知道在不在');
-    expect(content).toContain('scriptPath');
-    expect(content).toContain('cloneFrom');
-    expect(content).toContain('canRun');
-    // Edit and delete have no tool at all — that must stay explicit.
-    expect(content).toContain('修改和删除永远没有工具');
-    expect(content).toContain('idea_create_new_file');
+  it('sends a missing run configuration to the user instead of authoring XML', () => {
+    const content = readSkill('idea-standalone').content;
+    expect(content).not.toContain('idea-run-config');
+    expect(content).toContain('缺配置就交给用户');
+    expect(content).toContain('不要自己写 `.run/*.run.xml`');
   });
 
   it('keeps the standalone skill teaching the four-part rule', () => {

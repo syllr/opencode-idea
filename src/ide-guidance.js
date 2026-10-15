@@ -43,8 +43,8 @@ function runLifecycleLines(present) {
   if (present.includes(CREATE_SHELL_RUN_CONFIGURATION_TOOL)) {
     lines.push(
       `- \`${CREATE_SHELL_RUN_CONFIGURATION_TOOL}\`(\`configurationName\` + \`scriptPath\` / \`scriptText\` / ` +
-        `\`cloneFrom\` 三选一):新建项目级 Shell 配置(写 \`.run/<name>.run.xml\`,可提交);只支持 Shell 类型,` +
-        `建完用 \`${RERUN_RUN_CONFIGURATION_TOOL}\` 起它。`,
+        `\`cloneFrom\` 三选一):新建项目级 Shell 配置(写 \`.run/<name>.run.xml\`);` +
+        `**重操作** —— 只给固定要跑、反复要用的流程建,**且建之前必须先取得用户同意**;只支持 Shell 类型。`,
     );
   }
   if (present.includes(LIST_RUNNING_CONFIGURATIONS_TOOL)) {
@@ -71,9 +71,9 @@ function runLifecycleLines(present) {
  * Lines for the command-execution section.
  *
  * The "where does a configuration come from" half is conditional: with the
- * enhance plugin there is a tool for it, without one it is hand-authored XML
- * and the `idea-run-config` skill is the only route. Saying "use a tool" when
- * the tool is absent would send the model at something it cannot call.
+ * enhance plugin there is a tool for it, without one the agent must not author
+ * `.run/*.run.xml` itself — it asks the user. Saying "use a tool" when the tool
+ * is absent would send the model at something it cannot call.
  *
  * @param {readonly string[]} present
  * @returns {string[]}
@@ -82,9 +82,11 @@ function commandExecutionLines(present) {
   const canCreate = present.includes(CREATE_SHELL_RUN_CONFIGURATION_TOOL);
   return [
     `- 需要项目环境的命令(依赖 IDE 里配好的 JDK / Node / Python 版本等):用 \`idea_execute_run_configuration\`,不要用原生 \`shell\`。`,
+    `- run configuration 是**重资产**:一个项目通常只建几个(固定要跑的构建 / 装依赖 / dev server 之类),**不是随手一条命令就建一个**。`,
+    `- 要新建:先确认它**反复要用、且属于项目固定流程**;确认后**先告诉用户要建什么、为什么,取得同意再动手**,别自己决定。`,
     canCreate
-      ? `- 配置要先存在:没有就用 \`${CREATE_SHELL_RUN_CONFIGURATION_TOOL}\` 建一个(Shell 类型),再跑。`
-      : `- 配置要先存在:项目级 \`.run/*.run.xml\`(见 idea-run-config skill);没有就先建一个,再跑。`,
+      ? `- 新建方式:用 \`${CREATE_SHELL_RUN_CONFIGURATION_TOOL}\`(只支持 Shell 类型)。`
+      : `- 新建方式:请用户自己在 IDEA 里建 —— **不要自己写 \`.run/*.run.xml\`**,也不要手搓启动命令。`,
     `- 不需要项目环境的命令:用原生 \`shell\`。`,
   ];
 }
