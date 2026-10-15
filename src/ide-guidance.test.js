@@ -15,55 +15,37 @@ import {
 const PROJECT = '/Users/me/project';
 
 describe('buildIdeGuidance', () => {
-  it('states the project path and the in-project requirement', () => {
+  it('states the project path and that idea_* is scoped to it', () => {
     const text = buildIdeGuidance(PROJECT);
     expect(text).toContain(PROJECT);
-    expect(text).toContain('必须使用');
+    expect(text).toContain('只作用于');
   });
 
   it('covers every tool exposed to the model, one line each', () => {
     const text = buildIdeGuidance(PROJECT);
     for (const tool of [
-      // 检索
-      'idea_search_text',
-      'idea_search_regex',
-      'idea_search_file',
-      'idea_search_symbol',
-      // 阅读
+      // 读写例外
       'idea_read_file',
-      'idea_list_directory_tree',
+      // 符号
+      'idea_search_symbol',
       'idea_get_symbol_info',
+      'idea_analyze_calls',
+      // 项目与编辑器
+      'idea_list_directory_tree',
+      'idea_get_project_modules',
+      'idea_get_project_dependencies',
       'idea_get_all_open_file_paths',
       'idea_open_file_in_editor',
-      // 写入
-      'idea_apply_patch',
-      'idea_create_new_file',
+      // 重构与格式化
       'idea_rename_refactoring',
       'idea_reformat_file',
       // 校验
       'idea_lint_files',
       'idea_get_file_problems',
       'idea_build_project',
-      // 分析
-      'idea_analyze_calls',
-      'idea_get_project_modules',
-      'idea_get_project_dependencies',
       // 运行配置
       'idea_get_run_configurations',
       'idea_execute_run_configuration',
-      // 数据库
-      'idea_list_database_connections',
-      'idea_test_database_connection',
-      'idea_list_database_schemas',
-      'idea_list_schema_object_kinds',
-      'idea_list_schema_objects',
-      'idea_introspect_schema',
-      'idea_get_database_object_description',
-      'idea_execute_sql_query',
-      'idea_fetch_query_result',
-      'idea_preview_table_data',
-      'idea_list_recent_sql_queries',
-      'idea_cancel_sql_query',
     ]) {
       expect(text).toContain(tool);
     }
@@ -75,9 +57,6 @@ describe('buildIdeGuidance', () => {
     expect(text).toContain('`childOffset` 翻页');
     expect(text).toContain('EXECUTE_IN_TERMINAL: false');
     expect(text).toContain('supportsDynamicLaunchOverrides');
-    expect(text).toContain('`databaseName` 为空、库名在 `schemaName`');
-    expect(text).toContain('一次 10 行');
-    expect(text).toContain('`status` 变 `CANCELLED`');
     expect(text).toContain('没返回即没问题');
   });
 
@@ -128,35 +107,77 @@ describe('buildIdeGuidance', () => {
     }
   });
 
-  it('scopes the in-project rule to code and file operations', () => {
+  it('routes only IDE-only capabilities through idea_*', () => {
+    // The rule used to be "everything inside the project goes through the IDE".
+    // It is now capability-based: reading, writing and searching are native, and
+    // only what needs the IDE's own model/semantics goes through idea_*.
     const text = buildIdeGuidance(PROJECT);
-    expect(text).toContain('代码与文件操作');
+    expect(text).toContain('只有 IDE 才有的能力才用 `idea_*`');
+    expect(text).toContain('读写与搜索用原生工具');
+    expect(text).toContain('不要为读一个文件、写一个文件、搜一段文本去绕 `idea_*`');
     expect(text).not.toContain('## 例外');
     expect(text).not.toContain('版本控制用原生');
     expect(text).not.toContain('idea_git_status');
   });
 
-  it('routes database work through the IDE Database tools', () => {
-    const text = buildIdeGuidance(PROJECT);
-    expect(text).toContain('### 数据库');
-    expect(text).toContain('idea_list_database_connections');
-    expect(text).toContain('先建议用户在 IDEA 里配好数据源');
-    expect(text).toContain('不要向用户索取数据库凭据');
+  it('keeps idea_read_file but scopes it to what is native is unable to do', () => {
+    // It is the ONLY way to read inside a dependency jar (`<jar>!/<entry>`) or the
+    // JDK image (`jrt://`). Kept for exactly that, and pointed back at `read` for
+    // everything else — naming it without the restriction would undo the rule
+    // right above it.
+    for (const text of [
+      buildIdeGuidance(PROJECT),
+      buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS }),
+    ]) {
+      expect(text).toContain('唯一例外:`idea_read_file`');
+      expect(text).toContain('只在要读包内文件时用它');
+      expect(text).toContain('<jar>!/<entry>');
+      expect(text).toContain('jrt://');
+      expect(text).toContain('普通文件一律用 `read`');
+    }
   });
 
-  it('forbids the native counterpart of each operation', () => {
-    const text = buildIdeGuidance(PROJECT);
-    expect(text).toContain('不要用 `grep`');
-    expect(text).toContain('不要用 `glob`');
-    expect(text).toContain('不要用 `read`');
-    expect(text).toContain('不要用 `edit`');
-    expect(text).toContain('不要用 `write`');
+  it('says nothing about the IDE Database tools', () => {
+    // Dropped on purpose: the section was a long list of tools plus a policy note,
+    // and the tools carry their own descriptions. It must not creep back in.
+    for (const text of [
+      buildIdeGuidance(PROJECT),
+      buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS }),
+    ]) {
+      expect(text).not.toContain('数据库');
+      expect(text).not.toContain('idea_list_database_connections');
+      expect(text).not.toContain('idea_execute_sql_query');
+      expect(text).not.toContain('idea_fetch_query_result');
+    }
   });
 
-  it('keeps the boundary at the project path', () => {
-    const text = buildIdeGuidance(PROJECT);
-    expect(text).toContain('路径在');
-    expect(text).toContain('外:用其他可用工具');
+  it('does not send text/file reads, writes and searches through the IDE', () => {
+    // These have a perfectly good native tool, and routing them through the IDE
+    // only added a hop. The guidance must not name them at all.
+    for (const text of [
+      buildIdeGuidance(PROJECT),
+      buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS }),
+    ]) {
+      for (const tool of [
+        'idea_search_text',
+        'idea_search_regex',
+        'idea_search_file',
+        'idea_apply_patch',
+        'idea_create_new_file',
+      ]) {
+        expect(text).not.toContain(tool);
+      }
+      // ...and must not forbid their native counterparts either.
+      for (const prohibition of [
+        '不要用 `grep`',
+        '不要用 `glob`',
+        '不要用 `read`',
+        '不要用 `edit`',
+        '不要用 `write`',
+      ]) {
+        expect(text).not.toContain(prohibition);
+      }
+    }
   });
 
   it('states the general rule: a listed native tool needs no search', () => {
@@ -182,7 +203,7 @@ describe('buildIdeGuidance', () => {
     const text = buildIdeGuidance(PROJECT);
     const codeMode = text.indexOf('Code Mode');
     expect(codeMode).toBeGreaterThan(-1);
-    expect(codeMode).toBeLessThan(text.indexOf('内的代码与文件操作'));
+    expect(codeMode).toBeLessThan(text.indexOf('只有 IDE 才有的能力才用'));
   });
 
   it('requires direct tool calls instead of execute wrapping', () => {

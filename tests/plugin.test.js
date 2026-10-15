@@ -497,9 +497,9 @@ describe('plugin setup', () => {
     const system = request.system;
     expect(system).toHaveLength(2);
     expect(system.every((part) => part.type === 'text')).toBe(true);
-    expect(system[1].text).toContain('必须使用');
+    expect(system[1].text).toContain('只有 IDE 才有的能力才用');
     expect(system[1].text).toContain(projectPath);
-    expect(system[1].text).toContain('idea_apply_patch');
+    expect(system[1].text).toContain('idea_search_symbol');
     expect(request.tools).toHaveProperty('edit');
     expect(request.tools).toHaveProperty('write');
     expect(request.tools).toHaveProperty('patch');
@@ -530,6 +530,9 @@ describe('plugin setup', () => {
         idea_get_python_environment: {},
         idea_get_repositories: {},
         idea_create_database_connection: {},
+        idea_execute_sql_query: {},
+        idea_search_text: {},
+        idea_apply_patch: {},
       },
     };
     await state.sessionHook(request);
@@ -537,15 +540,25 @@ describe('plugin setup', () => {
     // Version control goes through the native tool, and the router dispatcher is
     // redundant while every routed tool is exposed directly. The Debugger, Dev
     // Kit MCP, Inspection KTS MCP and Python Environment MCP groups are hidden as
-    // a whole, and data sources are created/edited by the user in the IDE.
-    expect(request.tools).not.toHaveProperty('idea_git_status');
-    expect(request.tools).not.toHaveProperty('idea_execute_tool');
-    expect(request.tools).not.toHaveProperty('idea_xdebug_get_stack');
-    expect(request.tools).not.toHaveProperty('idea_recognize_ij_module_kind');
-    expect(request.tools).not.toHaveProperty('idea_generate_psi_tree');
-    expect(request.tools).not.toHaveProperty('idea_get_python_environment');
-    expect(request.tools).not.toHaveProperty('idea_get_repositories');
-    expect(request.tools).not.toHaveProperty('idea_create_database_connection');
+    // a whole; the whole Database group is hidden; and plain file access with a
+    // native equivalent (search / patch / create) is hidden too.
+    for (const name of [
+      'idea_git_status',
+      'idea_execute_tool',
+      'idea_xdebug_get_stack',
+      'idea_recognize_ij_module_kind',
+      'idea_generate_psi_tree',
+      'idea_get_python_environment',
+      'idea_get_repositories',
+      'idea_create_database_connection',
+      'idea_execute_sql_query',
+      'idea_search_text',
+      'idea_apply_patch',
+    ]) {
+      expect(request.tools).not.toHaveProperty(name);
+    }
+
+    // Kept: it is the only way to read inside a jar or the jrt:// image.
     expect(request.tools).toHaveProperty('idea_read_file');
 
     // The IDE terminal is hidden: it does not inherit the project's environment,
@@ -607,7 +620,7 @@ describe('plugin setup', () => {
     const after = { system: [], tools: { idea_read_file: {} } };
     await state.sessionHook(after);
     expect(after.system).toHaveLength(2);
-    expect(after.system[1].text).toContain('必须使用');
+    expect(after.system[1].text).toContain('只有 IDE 才有的能力才用');
 
     await cleanup();
   });
@@ -658,7 +671,7 @@ describe('plugin setup', () => {
     expect(serving.tools).toHaveProperty('idea_read_file');
     expect(serving.tools).not.toHaveProperty('idea_git_status');
     expect(serving.system).toHaveLength(2);
-    expect(serving.system[1].text).toContain('必须使用');
+    expect(serving.system[1].text).toContain('只有 IDE 才有的能力才用');
 
     // Not serving after serving: OpenCode's registry has already dropped the IDEA
     // tools, so a request that carries none IS the "the bridge is gone" case —
@@ -1004,7 +1017,7 @@ describe('plugin setup', () => {
     await state.sessionHook(request);
     expect(request.tools).toHaveProperty('idea_read_file');
     expect(request.system).toHaveLength(2);
-    expect(request.system[1].text).toContain('必须使用');
+    expect(request.system[1].text).toContain('只有 IDE 才有的能力才用');
 
     await cleanup();
   });

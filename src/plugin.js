@@ -121,8 +121,17 @@ const IDEA_TOOL_PREFIX = 'idea_';
  * - Python Environment MCP: Python interpreter detection and configuration.
  *   Hidden; a project's interpreter is chosen in the IDE's own settings, and the
  *   model has no business reconfiguring it.
- * - Database data sources: connections are configured by the user in the IDE,
- *   so the AI only reads and queries them; create/edit stay hidden.
+ * - Database: the connection tools (`create` / `edit`) stay hidden because the
+ *   user configures data sources in the IDE. The query tools are hidden too —
+ *   the IDE is not this plugin's idea of a database client, and a model that
+ *   wants to inspect a database should be told to use a real one.
+ * - Plain file access: `idea_search_text` / `idea_search_regex` /
+ *   `idea_search_file` / `idea_apply_patch` / `idea_create_new_file` each have a
+ *   native tool that does the job (`grep` / `grep -E` / `glob` / `edit` /
+ *   `write`); routing them through the IDE only adds a hop. `idea_read_file` is
+ *   NOT hidden — it is the only way to read a file inside a jar (`<jar>!/<entry>`)
+ *   or the JDK's `jrt://` image, so the guidance keeps it for exactly that and
+ *   sends ordinary reads to the native tool.
  * - IDE terminal: `idea_execute_terminal_command` does NOT inherit the project's
  *   environment. It was exposed on the assumption that it ran with the SDKs the
  *   user configured in the IDE (JDK, Node, Python, ...), but measured against a
@@ -171,10 +180,29 @@ export const HIDDEN_IDEA_TOOLS = [
   // Python Environment MCP
   'idea_configure_python_interpreter',
   'idea_get_python_environment',
-  // Database data sources: the user configures them in the IDE, the AI only
-  // reads and queries them.
+  // Database: connections are the user's, and the IDE is not this plugin's
+  // database client.
   'idea_create_database_connection',
   'idea_edit_database_connection',
+  'idea_list_database_connections',
+  'idea_test_database_connection',
+  'idea_list_database_schemas',
+  'idea_list_schema_object_kinds',
+  'idea_list_schema_objects',
+  'idea_introspect_schema',
+  'idea_get_database_object_description',
+  'idea_execute_sql_query',
+  'idea_fetch_query_result',
+  'idea_preview_table_data',
+  'idea_list_recent_sql_queries',
+  'idea_cancel_sql_query',
+  // Plain file access with a native equivalent (`idea_read_file` stays: only it
+  // can read inside a jar or the jrt:// image).
+  'idea_search_text',
+  'idea_search_regex',
+  'idea_search_file',
+  'idea_apply_patch',
+  'idea_create_new_file',
 ];
 
 /**

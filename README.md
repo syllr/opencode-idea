@@ -94,21 +94,25 @@ Brave Mode 后再次执行 `/open-in-idea` 即可接上。
 输入 `/close-in-idea`:**注销当前项目的 IDE MCP** + 删除项目标记(持久化 + 内存缓存一并清),并清空注入的环境变量。
 之后 `idea_*` 工具不再可用,也不会再因失败自动接入。想重新接入,再次执行 `/open-in-idea`。
 
-## IDE 工具优先 (直接调用引导)
+## 按能力选工具 (直接调用引导)
 
-IDE MCP 可用时,插件通过 **系统提示注入**提高模型主动使用 IDEA MCP 的概率;不修改任何工具 (原生或 IDEA)
+IDE MCP 可用时,插件通过 **系统提示注入**告诉模型**哪些事该走 IDE**;不修改任何工具 (原生或 IDEA)
 的定义、描述或可用性:
 
-1. **系统提示注入**:通过 `ctx.session.hook("context", …)` 往每次请求的 system 里追加一段「项目内操作优先使用 IDEA
-   MCP」的直接调用引导 + 能力映射表 (`src/ide-guidance.js`),含工具名 (`idea_<name>`)与关键参数名:
-   - 检索 → `idea_search_text` / `idea_search_regex` / `idea_search_file`(参数 `q`,可带 `paths` 收窄)
-   - 读文件 → `idea_read_file`(`file_path` / `offset` / `limit`);目录 → `idea_list_directory_tree`
-   - 改文件 → `idea_apply_patch`(`input`);新建 → `idea_create_new_file`(`pathInProject`)
-   - 校验 → `idea_lint_files` / `idea_get_file_problems`
-   - 重构/格式化 → `idea_rename_refactoring` / `idea_reformat_file`
-   - 数据库 → `idea_list_database_connections` / `idea_execute_sql_query` / `idea_preview_table_data` 等;没有数据源时先建议用户在
-     IDEA 里配置
-   - 边界:只约束 **代码与文件操作**;未暴露的领域 (版本控制、shell/终端等) 工具表里没有 `idea_*` 选项,模型自然走原生
+1. **系统提示注入**:通过 `ctx.session.hook("context", …)` 往每次请求的 system 里追加一段引导 + 能力映射表
+   (`src/ide-guidance.js`),含工具名 (`idea_<name>`)与关键参数名:
+   - **只有 IDE 才有的能力才写进去** —— 符号级检索、项目模型、检查与构建、重构与格式化、运行配置:
+     - 符号 → `idea_search_symbol` / `idea_get_symbol_info` / `idea_analyze_calls`
+     - 项目与编辑器 → `idea_get_project_modules` / `idea_get_project_dependencies` / `idea_list_directory_tree` /
+       `idea_get_all_open_file_paths` / `idea_open_file_in_editor`
+     - 重构/格式化 → `idea_rename_refactoring` / `idea_reformat_file`
+     - 校验 → `idea_lint_files` / `idea_get_file_problems` / `idea_build_project`
+     - 运行配置 → `idea_get_run_configurations` / `idea_execute_run_configuration`(+ 配套插件的启停工具)
+   - **读、写、找文本、找文件用原生工具**(`read` / `write` / `edit` / `grep` / `glob`)—— 这几件事走 IDE 只是多一跳,
+     所以映射表里**不出现** `idea_search_text` / `idea_search_regex` / `idea_search_file` / `idea_apply_patch` /
+     `idea_create_new_file`,也不再禁止它们的原生对应物。
+   - **唯一例外是 `idea_read_file`**:它是读**包内文件**的唯一手段(`<jar>!/<entry>` 的依赖 jar 内文件、`jrt://` 的
+     JDK 镜像),引导只在这个用途上点名它,并写明普通文件一律用 `read`。
 
    不会把整份工具目录重复塞进 system prompt,也不要求模型先写编排代码。IDEA MCP 工具自身的
    description/schema 仍是参数使用的权威来源;工具返回业务错误时先修正参数,不要误判成工具不可用。MCP 不可用时立即
@@ -390,11 +394,16 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
   不存在 —— 用错会让 `ctx.skill.transform` 抛 `SchemaError`,而**任何 transform 失败都会禁用整个插件**(0.0.6 就是这样丢了
   `/open-in-idea`)。同理,`Skill.Info` 的完整字段是 `id` / `name` / `description?` / `autoinvoke?` / `path` / `content`。
 - 需要项目环境的命令走 `idea_execute_run_configuration`(run configuration 要先在 IDEA 里配好),不用原生 shell。
-- 一批用不到的 IDEA MCP 工具被硬编码隐藏 (`src/plugin.js` 的 `HIDDEN_IDEA_TOOLS`,共 31 个):VCS (`idea_git_status` /
+- 一批用不到的 IDEA MCP 工具被硬编码隐藏 (`src/plugin.js` 的 `HIDDEN_IDEA_TOOLS`,**共 48 个**):VCS (`idea_git_status` /
   `idea_get_repositories`,版本控制走原生 `git`)、Router 派发工具 (`idea_execute_tool`,未启用 router-only 时冗余)、Debugger
   (全部 `idea_xdebug_*`)、Dev Kit MCP、Inspection KTS MCP、解释器环境 MCP、**IDE 内置终端
-  (`idea_execute_terminal_command`:实测不继承项目环境,对原生 shell 没有优势)**,以及数据库的建/改数据源 (数据源由用户在
-  IDEA 里配置,AI 只读和查询)。
+  (`idea_execute_terminal_command`:实测不继承项目环境,对原生 shell 没有优势)**、**整个 Database 组**(数据源由用户在
+  IDEA 里配置,而 IDE 也不是本插件设想的数据库客户端),以及**有原生对应的文件读写**
+  (`idea_search_text` / `idea_search_regex` / `idea_search_file` / `idea_apply_patch` / `idea_create_new_file`
+  分别对应 `grep` / `grep -E` / `glob` / `edit` / `write`)。
+
+  实测数字(拿运行中的 IDE MCP 拉 `tools/list`):IDE 暴露 **64** 个 → 隐藏 48 → **模型可见 16 个**,
+  而且这 16 个**恰好等于引导里点名的 16 个** —— 没有"能看见但没人告诉它用途"的残留。
 - 探测只确认「MCP 服务是否在监听」;**「当前项目是否已在 IDE 打开」靠一次项目作用域的 MCP 调用判断**
   (`get_project_modules`,带 `IJ_MCP_SERVER_PROJECT_PATH`):返回模块 = 已打开 → 跳过 `open -a`;报
   `Unable to determine the target project` = 未打开 → `open -a` 打开。MCP 关闭时会用一次短探测并立即给出设置提示。
