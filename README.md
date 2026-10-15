@@ -99,8 +99,10 @@ Brave Mode 后再次执行 `/open-in-idea` 即可接上。
 IDE MCP 可用时,插件通过 **系统提示注入**告诉模型**哪些事该走 IDE**;不修改任何工具 (原生或 IDEA)
 的定义、描述或可用性:
 
-1. **系统提示注入**:通过 `ctx.session.hook("context", …)` 往每次请求的 system 里追加一段引导 + 能力映射表
-   (`src/ide-guidance.js`),含工具名 (`idea_<name>`)与关键参数名:
+1. **系统提示注入**:通过 `ctx.session.hook("context", …)` 往每次请求的 system 里追加一段引导 + 能力映射表。**文本本身在
+   `src/ide-guidance.template.md`**——它是一份要给人 review 的提示词文档,条件直接用 `{{#if …}}` 写在那几行外面,所以打开模板
+   就能看到最终渲染成什么样;`src/template.js` 是渲染器(支持 `{{var}}` / `{{#if}}` / `{{else}}`,**不做 HTML 转义**——
+   输出是 Markdown,`<jar>!/<entry>` 和反引号必须原样过)。含工具名 (`idea_<name>`)与关键参数名:
    - **只有 IDE 才有的能力才写进去** —— 符号级检索、项目模型、检查与构建、重构与格式化、运行配置:
      - 符号 → `idea_search_symbol` / `idea_get_symbol_info` / `idea_analyze_calls`
      - 项目与编辑器 → `idea_get_project_modules` / `idea_get_project_dependencies` / `idea_list_directory_tree` /
@@ -182,7 +184,9 @@ opencode-idea 对这一组工具做三件事:
 
 1. **透传**:IDE MCP server 以 `codemode: false` 注册,工具目录整体转发,所以这四个工具自动以 `idea_*` 出现在模型的
    工具表里 —— 插件侧不需要单独声明(也因此**装不装这个 IDEA 插件,插件侧的代码都不用改**);
-2. **条件引导**:只有这次请求的工具快照里真的有它们,才在「运行配置」段里逐个点名。两个地方会跟着变:
+2. **条件引导**:只有这次请求的工具快照里真的有它们,才在「运行配置(配套插件 … 提供,装了才有)」**自己那一节**里逐个点名 ——
+   和 IDE 自带的 `### 运行配置` 分开:两个来源,两节,读者要能分清"IDE 给我的"和"我额外装的"。没装插件时**整节连同标题一起消失**。
+   两个地方会跟着变:
    - 「运行配置」段写明**改完代码要重启无热重载的进程就用 `idea_rerun_run_configuration`,不要用 `pkill` / `kill` / shell**
      —— 这正是它要解决的问题:外部杀掉的进程 IDE 并不知道,Run 窗口仍显示运行中,下次启动就会撞端口;
    - 「命令执行」段把**新建 run configuration 定性成重操作**:一个项目通常只建几个(固定要跑的构建 / 装依赖 / dev server),

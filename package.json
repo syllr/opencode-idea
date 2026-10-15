@@ -8,6 +8,8 @@
     "index.js",
     "src/index.js",
     "src/plugin.js",
+    "src/template.js",
+    "src/ide-guidance.template.md",
     "src/mcp/idea.js",
     "src/mcp/enhance.js",
     "src/mcp/idea-tool-defaults.js",

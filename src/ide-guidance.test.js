@@ -287,6 +287,35 @@ describe('buildIdeGuidance', () => {
     expect(withTool).not.toContain('没有就');
   });
 
+  it('lists the plugin tools as ordinary run-configuration tools', () => {
+    // No provenance, no "only if installed", no separate heading: where a tool
+    // came from is this plugin's plumbing, and a model that can call it has no
+    // use for that. It either is in the list or it is not.
+    const withTool = buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS });
+    const section = withTool.slice(withTool.indexOf('### 运行配置'), withTool.indexOf('### 命令执行'));
+
+    expect(section).toContain('idea_get_run_configurations');
+    for (const tool of RUN_LIFECYCLE_TOOLS) {
+      expect(section).toContain(tool);
+    }
+    // Exactly one run-configuration heading, and nothing about an origin.
+    expect(section.match(/### 运行配置/g)).toHaveLength(1);
+    for (const meta of ['配套插件', 'idea-mcp-enhance', '装了才有']) {
+      expect(withTool).not.toContain(meta);
+    }
+  });
+
+  it('leaves no trace of the plugin tools when they are absent', () => {
+    // The fallback is ours to do, silently: a stock IDE gets no heading, no
+    // blank-line gap and no explanation of what is missing.
+    const text = buildIdeGuidance(PROJECT);
+    expect(text).not.toContain('配套插件');
+    for (const tool of RUN_LIFECYCLE_TOOLS) {
+      expect(text).not.toContain(tool);
+    }
+    expect(text).not.toContain('\n\n\n');
+  });
+
   it('keeps the run-lifecycle tools inside the run configuration section', () => {
     const text = buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS });
     const section = text.slice(text.indexOf('### 运行配置'), text.indexOf('### 命令执行'));
