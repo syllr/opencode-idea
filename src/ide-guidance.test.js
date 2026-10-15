@@ -151,15 +151,35 @@ describe('buildIdeGuidance', () => {
     expect(text).toContain('外:用其他可用工具');
   });
 
-  it('does not explain or mention Code Mode', () => {
+  it('states the general rule: a listed native tool needs no search', () => {
+    // The rule is deliberately not phrased as an idea_* special case. The
+    // failure it prevents — going into Code Mode to hunt for a tool that is
+    // already sitting in the tool list — is a reading of Code Mode's own
+    // "use search to find a tool", so the correction has to be a general one.
     const text = buildIdeGuidance(PROJECT);
-    expect(text).not.toContain('Code Mode');
+    expect(text).toContain('原生工具');
+    expect(text).toContain('不需要、也不应该用 Code Mode 的 `search` 去找');
+  });
+
+  it('applies that rule to the idea_* tools explicitly', () => {
+    const text = buildIdeGuidance(PROJECT);
+    expect(text).toContain('`idea_*` 就是原生工具');
+    expect(text).toContain('不在 Code Mode 的工具目录里');
     expect(text).not.toContain('模板字符串');
+  });
+
+  it('states the Code Mode rule before the routing rules', () => {
+    // It is a precondition for every line below it: if the model cannot get at
+    // the tools, nothing else in this text matters.
+    const text = buildIdeGuidance(PROJECT);
+    const codeMode = text.indexOf('Code Mode');
+    expect(codeMode).toBeGreaterThan(-1);
+    expect(codeMode).toBeLessThan(text.indexOf('内的代码与文件操作'));
   });
 
   it('requires direct tool calls instead of execute wrapping', () => {
     const text = buildIdeGuidance(PROJECT);
-    expect(text).toContain('不要用 `execute` 包裹');
+    expect(text).toContain('不要包进 `execute`');
   });
 
   it('says nothing about run-lifecycle tools for a stock IDE', () => {

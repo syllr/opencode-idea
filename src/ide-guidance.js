@@ -74,10 +74,11 @@ export function buildIdeGuidance(projectPath, options = {}) {
     `项目路径: \`${projectPath}\``,
     ``,
     `## 总则`,
+    `- 原生工具(当前工具列表里直接列出的那些)**直接调用**;不需要、也不应该用 Code Mode 的 \`search\` 去找。`,
+    `- \`idea_*\` 就是原生工具:直接调用(参数按各工具 schema 传),不要包进 \`execute\`;它不在 Code Mode 的工具目录里,\`search\` 搜不到。`,
     `- 路径在 \`${projectPath}\` 内的代码与文件操作,必须使用 \`idea_*\` 工具。`,
     `- 路径在 \`${projectPath}\` 外:用其他可用工具。`,
-    `- 直接调用工具,不要用 \`execute\` 包裹;参数按各工具 schema 传。`,
-    `- \`idea_*\` 工具缺失、连接失败或超时:提示用户执行 \`/open-in-idea\`,不要重试。`,
+    `- 工具列表里看不到 \`idea_*\` 就是没接上:提示用户执行 \`/open-in-idea\`,不要重试,也不要去别处找。`,
     ``,
     `## 工具补充(每条只写补充说明;工具定义以自身 schema 为准)`,
     ``,
@@ -162,7 +163,7 @@ export const MCP_RECOVERY_GUIDANCE_MARKED = [
  */
 export const MCP_RECOVERY_GUIDANCE_RECONNECTING = [
   '### IDEA MCP failure recovery',
-  'No idea_* tool is in this request: the IDE connection dropped and the plugin is reconnecting in the background. Do NOT call any idea_* tool now — it will fail with `No tool named "..." is currently available` — and do not fall back to shell/read/write for in-project work. Continue with what you can, or tell the user the IDE is reconnecting; if idea_* tools are still missing on a later message, ask the user to run /open-in-idea.',
+  'No idea_* tool is in this request: the IDE connection dropped and the plugin is reconnecting in the background. Do NOT call any idea_* tool now — it will fail with `No tool named "..." is currently available` — and do not go looking for them through Code Mode either: idea_* tools are only ever listed as native tools, so a search finds nothing. Do not fall back to shell/read/write for in-project work. Continue with what you can, or tell the user the IDE is reconnecting; if idea_* tools are still missing on a later message, ask the user to run /open-in-idea.',
 ].join('\n');
 
 /**
