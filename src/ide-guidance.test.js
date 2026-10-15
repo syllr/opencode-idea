@@ -7,6 +7,10 @@ import {
   appendIdeRecoveryGuidance,
   buildIdeGuidance,
 } from './ide-guidance.js';
+import {
+  LIST_RUNNING_CONFIGURATIONS_TOOL,
+  RUN_LIFECYCLE_TOOLS,
+} from './mcp/enhance.js';
 
 const PROJECT = '/Users/me/project';
 
@@ -93,17 +97,27 @@ describe('buildIdeGuidance', () => {
     }
   });
 
-  it('names the terminal tool and gates it behind a per-language whitelist', () => {
+  it('routes environment-dependent commands through a run configuration', () => {
     const text = buildIdeGuidance(PROJECT);
-    expect(text).toContain('### 终端');
-    expect(text).toContain('idea_execute_terminal_command');
-    expect(text).toContain('白名单制');
-    expect(text).toContain('Node / 前端');
-    expect(text).toContain('Java(');
-    expect(text).toContain('Python(');
-    expect(text).toContain('Go(');
-    expect(text).toContain('executeInShell: true');
-    expect(text).toContain('reuseExistingTerminalWindow');
+    expect(text).toContain('### 命令执行');
+    expect(text).toContain('`idea_execute_run_configuration`');
+    expect(text).toContain('需要项目环境的命令');
+    expect(text).toContain('不需要项目环境的命令:用原生 `shell`');
+  });
+
+  it('never names the IDE terminal tool', () => {
+    // `idea_execute_terminal_command` does not inherit the project's environment,
+    // so it is hidden (`HIDDEN_IDEA_TOOLS`) and no longer routed to. Guidance
+    // must not send the model at a tool that is not in its tool list.
+    for (const text of [
+      buildIdeGuidance(PROJECT),
+      buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS }),
+    ]) {
+      expect(text).not.toContain('idea_execute_terminal_command');
+      expect(text).not.toContain('executeInShell');
+      expect(text).not.toContain('reuseExistingTerminalWindow');
+      expect(text).not.toContain('白名单');
+    }
   });
 
   it('scopes the in-project rule to code and file operations', () => {
@@ -147,6 +161,43 @@ describe('buildIdeGuidance', () => {
     const text = buildIdeGuidance(PROJECT);
     expect(text).toContain('不要用 `execute` 包裹');
   });
+
+  it('says nothing about run-lifecycle tools for a stock IDE', () => {
+    // Those tools come from the companion IDEA plugin `idea-mcp-enhance`, not
+    // from the IDE's bundled MCP server. Naming them unconditionally would make
+    // the model call tools that do not exist.
+    const text = buildIdeGuidance(PROJECT);
+    for (const tool of RUN_LIFECYCLE_TOOLS) {
+      expect(text).not.toContain(tool);
+    }
+    expect(text).not.toContain('pkill');
+  });
+
+  it('names only the run-lifecycle tools this request actually carries', () => {
+    const all = buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS });
+    for (const tool of RUN_LIFECYCLE_TOOLS) {
+      expect(all).toContain(tool);
+    }
+    expect(all).toContain('不要用 `pkill`');
+
+    // An older release of the enhance plugin ships fewer of them: guidance must
+    // name the present ones and stay silent about the rest.
+    const partial = buildIdeGuidance(PROJECT, {
+      runLifecycleTools: [LIST_RUNNING_CONFIGURATIONS_TOOL],
+    });
+    expect(partial).toContain(LIST_RUNNING_CONFIGURATIONS_TOOL);
+    expect(partial).not.toContain('idea_stop_run_configuration');
+    expect(partial).not.toContain('idea_rerun_run_configuration');
+    expect(partial).not.toContain('pkill');
+  });
+
+  it('keeps the run-lifecycle tools inside the run configuration section', () => {
+    const text = buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS });
+    const section = text.slice(text.indexOf('### 运行配置'), text.indexOf('### 命令执行'));
+    for (const tool of RUN_LIFECYCLE_TOOLS) {
+      expect(section).toContain(tool);
+    }
+  });
 });
 
 describe('appendIdeGuidance', () => {
@@ -163,6 +214,17 @@ describe('appendIdeGuidance', () => {
     expect(system).toHaveLength(1);
     expect(() => appendIdeGuidance(undefined, PROJECT)).not.toThrow();
     expect(() => appendIdeGuidance([], undefined)).not.toThrow();
+  });
+
+  it('selects the variant matching the run-lifecycle tools present', () => {
+    const system = [];
+    appendIdeGuidance(system, PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS });
+    appendIdeGuidance(system, PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS });
+    expect(system).toHaveLength(1);
+    expect(system[0].text).toBe(
+      buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS }),
+    );
+    expect(system[0].text).toContain('idea_rerun_run_configuration');
   });
 });
 

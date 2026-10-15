@@ -51,6 +51,7 @@ import {
   findIdePort,
   serverConfig,
 } from './mcp/idea.js';
+import { servingRunLifecycleTools } from './mcp/enhance.js';
 import { currentProjectPath } from './project.js';
 import {
   autoLaunchSupported,
@@ -117,18 +118,20 @@ const IDEA_TOOL_PREFIX = 'idea_';
  * - Inspection KTS MCP: inspection.kts authoring helpers (PSI tree, API docs,
  *   examples, run). Also IntelliJ Platform plugin-development only.
  * - Python Environment MCP: Python interpreter detection and configuration.
- *   Hidden; project commands run through the IDE terminal instead, which is
- *   already launched with the IDE's real environment.
+ *   Hidden; a project's interpreter is chosen in the IDE's own settings, and the
+ *   model has no business reconfiguring it.
  * - Database data sources: connections are configured by the user in the IDE,
  *   so the AI only reads and queries them; create/edit stay hidden.
- *
- * NOT hidden: `idea_execute_terminal_command`. Project commands must run with
- * the SDKs the user configured in the IDE (JDK, Node, Python, ...), so the model
- * uses the IDE's integrated terminal for them. `executeInShell: true` runs the
- * command in the user's real shell (`zsh`/`bash`), which inherits the IDE
- * environment — including version managers such as fnm / SDKMAN whose selection
- * lives in shell init and cannot be reconstructed from a handful of variables.
- * Requires Brave Mode in the IDE; without it the IDE asks for confirmation.
+ * - IDE terminal: `idea_execute_terminal_command` does NOT inherit the project's
+ *   environment. It was exposed on the assumption that it ran with the SDKs the
+ *   user configured in the IDE (JDK, Node, Python, ...), but measured against a
+ *   real IDE it brings no environment a native `shell` call does not already
+ *   have — so it is a strictly worse shell, and hiding it removes an entire
+ *   class of "why is it using an old JDK" confusion. Which tool to use instead
+ *   is a routing decision, and it is made in `ide-guidance.js`: commands that
+ *   need the project's environment go through a RUN CONFIGURATION (the IDE
+ *   launches those with exactly the configured SDK), everything else goes
+ *   through the native shell.
  */
 export const HIDDEN_IDEA_TOOLS = [
   // VCS
@@ -136,6 +139,8 @@ export const HIDDEN_IDEA_TOOLS = [
   'idea_get_repositories',
   // Router
   'idea_execute_tool',
+  // IDE terminal: no advantage over the native shell (see the note above).
+  'idea_execute_terminal_command',
   // Debugger
   'idea_xdebug_control_session',
   'idea_xdebug_evaluate_expression',
@@ -953,7 +958,12 @@ export default {
         // Guidance promises tools the model can call, so it only goes out when
         // they are actually in this request.
         if (!serving) return;
-        appendIdeGuidance(event?.system, projectPath);
+        // Same rule for the run-lifecycle tools: they come from the companion
+        // IDEA plugin `idea-mcp-enhance`, so a stock IDE has none of them and
+        // naming them would promise calls that can only fail.
+        appendIdeGuidance(event?.system, projectPath, {
+          runLifecycleTools: servingRunLifecycleTools(tools),
+        });
       });
 
       // 自愈入口(钩子型)。OpenCode 会 await `prompt`,所以在这里修好的连接会在

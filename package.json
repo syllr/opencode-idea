@@ -9,6 +9,7 @@
     "src/index.js",
     "src/plugin.js",
     "src/mcp/idea.js",
+    "src/mcp/enhance.js",
     "src/project.js",
     "src/ide-launcher.js",
     "src/ide-guidance.js",

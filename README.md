@@ -7,9 +7,10 @@ OpenCode 插件,面向 JetBrains 项目 (IntelliJ IDEA / PyCharm / WebStorm 等)
 2. **优先使用 IDE 工具** —— IDE 可用时,向模型注入"项目内操作优先使用 IDEA MCP"的系统提示引导 + 能力映射;IDE 不可用时回退原生工具
    (正常回退,无需声明)。
 
-> **项目命令走 IDE 终端**:跑 `java` / `python` / `npm` 这类项目命令时,引导模型用 `idea_execute_terminal_command`
-> (`executeInShell: true`)而不是原生 shell —— 它在 IDE 集成终端里执行,**天然继承用户在 IDE 里配好的 JDK / Node / Python 版本**
-> (含 fnm / SDKMAN 这类靠 shell init 切版本的场景)。详见「项目命令执行」。
+> **需要项目环境的命令走 Run Configuration**:跑 `java` / `python` / `npm` 这类依赖项目配好的 JDK / Node / Python 版本的
+> 命令时,引导模型用 `idea_execute_run_configuration`(先在 IDEA 里配好 `.run/*.run.xml`),而不是原生 shell;不需要项目
+> 环境的命令照常走原生 shell。**IDE 内置终端 (`idea_execute_terminal_command`) 已被隐藏** —— 实测它并不继承项目环境,
+> 对原生 shell 没有任何优势。详见「项目命令执行」。
 
 非 JetBrains 项目完全不受影响。 **手动接入**:插件启动不探测、不连接 IDE,只有跑 `/open-in-idea` 才接入。跑过一次后,该**项目**
 被「标记」(持久化在 `ctx.storage`,重启 OpenCode 后仍在)。之后**没有任何后台轮询**——恢复完全靠请求驱动:插件发现"该有 `idea_*`
@@ -115,10 +116,40 @@ IDE MCP 可用时,插件通过 **系统提示注入**提高模型主动使用 ID
 
 引导只在 **IDE MCP 可用**时生效;MCP 不可用时仅保留 fast-fail 恢复提示。`injectGuidance: false` 可关闭系统提示注入。
 
+**条件注入**:映射表里只有内置 MCP Server 自带的那批工具是「永远写死」的。如果 IDE 里另外装了配套的
+[`idea-mcp-enhance`](https://github.com/syllr/idea-mcp-enhance) 插件,它提供的 run configuration 启停工具也会被加进
+下面的「运行配置」段。判据是**这次请求的工具快照里真的有这些工具** —— 没装的 IDE 上这段一个字都不会出现,模型不会去调
+一个不存在的工具。
+
+## Run Configuration 启停 (配套插件 `idea-mcp-enhance`)
+
+IDE 内置的 MCP Server 只能 **启动** run configuration(`execute_run_configuration`),**不能停止、不能重启、也查不到
+运行状态**。配套的 IDEA 插件 [`idea-mcp-enhance`](https://github.com/syllr/idea-mcp-enhance)(IDEA 2026.2+,另装)
+补齐这三个缺口:
+
+| 工具 (OpenCode 里叫 `idea_*`)      | 作用                                                                               |
+| ---------------------------------- | ---------------------------------------------------------------------------------- |
+| `idea_list_running_configurations` | **当前真正在跑**的配置:几个实例 / 各自 pid / 退出码。`>1` 个实例就是端口漂移的信号 |
+| `idea_stop_run_configuration`      | 停掉该配置的**全部**实例并等它们退出;没在跑也返回成功(幂等)                        |
+| `idea_rerun_run_configuration`     | 等同 IDE 的 **Rerun** 按钮:在跑就重启、没在跑就启动,读 `started` 判断是否真起来了  |
+
+opencode-idea 对这一组工具做三件事:
+
+1. **透传**:IDE MCP server 以 `codemode: false` 注册,工具目录整体转发,所以这三个工具自动以 `idea_*` 出现在模型的
+   工具表里 —— 插件侧不需要单独声明(也因此**装不装这个 IDEA 插件,插件侧的代码都不用改**);
+2. **条件引导**:只有这次请求的工具快照里真的有它们,才在「运行配置」段里点名,并写明**改完代码要重启无热重载的进程
+   就用 `idea_rerun_run_configuration`,不要用 `pkill` / `kill` / shell** —— 这正是它要解决的问题:外部杀掉的进程
+   IDE 并不知道,Run 窗口仍显示运行中,下次启动就会撞端口;
+3. **工具名清单**写在 `src/mcp/enhance.js`(与原生 IDE 的 `src/mcp/idea.js` 分开放:原生走原生,插件的走插件的),
+   与该仓库的 `RunLifecycleSchemas.kt` 保持同步。工具按**存在的子集**逐个点名(而不是「有就全写」),这样旧版本的配套
+   插件少给一两个工具时,引导也不会提到它们。
+
+> 没装 `idea-mcp-enhance` 的 IDE 一切照旧:工具不存在,引导也不提,模型继续按原来的方式工作。
+
 ## Run Configuration 管理 (skill)
 
 IDE MCP 只能 **查**(`get_run_configurations`)和 **执行**(`execute_run_configuration`)run configuration, **没有增删改**
-。插件在**被标记的项目**里注册一个 `idea-run-config` skill 来补上这块:
+(启停见上面的「Run Configuration 启停 (配套插件)」)。插件在**被标记的项目**里注册一个 `idea-run-config` skill 来补上这块:
 
 - 只操作 **项目级** `.run/<name>.run.xml`(可提交 git、团队共享), **不碰** `.idea/workspace.xml`;
 - 不内置任何按类型的模板 —— 先找项目里的 **真实样本**(`**/*.run.xml`,或让用户在 IDEA 里勾 "Store as project file"
@@ -146,35 +177,26 @@ IDE MCP 只能 **查**(`get_run_configurations`)和 **执行**(`execute_run_conf
 
 事实一律先查后写:配置名来自 `idea_get_run_configurations`,热重载列来自运行方式,端口读不到就问用户 —— 不猜。
 
-## 项目命令执行 (IDE 终端)
+## 项目命令执行 (Run Configuration)
 
-跑项目相关的命令时,模型使用 **`idea_execute_terminal_command`**,而不是 OpenCode 原生 shell。判据是**白名单**:命令用于本项目
-自身的构建 / 测试 / 运行,且首个可执行文件命中下表,才走 IDE 终端;其余一律走原生 shell。
+需要**项目环境**的命令(依赖用户在 IDE 里配好的 JDK / Node / Python 版本等),模型使用 **`idea_execute_run_configuration`**
+执行 —— 走 run configuration,不用原生 shell。
 
-- **Node / 前端**(`package.json`):`node` / `npm` / `npx` / `pnpm` / `yarn` / `vite` / `webpack` / `esbuild` / `tsc` /
-  `jest` / `vitest`。
-- **Java**(`pom.xml` / `build.gradle`):`java` / `javac` / `mvn` / `mvnw` / `gradle` / `gradlew`。
-- **Python**(`pyproject.toml` / `requirements.txt`):`python` / `python3` / `pip` / `pip3` / `uv` / `poetry` / `pytest`。
-- **Go**(`go.mod`):`go` / `gofmt` / `golangci-lint`。
-- 白名单未覆盖的语言暂走原生 shell,遇到后再补进上表。
+- 判据是:这条命令**依赖项目的运行时版本**。是 → run configuration;不是(看文件、git、临时脚本)→ 原生 shell。
+- run configuration 会继承开发时具体配的那套运行时,或者干脆是你那个应用配好的运行时,所以这就是个应用。
+- 配置必须**先在 IDEA 里存在**(项目级 `.run/*.run.xml`,可提交 git、团队共享)。没有就先建一个,再跑;
 
-原因:
+> 为什么不再用 IDE 终端:`idea_execute_terminal_command` 之前被当成"自动继承 IDE 项目环境"的通道而保留暴露,但实测
+> **它拿不到项目配好的 JDK / Node / Python 版本**,和原生 shell 没有区别。既然没有优势,就把它从模型可见的工具表里
+> 隐藏掉(`HIDDEN_IDEA_TOOLS`),命令执行的路由改由 run configuration 承担。
 
-- **`executeInShell: true`**(必开):命令在用户真实 shell(`zsh`/`bash`)里执行,**继承 IDE 集成终端的环境** —— 也就是用户在
-  IDE 里配好的 JDK / Node / Python / Go / Maven / uv 等。原生 shell 未必能拿到同一套版本,尤其是 fnm / SDKMAN / pyenv 这类
-  "选择写在 shell init 里"的版本管理器,靠几个环境变量复现不出来。
-- `timeout`(毫秒)按预期耗时给足;`maxLinesCount` 控制返回行数,超 2000 行会截断。
-- `reuseExistingTerminalWindow: true` 复用同一个 IDE 终端窗口,不刷屏。
-- 返回 `command_exit_code` + `command_output`;`cd` **不跨调用保留**,多步操作用 `&&` 串在一条命令里。
-- 需要 IDE 里开启 **Brave Mode**,否则每条命令都要用户确认一次。
-
-引导文本由 `src/ide-guidance.js` 注入(`### 终端` 段),只在 IDE MCP 可用时生效。
+引导文本由 `src/ide-guidance.js` 注入(`### 命令执行` 段),只在 IDE MCP 可用时生效。
 
 ## 前置条件
 
 - JetBrains IDE 已开启 MCP 服务 (IDE 设置里的 MCP Server / AI Assistant MCP),版本需 **2026.2+**(提供 Streamable HTTP 端点
   `/stream`);若关闭,`/open-in-idea` 会立即提示如何重新开启。
-- 要读 IDE 终端环境,需要在 IDE 里开启 **Brave Mode**(否则 `execute_terminal_command` 会等确认);MCP 未就绪时通知会同时提醒开启它。
+- IDE 侧需开启 **Brave Mode**(否则需要确认的 MCP 工具调用会停下来等用户确认);MCP 未就绪时通知会同时提醒开启它。
 - 插件注册给 OpenCode 的 MCP 配置(**只支持 Streamable HTTP**):
 
 ```jsonc
@@ -299,7 +321,7 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
     恢复引导会**明确禁止**调用 `idea_*`(此前复用"重试一次"的文案,反而诱导模型去调一个不在工具表里的工具,得到
     `No tool named ... available`)。
   - **`execute.after` 钩子**:见下一条。
-  恢复是**每个 Location(项目)各一份**;没有任何定时器,插件在不使用时完全静止。
+    恢复是**每个 Location(项目)各一份**;没有任何定时器,插件在不使用时完全静止。
 - **失败触发的自动接入(仅被标记项目)**:`tool.execute.after` 钩子监听 `idea_*` 工具报错并**分类**:
   - IDE MCP 不可用(掉了)→ 重跑 `/open-in-idea` 的接入流程;
   - IDE 在、但项目没打开(`Unable to determine the target project` / `doesn't correspond to any open project`)→ 让 IDEA 重新打开该项目;
@@ -319,11 +341,12 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
 - skill 定义的字段名**以 schema 为准**,不要照官方文档:`Skill.Info` 需要 `path` (AbsolutePath),文档里写的 `location`
   不存在 —— 用错会让 `ctx.skill.transform` 抛 `SchemaError`,而**任何 transform 失败都会禁用整个插件**(0.0.6 就是这样丢了
   `/open-in-idea`)。同理,`Skill.Info` 的完整字段是 `id` / `name` / `description?` / `autoinvoke?` / `path` / `content`。
-- 项目命令走 `idea_execute_terminal_command` + **Brave Mode**;没开 Brave Mode 时每条命令都要用户确认一次。
+- 需要项目环境的命令走 `idea_execute_run_configuration`(run configuration 要先在 IDEA 里配好),不用原生 shell。
 - 一批用不到的 IDEA MCP 工具被硬编码隐藏 (`src/plugin.js` 的 `HIDDEN_IDEA_TOOLS`,共 31 个):VCS (`idea_git_status` /
   `idea_get_repositories`,版本控制走原生 `git`)、Router 派发工具 (`idea_execute_tool`,未启用 router-only 时冗余)、Debugger
-  (全部 `idea_xdebug_*`)、Dev Kit MCP、Inspection KTS MCP、解释器环境 MCP、以及数据库的建/改数据源 (数据源由用户在
-  IDEA 里配置,AI 只读和查询)。**`idea_execute_terminal_command` 不隐藏**:项目命令要在 IDE 环境里跑,模型需要它。
+  (全部 `idea_xdebug_*`)、Dev Kit MCP、Inspection KTS MCP、解释器环境 MCP、**IDE 内置终端
+  (`idea_execute_terminal_command`:实测不继承项目环境,对原生 shell 没有优势)**,以及数据库的建/改数据源 (数据源由用户在
+  IDEA 里配置,AI 只读和查询)。
 - 探测只确认「MCP 服务是否在监听」;**「当前项目是否已在 IDE 打开」靠一次项目作用域的 MCP 调用判断**
   (`get_project_modules`,带 `IJ_MCP_SERVER_PROJECT_PATH`):返回模块 = 已打开 → 跳过 `open -a`;报
   `Unable to determine the target project` = 未打开 → `open -a` 打开。MCP 关闭时会用一次短探测并立即给出设置提示。

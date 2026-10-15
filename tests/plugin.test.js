@@ -502,6 +502,7 @@ describe('plugin setup', () => {
         idea_git_status: {},
         idea_execute_tool: {},
         idea_execute_terminal_command: {},
+        idea_execute_run_configuration: {},
         idea_xdebug_get_stack: {},
         idea_recognize_ij_module_kind: {},
         idea_generate_psi_tree: {},
@@ -526,10 +527,11 @@ describe('plugin setup', () => {
     expect(request.tools).not.toHaveProperty('idea_create_database_connection');
     expect(request.tools).toHaveProperty('idea_read_file');
 
-    // The IDE terminal IS exposed: project commands (java / python / npm) must
-    // run with the SDKs the user configured in the IDE, so the model uses the
-    // IDE's integrated terminal instead of the native shell.
-    expect(request.tools).toHaveProperty('idea_execute_terminal_command');
+    // The IDE terminal is hidden: it does not inherit the project's environment,
+    // so it is no better than the native shell. Commands that need the project's
+    // SDKs go through a run configuration instead.
+    expect(request.tools).not.toHaveProperty('idea_execute_terminal_command');
+    expect(request.tools).toHaveProperty('idea_execute_run_configuration');
 
     await cleanup();
   });
@@ -654,6 +656,50 @@ describe('plugin setup', () => {
     // what left the session dead until the user ran `/open-in-idea` by hand.
     await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: '继续' } });
     expect(state.mcpReload).toBe(2);
+
+    await cleanup();
+  });
+
+  it('names the run-lifecycle tools only when the IDE actually serves them', async () => {
+    const fake = await startFakeIde();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: '' }, delivery: 'steer' });
+
+    // A stock IDE: the bundled MCP server only. The companion plugin
+    // `idea-mcp-enhance` is not installed, so its tools are absent and the
+    // guidance must not name them — a named tool the model cannot call is only a
+    // failed call.
+    const stock = { system: [], tools: { read: {}, idea_read_file: {}, idea_build_project: {} } };
+    await state.sessionHook(stock);
+    expect(stock.system[1].text).toContain('idea_get_run_configurations');
+    expect(stock.system[1].text).not.toContain('idea_rerun_run_configuration');
+    expect(stock.system[1].text).not.toContain('pkill');
+
+    // Same IDE plus the enhance plugin: its three tools are in the snapshot, so
+    // the routing rule that keeps restarts off `pkill` goes out with them.
+    const enhanced = {
+      system: [],
+      tools: {
+        read: {},
+        idea_read_file: {},
+        idea_execute_run_configuration: {},
+        idea_list_running_configurations: {},
+        idea_stop_run_configuration: {},
+        idea_rerun_run_configuration: {},
+      },
+    };
+    await state.sessionHook(enhanced);
+    expect(enhanced.system[1].text).toContain('idea_list_running_configurations');
+    expect(enhanced.system[1].text).toContain('idea_stop_run_configuration');
+    expect(enhanced.system[1].text).toContain('idea_rerun_run_configuration');
+    expect(enhanced.system[1].text).toContain('不要用 `pkill`');
+
+    // The two variants are different texts, so the second request does not get
+    // deduplicated against the first one's guidance.
+    expect(enhanced.system[1].text).not.toBe(stock.system[1].text);
 
     await cleanup();
   });

@@ -11,9 +11,63 @@
 // tool is exposed directly on the provider tool list with its full schema. This
 // text only says which tool to use for which operation, plus the parameters and
 // result shapes that are not obvious from the schema alone.
+//
+// The run-lifecycle block is the one section that is not unconditional: those
+// tools come from the companion IDEA plugin `idea-mcp-enhance`, not from the
+// IDE's bundled MCP server, so they are named only when the request actually
+// carries them (see `mcp/enhance.js`).
 
-/** Build the guidance text for one project path. */
-export function buildIdeGuidance(projectPath) {
+import {
+  LIST_RUNNING_CONFIGURATIONS_TOOL,
+  RERUN_RUN_CONFIGURATION_TOOL,
+  STOP_RUN_CONFIGURATION_TOOL,
+} from './mcp/enhance.js';
+
+/**
+ * Lines for the enhance plugin's run-lifecycle tools, one per present tool.
+ *
+ * `present` is what this request actually carries
+ * (`servingRunLifecycleTools`), so a stock IDE produces none of these lines.
+ *
+ * The restart line carries the routing rule that keeps restarts off `pkill` /
+ * the terminal: an externally killed process leaves the IDE thinking it is
+ * still running, and the next Run then lands on a taken port. That is the
+ * whole reason the enhance plugin exists.
+ *
+ * @param {readonly string[]} present
+ * @returns {string[]}
+ */
+function runLifecycleLines(present) {
+  const lines = [];
+  if (present.includes(LIST_RUNNING_CONFIGURATIONS_TOOL)) {
+    lines.push(
+      `- \`${LIST_RUNNING_CONFIGURATIONS_TOOL}\`:当前真正在跑的配置(几个实例 / 各自 pid / 退出码);` +
+        `停 / 重启前后都先用它看状态。`,
+    );
+  }
+  if (present.includes(STOP_RUN_CONFIGURATION_TOOL)) {
+    lines.push(
+      `- \`${STOP_RUN_CONFIGURATION_TOOL}\`(\`configurationName\`):停掉该配置的全部实例并等它们退出;没在跑也返回成功。`,
+    );
+  }
+  if (present.includes(RERUN_RUN_CONFIGURATION_TOOL)) {
+    lines.push(
+      `- \`${RERUN_RUN_CONFIGURATION_TOOL}\`(\`configurationName\`):改完代码重启无热重载的进程;在跑就重启、没在跑就启动,` +
+        `读 \`started\` 判断新进程是否真的起来了。不要用 \`pkill\` / \`kill\` / \`shell\` 代替。`,
+    );
+  }
+  return lines;
+}
+
+/**
+ * Build the guidance text for one project path.
+ *
+ * @param {string} projectPath
+ * @param {{ runLifecycleTools?: readonly string[] }} [options] Run-lifecycle
+ *   tools present in this request; omit for a stock IDE.
+ */
+export function buildIdeGuidance(projectPath, options = {}) {
+  const runLifecycle = runLifecycleLines(options.runLifecycleTools ?? []);
   return [
     `# 项目内操作必须使用 IDEA MCP 工具`,
     ``,
@@ -59,17 +113,12 @@ export function buildIdeGuidance(projectPath) {
     `### 运行配置`,
     `- \`idea_get_run_configurations\`:读项目级 \`.run/*.run.xml\`(增删改直接改文件);传 \`filePath\` 可列该文件的运行入口。`,
     `- \`idea_execute_run_configuration\`:跑已有配置;Shell Script 要 \`EXECUTE_IN_TERMINAL: false\`;覆盖参数(\`programArguments\` / \`workingDirectory\` / \`envs\`)需配置支持 \`supportsDynamicLaunchOverrides\`。`,
+    ...runLifecycle,
     ``,
-    `### 终端`,
-    `- 白名单制:命令用于本项目自身的构建 / 测试 / 运行,且首个可执行文件命中下表,才用 \`idea_execute_terminal_command\`;其余一律走原生 \`shell\`。`,
-    `- 白名单(按本项目类型取对应一行) ——`,
-    `  - Node / 前端(\`package.json\`):\`node\` / \`npm\` / \`npx\` / \`pnpm\` / \`yarn\` / \`vite\` / \`webpack\` / \`esbuild\` / \`tsc\` / \`jest\` / \`vitest\`。`,
-    `  - Java(\`pom.xml\` / \`build.gradle\`):\`java\` / \`javac\` / \`mvn\` / \`mvnw\` / \`gradle\` / \`gradlew\`。`,
-    `  - Python(\`pyproject.toml\` / \`requirements.txt\`):\`python\` / \`python3\` / \`pip\` / \`pip3\` / \`uv\` / \`poetry\` / \`pytest\`。`,
-    `  - Go(\`go.mod\`):\`go\` / \`gofmt\` / \`golangci-lint\`。`,
-    `  - \`executeInShell: true\`:在用户真实 shell 里执行,继承 IDE 配好的运行时环境;原生 shell 可能用错版本。`,
-    `  - 按预期耗时传 \`timeout\`(毫秒),长任务给足;必要时传 \`maxLinesCount\` 控制返回行数。`,
-    `  - 连续命令传 \`reuseExistingTerminalWindow: true\`;结果带 \`command_exit_code\` 与 \`command_output\`,\`cd\` 不跨调用保留,多步用 \`&&\`。`,
+    `### 命令执行`,
+    `- 需要项目环境的命令(依赖 IDE 里配好的 JDK / Node / Python 版本等):用 \`idea_execute_run_configuration\`,不要用原生 \`shell\`。`,
+    `- 配置要先存在:项目级 \`.run/*.run.xml\`(见 idea-run-config skill);没有就先建一个,再跑。`,
+    `- 不需要项目环境的命令:用原生 \`shell\`。`,
     ``,
     `### 数据库 (数据源由用户在 IDE 里配置:不要自己建/改,不要向用户索取数据库凭据)`,
     `- \`idea_list_database_connections\`:先看有没有现成数据源;每条给 \`id\` / \`dbms\` / \`jdbcUrl\` / \`readOnly\` / \`isDDL\`。`,
@@ -120,13 +169,18 @@ export const MCP_RECOVERY_GUIDANCE_RECONNECTING = [
  * Push the guidance onto a session `system` array. Called for every primary
  * model request, so it stays idempotent per request.
  *
+ * The text depends on which run-lifecycle tools this request carries, so the
+ * idempotence check compares the built text rather than assuming one variant.
+ *
  * @param {unknown} system
  * @param {string} projectPath
+ * @param {{ runLifecycleTools?: readonly string[] }} [options] Run-lifecycle
+ *   tools present in this request's tool snapshot.
  */
-export function appendIdeGuidance(system, projectPath) {
+export function appendIdeGuidance(system, projectPath, options = {}) {
   if (!Array.isArray(system)) return;
   if (!projectPath) return;
-  const text = buildIdeGuidance(projectPath);
+  const text = buildIdeGuidance(projectPath, options);
   if (system.some((part) => part?.text === text)) return;
   system.push({ type: 'text', text });
 }
