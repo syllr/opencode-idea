@@ -42,6 +42,21 @@ describe('shipped skills', () => {
     expect(content).toContain('只做项目级配置');
   });
 
+  it('routes Shell creation through the enhance tool when it is available', () => {
+    // The skill is registered for every marked project, but the tool only exists
+    // when the companion plugin is installed, so the skill branches on the tool
+    // list instead of assuming either way. Hand-writing XML stays the fallback.
+    const content = readSkill('idea-run-config').content;
+    expect(content).toContain('idea_create_shell_run_configuration');
+    expect(content).toContain('自己看一眼工具列表就知道在不在');
+    expect(content).toContain('scriptPath');
+    expect(content).toContain('cloneFrom');
+    expect(content).toContain('canRun');
+    // Edit and delete have no tool at all — that must stay explicit.
+    expect(content).toContain('修改和删除永远没有工具');
+    expect(content).toContain('idea_create_new_file');
+  });
+
   it('keeps the standalone skill teaching the four-part rule', () => {
     const content = readSkill('idea-standalone').content;
     // The rule the skill authors is only useful if it pins all four parts.

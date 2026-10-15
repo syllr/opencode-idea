@@ -128,25 +128,61 @@ IDE MCP 可用时,插件通过 **系统提示注入**提高模型主动使用 ID
 下面的「运行配置」段。判据是**这次请求的工具快照里真的有这些工具** —— 没装的 IDE 上这段一个字都不会出现,模型不会去调
 一个不存在的工具。
 
-## Run Configuration 启停 (配套插件 `idea-mcp-enhance`)
+## 工具参数 (schema 收敛 + `execute.before`)
 
-IDE 内置的 MCP Server 只能 **启动** run configuration(`execute_run_configuration`),**不能停止、不能重启、也查不到
-运行状态**。配套的 IDEA 插件 [`idea-mcp-enhance`](https://github.com/syllr/idea-mcp-enhance)(IDEA 2026.2+,另装)
-补齐这三个缺口:
+有些 IDEA 工具**不传某个参数就会回答一个你没问的问题**。这种参数由本插件完全掌管,所以要**两半一起做** —— 只做一半都是错的:
 
-| 工具 (OpenCode 里叫 `idea_*`)      | 作用                                                                               |
-| ---------------------------------- | ---------------------------------------------------------------------------------- |
-| `idea_list_running_configurations` | **当前真正在跑**的配置:几个实例 / 各自 pid / 退出码。`>1` 个实例就是端口漂移的信号 |
-| `idea_stop_run_configuration`      | 停掉该配置的**全部**实例并等它们退出;没在跑也返回成功(幂等)                        |
-| `idea_rerun_run_configuration`     | 等同 IDE 的 **Rerun** 按钮:在跑就重启、没在跑就启动,读 `started` 判断是否真起来了  |
+| 一半                           | 做法                                 | 不做会怎样                                 |
+| ------------------------------ | ------------------------------------ | ------------------------------------------ |
+| 从模型的工具 schema 里**删掉** | `ctx.tool.transform` 改 input schema | 模型会设它、会据此推理,而那个值被无声丢弃  |
+| 每次调用**设成固定值**         | `ctx.tool.hook("execute.before")`    | 模型不传时拿到的是那个可能出错的默认值本身 |
+
+两半由 `src/mcp/idea-tool-defaults.js` 的**同一张表** `FORCED_ARGUMENTS` 驱动,所以不会漂移。目前一条:
+
+| 工具                 | 参数      | 值     | 为什么                                                                                                         |
+| -------------------- | --------- | ------ | -------------------------------------------------------------------------------------------------------------- |
+| `idea_build_project` | `rebuild` | `true` | 增量构建比对的是 **IDE 自己那份文件新鲜度**;IDE 外部改的代码可能被判成"没有脏文件",构建于是变成 no-op 并报成功 |
+
+- **强制**而不是"缺省才补":`rebuild: false` 请求的正是那个可能出错的答案,而且调用方从结果里分辨不出来;`rebuild: true`
+  唯一的代价是时间。
+- 依据是实测(IntelliJ 2026.2.3):`build_project` 落到
+  `ProjectTaskManager.createAllModulesBuildTask(project, isIncrementalBuild = !rebuild)`;用 `rebuild: true` 跑的 6 个场景
+  (改已有文件 / 新增文件、任意包、在编辑器里打开与否)**全部**识别到外部改动。
+- 调用方自己也传了非空 `filesToRebuild` 时,IDE 走的是另一条分支、根本不读 `rebuild`,所以设不设都无副作用。
+- **引导文本里一个字都不提 `rebuild`** —— schema 都不暴露了,再写进提示词等于把刚拿掉的旋钮又放回去。
+- 只对**点名的工具**生效,其余工具的参数一字不改(测试里专门有一条:另一个恰好也有 `rebuild` 属性的工具不受影响)。
+
+安全性照着 OpenCode 源码确认过:一次工具调用**先**按该请求发布出去的 schema 校验,**然后**才进 `execute`,而
+`execute.before` 在真正的工具逻辑之前触发。所以"schema 里没有、钩子里补上"这个组合不会撞校验。
+
+**这是对早先「绝不改工具定义」那条规则的一次有意例外**(见 `141b1bd`),且刻意收得很窄:这里**只做减法,不发明、不解释**。
+IDE 自己的 `build_project` 工具描述本来就没提这个参数(只有属性级描述提),所以删掉属性之后 schema 依然自洽、也依然完全是
+IDE 的。schema 变换**绝不能**用来加建议 —— 那是引导文本的职责。
+
+两半都**不依赖项目标记**:它们修的是工具调用本身,与"这个项目是否接入 IDE"无关。
+
+## Run Configuration 全套 (配套插件 `idea-mcp-enhance`)
+
+IDE 内置的 MCP Server 只能 **启动已有**的 run configuration(`execute_run_configuration`),**不能新建、不能停止、不能重启、
+也查不到运行状态**。配套的 IDEA 插件 [`idea-mcp-enhance`](https://github.com/syllr/idea-mcp-enhance)(IDEA 2026.2+,另装)
+补齐这四件事 —— 正好是「建 → 看 → 停 → 重启」一条链:
+
+| 工具 (OpenCode 里叫 `idea_*`)         | 作用                                                                                   |
+| ------------------------------------- | -------------------------------------------------------------------------------------- |
+| `idea_create_shell_run_configuration` | 新建**项目级** Shell 配置(写 `.run/<name>.run.xml`,可提交、团队共享);只支持 Shell 类型 |
+| `idea_list_running_configurations`    | **当前真正在跑**的配置:几个实例 / 各自 pid / 退出码。`>1` 个实例就是端口漂移的信号     |
+| `idea_stop_run_configuration`         | 停掉该配置的**全部**实例并等它们退出;没在跑也返回成功(幂等)                            |
+| `idea_rerun_run_configuration`        | 等同 IDE 的 **Rerun** 按钮:在跑就重启、没在跑就启动,读 `started` 判断是否真起来了      |
 
 opencode-idea 对这一组工具做三件事:
 
-1. **透传**:IDE MCP server 以 `codemode: false` 注册,工具目录整体转发,所以这三个工具自动以 `idea_*` 出现在模型的
+1. **透传**:IDE MCP server 以 `codemode: false` 注册,工具目录整体转发,所以这四个工具自动以 `idea_*` 出现在模型的
    工具表里 —— 插件侧不需要单独声明(也因此**装不装这个 IDEA 插件,插件侧的代码都不用改**);
-2. **条件引导**:只有这次请求的工具快照里真的有它们,才在「运行配置」段里点名,并写明**改完代码要重启无热重载的进程
-   就用 `idea_rerun_run_configuration`,不要用 `pkill` / `kill` / shell** —— 这正是它要解决的问题:外部杀掉的进程
-   IDE 并不知道,Run 窗口仍显示运行中,下次启动就会撞端口;
+2. **条件引导**:只有这次请求的工具快照里真的有它们,才在「运行配置」段里逐个点名。两个地方会跟着变:
+   - 「运行配置」段写明**改完代码要重启无热重载的进程就用 `idea_rerun_run_configuration`,不要用 `pkill` / `kill` / shell**
+     —— 这正是它要解决的问题:外部杀掉的进程 IDE 并不知道,Run 窗口仍显示运行中,下次启动就会撞端口;
+   - 「命令执行」段里那句"配置要先存在"的两条路线二选一:有 `create` 工具就指向它,没有就回落到"手写 `.run/*.run.xml`
+     - `idea-run-config` skill"。**没装插件时绝不会提到那个工具。**
 3. **工具名清单**写在 `src/mcp/enhance.js`(与原生 IDE 的 `src/mcp/idea.js` 分开放:原生走原生,插件的走插件的),
    与该仓库的 `RunLifecycleSchemas.kt` 保持同步。工具按**存在的子集**逐个点名(而不是「有就全写」),这样旧版本的配套
    插件少给一两个工具时,引导也不会提到它们。
@@ -155,14 +191,18 @@ opencode-idea 对这一组工具做三件事:
 
 ## Run Configuration 管理 (skill)
 
-IDE MCP 只能 **查**(`get_run_configurations`)和 **执行**(`execute_run_configuration`)run configuration, **没有增删改**
-(启停见上面的「Run Configuration 启停 (配套插件)」)。插件在**被标记的项目**里注册一个 `idea-run-config` skill 来补上这块:
+内置 MCP 只能 **查**(`get_run_configurations`)和 **执行**(`execute_run_configuration`)run configuration。**增删改**在装了配套插件
+时能做一部分(新建 Shell 配置,见上面的「Run Configuration 全套」),不装时完全没有 —— 所以插件在**被标记的项目**里注册一个
+`idea-run-config` skill 来覆盖剩下的部分(任意类型的新建、修改、删除):
 
 - 只操作 **项目级** `.run/<name>.run.xml`(可提交 git、团队共享), **不碰** `.idea/workspace.xml`;
 - 不内置任何按类型的模板 —— 先找项目里的 **真实样本**(`**/*.run.xml`,或让用户在 IDEA 里勾 "Store as project file"
   建一个)当参照,再写;
 - 写完必须用 `idea_get_run_configurations` **校验它能被列出**、并用 `idea_execute_run_configuration` **实跑确认**;
 - 改配置用 `idea_apply_patch` **定向改 option**,不整文件重写。
+
+> **和 `create_shell_run_configuration` 的关系**:那个工具只做 **Shell 类型**、且只在装了配套插件时存在;skill 覆盖的是**全部类型**
+> 和**无插件**的情况,所以两者不是替代关系。引导文本会按当前请求里实际有哪个工具,把「配置要先存在」那一步指向对应的路线。
 
 **skill 的生命周期跟随项目标记**:`/open-in-idea` 打标记时注册、`/close-in-idea` 清标记时注销;曾被标记过的项目在
 `setup` 时(读回标记)就会注册。未标记的项目不受影响。文档放在 `skills/<id>/SKILL.md`(每个 skill 一个目录,`name` /

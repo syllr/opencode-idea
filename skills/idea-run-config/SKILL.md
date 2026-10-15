@@ -5,14 +5,23 @@ description: "管理 JetBrains IDE 的 run configuration:在项目级 `.run/*.ru
 
 # JetBrains Run Configuration 管理
 
-## 怎么操作:查询走 MCP,增删改走文件
+## 怎么操作:查询 / 执行走 MCP,改删走文件
 
-| 动作                          | 手段                                                                      |
-| ----------------------------- | ------------------------------------------------------------------------- |
-| 查看有哪些配置 / 判断是否生效 | **MCP 工具** `idea_get_run_configurations`                                |
-| 新增 / 修改 / 删除            | **直接操作文件** `.run/<name>.run.xml`                                    |
-| 执行 / 调试                   | **MCP 工具** `idea_execute_run_configuration`                             |
-| 找同类型样本                  | 只读 **`.run/`** 下的 `*.run.xml`(`idea_search_file` + `paths: [".run"]`) |
+| 动作                           | 手段                                                                              |
+| ------------------------------ | --------------------------------------------------------------------------------- |
+| 查看有哪些配置 / 判断是否生效  | **MCP 工具** `idea_get_run_configurations`                                        |
+| 新建 **Shell 配置**            | 工具列表里有 `idea_create_shell_run_configuration` → 用它;没有 → **直接操作文件** |
+| 新建**其他类型** / 修改 / 删除 | **直接操作文件** `.run/<name>.run.xml`                                            |
+| 执行 / 调试                    | **MCP 工具** `idea_execute_run_configuration`                                     |
+| 找同类型样本                   | 只读 **`.run/`** 下的 `*.run.xml`(`idea_search_file` + `paths: [".run"]`)         |
+
+`idea_create_shell_run_configuration` 由配套 IDEA 插件 `idea-mcp-enhance` 提供,**装了才有** —— 自己看一眼工具列表就知道在不在:
+
+- **在** → 新建 Shell 配置走它:它写的就是项目级 `.run/<name>.run.xml`,类型固定 `ShConfigurationType`,
+  option 名由工具负责,**所以不需要先找样本**。传 `configurationName` + `scriptPath` / `scriptText` / `cloneFrom` 三选一;
+  返回里的 `canRun=false` 通常就是脚本文件不存在。
+- **不在** → 按下面的手写路径走。
+- **修改和删除永远没有工具**,无论装没装插件,一律手写文件。
 
 ## 存放位置:只有 `.run/`
 
@@ -35,10 +44,11 @@ description: "管理 JetBrains IDE 的 run configuration:在项目级 `.run/*.ru
 
 ## 铁律
 
-1. 不要凭空写 option 名。先在 **`.run/` 里**找真实样本:
+1. **手写路径**不要凭空写 option 名。先在 **`.run/` 里**找真实样本:
    - 用 `idea_search_file` 传 `q="*.run.xml"` + `paths: [".run"]` 看项目里已有的配置(**只看 `.run/`**,不去翻 `.idea/`)。
    - 没有目标类型 → 请用户在 IDEA 里新建一个配置,勾选 "Store as project file" 并**存到项目根的 `.run/`**,再读生成的 XML 当模板。
    - 仍然没有 → 直接说明需要该类型的真实样本,不要猜 option 名。
+   - （用 `idea_create_shell_run_configuration` 建 Shell 配置时**不需要**这一步 —— option 由工具负责。）
 2. 写完必须校验:
    - **唯一判据**是 `idea_get_run_configurations` 里能看到它。**看不到就是错的** —— 不许用"应该生效了"结案。
    - 看不到的常见原因(按概率):`type` 不是 IDE 当前启用的类型(**IDEA 会静默忽略整个文件,日志里也不报**)、根 component 名写错、
@@ -76,6 +86,8 @@ description: "管理 JetBrains IDE 的 run configuration:在项目级 `.run/*.ru
 
 ### 样本:Shell Script(IDEA 自己生成的 `.run/*.run.xml`)
 
+> 只在**手写** Shell 配置时看这段。有 `idea_create_shell_run_configuration` 就直接用它,下面的 option 名由工具负责。
+
 ```xml
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="Unnamed" type="ShConfigurationType" nameIsGenerated="true">
@@ -109,10 +121,13 @@ AI 自己写的配置一律给 `EXECUTE_IN_TERMINAL=false`;用户已有的 `true
 ## 流程
 
 1. **查现状**:`idea_get_run_configurations`(有哪些配置)。要找样本则在 `.run/` 里读 `*.run.xml`(限定 `paths: [".run"]`)。
-2. **定结构**:有同类样本 → 照它的结构改写;没有 → 请用户在 IDEA 里建一个并**存到 `.run/`**;仍然没有 → 说明需要真实样本,
-   不猜 option 名。
-3. **写文件**:`idea_create_new_file` 写 `.run/<name>.run.xml`。
+2. **新建 Shell 配置**:工具列表里有 `idea_create_shell_run_configuration` → 用它(`configurationName` + `scriptPath` /
+   `scriptText` / `cloneFrom` 三选一),然后跳到第 4 步。没有 → 继续走第 3 步。
+3. **定结构 + 写文件(仅手写)**:有同类样本 → 照它的结构改写,用 `idea_create_new_file` 写 `.run/<name>.run.xml`;
+   没有 → 请用户在 IDEA 里建一个并**存到 `.run/`**;仍然没有 → 说明需要真实样本,不猜 option 名。
 4. **校验(必做)**:`idea_get_run_configurations` 必须能看到它 —— 看不到就是错的,不许用"应该生效了"结案。
+   用 create 工具建的还要看返回里的 `canRun` / `canRunBlockedReason`(`false` 通常是脚本文件不存在);手写的看铁律 2。
 5. **实跑(必做)**:`idea_execute_run_configuration` 传 `configurationName` 确认能跑(Shell Script 必须
-   `EXECUTE_IN_TERMINAL=false`)。
+   `EXECUTE_IN_TERMINAL=false`);用 create 工具建的也可以用 `idea_rerun_run_configuration` 起。
 6. **改 / 删**:改 = `idea_apply_patch` 定向改 option,不要整文件重写;删 = 删除 `.run/<name>.run.xml`,再确认它从列表里消失。
+   **两者都没有工具,永远手写。**

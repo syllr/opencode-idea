@@ -8,10 +8,10 @@
 //   * native  -> `idea.js`      (always present; the IDE owns the catalog)
 //   * plugin  -> this file      (present only if the user installed the plugin)
 //
-// The companion plugin (https://github.com/syllr/idea-mcp-enhance) fills the
-// gaps the bundled server leaves in run configuration handling: the bundled
-// server can only START a configuration, never stop it, restart it, or report
-// what is currently running.
+// The companion plugin (https://github.com/syllr/idea-mcp-enhance) fills the gaps
+// the bundled server leaves in run configuration handling: the bundled server can
+// only START an existing configuration — it cannot create one, stop one, restart
+// one, or say what is currently running.
 //
 // Consequence of the split, and the reason it matters: a stock IDE serves a
 // SHORTER catalog than an enhanced one. Nothing here may be assumed — every use
@@ -29,12 +29,14 @@
  * names are its contract, and there is no runtime way to discover "which plugin
  * provided this tool": MCP carries no such marker.
  */
+export const CREATE_SHELL_RUN_CONFIGURATION_TOOL = 'idea_create_shell_run_configuration';
 export const LIST_RUNNING_CONFIGURATIONS_TOOL = 'idea_list_running_configurations';
 export const STOP_RUN_CONFIGURATION_TOOL = 'idea_stop_run_configuration';
 export const RERUN_RUN_CONFIGURATION_TOOL = 'idea_rerun_run_configuration';
 
-/** All of them, in the order the guidance lists them. */
+/** All of them, in the order the guidance lists them: create, see, stop, restart. */
 export const RUN_LIFECYCLE_TOOLS = [
+  CREATE_SHELL_RUN_CONFIGURATION_TOOL,
   LIST_RUNNING_CONFIGURATIONS_TOOL,
   STOP_RUN_CONFIGURATION_TOOL,
   RERUN_RUN_CONFIGURATION_TOOL,

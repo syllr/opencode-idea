@@ -52,6 +52,7 @@ import {
   serverConfig,
 } from './mcp/idea.js';
 import { servingRunLifecycleTools } from './mcp/enhance.js';
+import { applyIdeaToolDefaults, hideForcedArguments } from './mcp/idea-tool-defaults.js';
 import { currentProjectPath } from './project.js';
 import {
   autoLaunchSupported,
@@ -420,10 +421,19 @@ export default {
    *   tool?: {
    *     list?: () => Promise<ReadonlyArray<{ id?: string }>>,
    *     reload?: () => Promise<void>,
+   *     transform?: (cb: (editor: {
+   *       list: () => ReadonlyArray<{ id?: string, input?: unknown }>,
+   *       get: (id: string) => ({ id?: string, input?: unknown } | undefined),
+   *       add: (definition: unknown) => void,
+   *       update: (id: string, update: (tool: { input?: unknown, description?: string }) => void) => void,
+   *       remove: (id: string) => void,
+   *     }) => void) => Promise<{ dispose: () => Promise<void> | void }>,
    *     hook?: (name: string, cb: (event: {
    *       tool?: string,
    *       sessionID?: string,
+   *       input?: Record<string, unknown>,
    *       status?: string,
+   *       result?: unknown,
    *       error?: unknown,
    *     }) => void | Promise<void>) => Promise<{ dispose: () => Promise<void> | void }>,
    *   },
@@ -469,6 +479,8 @@ export default {
     let sessionRegistration;
     /** @type {{ dispose: () => Promise<void> | void } | undefined} */
     let toolRegistration;
+    let toolBeforeRegistration;
+    let toolTransformRegistration;
     /** @type {{ dispose: () => Promise<void> | void } | undefined} */
     let promptRegistration;
     /** @type {{ dispose: () => Promise<void> | void } | undefined} */
@@ -998,6 +1010,27 @@ export default {
         if (registrations.length > 0) needsRebuild = false;
       });
 
+      // The IDE's tool-catalog policy, in two halves that must stay in sync:
+      // an argument this plugin always overwrites must not also be advertised,
+      // or the model sets it, reasons about it, and is wrong. The schema half
+      // runs first, so a request never sees a knob that is already decided; see
+      // `mcp/idea-tool-defaults.js` for the measurements and for why this is a
+      // narrow exception to "never touch tool definitions".
+      //
+      // Both halves are deliberately unconditional on the project mark: they are
+      // properties of the tool call, not of whether this project is IDE-connected.
+      if (typeof ctx.tool?.transform === 'function') {
+        toolTransformRegistration = await ctx.tool.transform((editor) => {
+          hideForcedArguments(editor);
+        });
+      }
+      if (typeof ctx.tool?.hook === 'function') {
+        toolBeforeRegistration = await ctx.tool.hook('execute.before', (event) => {
+          if (typeof event?.tool !== 'string') return;
+          applyIdeaToolDefaults(event.tool, event.input);
+        });
+      }
+
       // The only self-initiated action: when an `idea_*` call fails in a way
       // that means the IDE MCP is not usable, run the open flow again. The
       // failure is classified — a plain business error (a bad path, a missing
@@ -1041,6 +1074,20 @@ export default {
       if (toolRegistration) {
         try {
           await toolRegistration.dispose();
+        } catch {
+          // best effort
+        }
+      }
+      if (toolBeforeRegistration) {
+        try {
+          await toolBeforeRegistration.dispose();
+        } catch {
+          // best effort
+        }
+      }
+      if (toolTransformRegistration) {
+        try {
+          await toolTransformRegistration.dispose();
         } catch {
           // best effort
         }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CREATE_SHELL_RUN_CONFIGURATION_TOOL,
   LIST_RUNNING_CONFIGURATIONS_TOOL,
   RERUN_RUN_CONFIGURATION_TOOL,
   RUN_LIFECYCLE_TOOLS,
@@ -10,6 +11,7 @@ import {
 describe('RUN_LIFECYCLE_TOOLS', () => {
   it('lists the tools the enhance plugin contributes', () => {
     expect(RUN_LIFECYCLE_TOOLS).toEqual([
+      'idea_create_shell_run_configuration',
       'idea_list_running_configurations',
       'idea_stop_run_configuration',
       'idea_rerun_run_configuration',
@@ -27,6 +29,7 @@ describe('RUN_LIFECYCLE_TOOLS', () => {
 
   it('composes the array from the named constants, not by hand', () => {
     expect(RUN_LIFECYCLE_TOOLS).toEqual([
+      CREATE_SHELL_RUN_CONFIGURATION_TOOL,
       LIST_RUNNING_CONFIGURATIONS_TOOL,
       STOP_RUN_CONFIGURATION_TOOL,
       RERUN_RUN_CONFIGURATION_TOOL,

@@ -18,13 +18,14 @@
 // carries them (see `mcp/enhance.js`).
 
 import {
+  CREATE_SHELL_RUN_CONFIGURATION_TOOL,
   LIST_RUNNING_CONFIGURATIONS_TOOL,
   RERUN_RUN_CONFIGURATION_TOOL,
   STOP_RUN_CONFIGURATION_TOOL,
 } from './mcp/enhance.js';
 
 /**
- * Lines for the enhance plugin's run-lifecycle tools, one per present tool.
+ * Lines for the enhance plugin's run-configuration tools, one per present tool.
  *
  * `present` is what this request actually carries
  * (`servingRunLifecycleTools`), so a stock IDE produces none of these lines.
@@ -39,6 +40,13 @@ import {
  */
 function runLifecycleLines(present) {
   const lines = [];
+  if (present.includes(CREATE_SHELL_RUN_CONFIGURATION_TOOL)) {
+    lines.push(
+      `- \`${CREATE_SHELL_RUN_CONFIGURATION_TOOL}\`(\`configurationName\` + \`scriptPath\` / \`scriptText\` / ` +
+        `\`cloneFrom\` 三选一):新建项目级 Shell 配置(写 \`.run/<name>.run.xml\`,可提交);只支持 Shell 类型,` +
+        `建完用 \`${RERUN_RUN_CONFIGURATION_TOOL}\` 起它。`,
+    );
+  }
   if (present.includes(LIST_RUNNING_CONFIGURATIONS_TOOL)) {
     lines.push(
       `- \`${LIST_RUNNING_CONFIGURATIONS_TOOL}\`:当前真正在跑的配置(几个实例 / 各自 pid / 退出码);` +
@@ -60,6 +68,28 @@ function runLifecycleLines(present) {
 }
 
 /**
+ * Lines for the command-execution section.
+ *
+ * The "where does a configuration come from" half is conditional: with the
+ * enhance plugin there is a tool for it, without one it is hand-authored XML
+ * and the `idea-run-config` skill is the only route. Saying "use a tool" when
+ * the tool is absent would send the model at something it cannot call.
+ *
+ * @param {readonly string[]} present
+ * @returns {string[]}
+ */
+function commandExecutionLines(present) {
+  const canCreate = present.includes(CREATE_SHELL_RUN_CONFIGURATION_TOOL);
+  return [
+    `- 需要项目环境的命令(依赖 IDE 里配好的 JDK / Node / Python 版本等):用 \`idea_execute_run_configuration\`,不要用原生 \`shell\`。`,
+    canCreate
+      ? `- 配置要先存在:没有就用 \`${CREATE_SHELL_RUN_CONFIGURATION_TOOL}\` 建一个(Shell 类型),再跑。`
+      : `- 配置要先存在:项目级 \`.run/*.run.xml\`(见 idea-run-config skill);没有就先建一个,再跑。`,
+    `- 不需要项目环境的命令:用原生 \`shell\`。`,
+  ];
+}
+
+/**
  * Build the guidance text for one project path.
  *
  * @param {string} projectPath
@@ -67,7 +97,8 @@ function runLifecycleLines(present) {
  *   tools present in this request; omit for a stock IDE.
  */
 export function buildIdeGuidance(projectPath, options = {}) {
-  const runLifecycle = runLifecycleLines(options.runLifecycleTools ?? []);
+  const present = options.runLifecycleTools ?? [];
+  const runLifecycle = runLifecycleLines(present);
   return [
     `# 项目内操作必须使用 IDEA MCP 工具`,
     ``,
@@ -117,9 +148,7 @@ export function buildIdeGuidance(projectPath, options = {}) {
     ...runLifecycle,
     ``,
     `### 命令执行`,
-    `- 需要项目环境的命令(依赖 IDE 里配好的 JDK / Node / Python 版本等):用 \`idea_execute_run_configuration\`,不要用原生 \`shell\`。`,
-    `- 配置要先存在:项目级 \`.run/*.run.xml\`(见 idea-run-config skill);没有就先建一个,再跑。`,
-    `- 不需要项目环境的命令:用原生 \`shell\`。`,
+    ...commandExecutionLines(present),
     ``,
     `### 数据库 (数据源由用户在 IDE 里配置:不要自己建/改,不要向用户索取数据库凭据)`,
     `- \`idea_list_database_connections\`:先看有没有现成数据源;每条给 \`id\` / \`dbms\` / \`jdbcUrl\` / \`readOnly\` / \`isDDL\`。`,

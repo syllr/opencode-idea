@@ -83,6 +83,8 @@ function fakeCtx(options = {}) {
     sessionHook: undefined,
     sessionHooks: {},
     toolHook: undefined,
+    toolHooks: {},
+    toolDefinitions: {},
     commands: new Map(),
     skills: new Map(),
     prompts: [],
@@ -106,8 +108,27 @@ function fakeCtx(options = {}) {
           state.toolReload += 1;
           state.tools = ideaTools.map((id) => ({ id }));
         },
+        transform: async (callback) => {
+          callback({
+            list: () => Object.keys(state.toolDefinitions).map((id) => ({ id })),
+            get: (id) => {
+              const definition = state.toolDefinitions[id];
+              return definition ? { id, ...definition } : undefined;
+            },
+            add: () => {},
+            update: (id, update) => {
+              const draft = { ...state.toolDefinitions[id] };
+              update(draft);
+              state.toolDefinitions[id] = draft;
+            },
+            remove: () => {},
+          });
+          return { dispose: () => {} };
+        },
         hook: async (name, callback) => {
-          state.toolHook = callback;
+          state.toolHooks[name] = callback;
+          // `toolHook` stays the `execute.after` hook for the existing assertions.
+          if (name === 'execute.after') state.toolHook = callback;
           return { dispose: () => {} };
         },
       },
@@ -700,6 +721,77 @@ describe('plugin setup', () => {
     // The two variants are different texts, so the second request does not get
     // deduplicated against the first one's guidance.
     expect(enhanced.system[1].text).not.toBe(stock.system[1].text);
+
+    await cleanup();
+  });
+
+  it('hides the owned build argument from the tool schema', async () => {
+    // A knob that is always overwritten must not also be advertised, or the
+    // model sets it, reasons about it, and is wrong. The schema half and the
+    // value half both come from FORCED_ARGUMENTS.
+    const { ctx, state } = fakeCtx();
+    state.toolDefinitions.idea_build_project = {
+      input: {
+        type: 'object',
+        properties: {
+          rebuild: { type: 'boolean', description: 'Defaults to false.' },
+          filesToRebuild: { type: 'array' },
+        },
+        required: ['rebuild'],
+        additionalProperties: false,
+      },
+    };
+    state.toolDefinitions.idea_lint_files = {
+      input: { type: 'object', properties: { rebuild: { type: 'boolean' } } },
+    };
+
+    const cleanup = await plugin.setup(ctx);
+
+    const build = state.toolDefinitions.idea_build_project.input;
+    expect(build.properties).toEqual({ filesToRebuild: { type: 'array' } });
+    expect(build).not.toHaveProperty('required');
+    // Nothing else about the schema changes — this transform only takes away.
+    expect(build.type).toBe('object');
+    expect(build.additionalProperties).toBe(false);
+
+    // Another tool that happens to have a `rebuild` property keeps it.
+    expect(state.toolDefinitions.idea_lint_files.input.properties).toHaveProperty('rebuild');
+
+    await cleanup();
+  });
+
+  it('does not register the schema transform when tool.transform is unavailable', async () => {
+    const { ctx } = fakeCtx();
+    delete ctx.tool.transform;
+    await expect(plugin.setup(ctx)).resolves.toBeTypeOf('function');
+  });
+
+  it('forces rebuild: true on every idea_build_project call', async () => {
+    // An incremental build answers against the IDE's own view of file freshness,
+    // so an edit made outside the IDE can produce a no-op that reports success.
+    // Measured on IntelliJ 2026.2.3; see src/mcp/idea-tool-defaults.js.
+    const { ctx, state } = fakeCtx();
+    const cleanup = await plugin.setup(ctx);
+    const before = state.toolHooks['execute.before'];
+    expect(before).toBeTypeOf('function');
+
+    const absent = { tool: 'idea_build_project', input: {} };
+    await before(absent);
+    expect(absent.input).toEqual({ rebuild: true });
+
+    const explicit = { tool: 'idea_build_project', input: { rebuild: false, timeout: 60000 } };
+    await before(explicit);
+    expect(explicit.input).toEqual({ rebuild: true, timeout: 60000 });
+
+    // Every other tool is left exactly as the model wrote it.
+    const other = { tool: 'idea_lint_files', input: { files: ['src/A.java'] } };
+    await before(other);
+    expect(other.input).toEqual({ files: ['src/A.java'] });
+
+    // A malformed event must not throw inside a hook OpenCode awaits.
+    expect(() => before({})).not.toThrow();
+    expect(() => before({ tool: 'idea_build_project' })).not.toThrow();
+    expect(() => before(undefined)).not.toThrow();
 
     await cleanup();
   });

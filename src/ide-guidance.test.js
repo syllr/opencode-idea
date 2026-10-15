@@ -81,6 +81,14 @@ describe('buildIdeGuidance', () => {
     expect(text).toContain('没返回即没问题');
   });
 
+  it('keeps the owned build argument out of the guidance too', () => {
+    // `rebuild` is removed from the tool's published schema and set by the
+    // plugin (src/mcp/idea-tool-defaults.js). Naming it in the guidance would
+    // put back exactly the knob the schema no longer offers.
+    const text = buildIdeGuidance(PROJECT);
+    expect(text).not.toContain('rebuild');
+  });
+
   it('writes no caveats or edge cases', () => {
     const text = buildIdeGuidance(PROJECT);
     for (const caveat of [
@@ -209,6 +217,32 @@ describe('buildIdeGuidance', () => {
     expect(partial).not.toContain('idea_stop_run_configuration');
     expect(partial).not.toContain('idea_rerun_run_configuration');
     expect(partial).not.toContain('pkill');
+  });
+
+  it('names the create tool only when the request carries it', () => {
+    const text = buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS });
+    expect(text).toContain('`idea_create_shell_run_configuration`');
+    expect(text).toContain('三选一');
+    expect(text).toContain('只支持 Shell 类型');
+
+    const without = buildIdeGuidance(PROJECT, {
+      runLifecycleTools: RUN_LIFECYCLE_TOOLS.filter(
+        (tool) => tool !== 'idea_create_shell_run_configuration',
+      ),
+    });
+    expect(without).not.toContain('idea_create_shell_run_configuration');
+  });
+
+  it('points the create-a-configuration hint at whichever route exists', () => {
+    // With the enhance plugin there is a tool for it; without one, hand-authored
+    // XML via the skill is the only route. Naming a tool that is not in the
+    // request would send the model at something it cannot call.
+    const withTool = buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS });
+    expect(withTool).toContain('没有就用 `idea_create_shell_run_configuration` 建一个');
+
+    const withoutTool = buildIdeGuidance(PROJECT);
+    expect(withoutTool).toContain('见 idea-run-config skill');
+    expect(withoutTool).not.toContain('idea_create_shell_run_configuration');
   });
 
   it('keeps the run-lifecycle tools inside the run configuration section', () => {
