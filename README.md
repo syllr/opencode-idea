@@ -226,8 +226,10 @@ opencode-idea 对这一组工具做三件事:
 `skills/idea-standalone/assets/AGENTS.template.md`,**SKILL.md 只写流程、指向模板**,不重复骨架。四段固定 ——
 
 1. **什么是 standalone 模式**:**standalone = 通过 IDEA 启动**(每个应用的入口是 IDEA run configuration),应用在本机进程
-   直跑(不容器化、不部署),只启动其中一部分是常态;启停一律由用户在 IDEA 里手动完成,AI 不得代为启停(含经
-   `idea_execute_run_configuration`),判断需要重启时先取得用户明确授权;
+   直跑(不容器化、不部署),只启动其中一部分是常态;**启停只走这三个工具** —— 启动 / 重启用 `idea_rerun_run_configuration`
+   (**跑应用只能用它**),停止用 `idea_stop_run_configuration`,查状态用 `idea_list_running_configurations`;
+   **`idea_execute_run_configuration` 不用于这里**(它是给命令 / Job 类型的配置跑的,对常驻进程只会起重复实例);也不绕开 IDEA 用
+   `go run` / `pnpm dev` 这类裸命令或 `kill` / `pkill`;**重启不必先问** —— 改完代码要重启就直接 rerun,这条链是无人化的;
 2. **启动哪些应用**:一行一个应用,启动路径**只能是 IDEA run configuration**(配置名必须能在 `idea_get_run_configurations`
    里查到;**缺配置就交给用户**去 IDEA 里建),端口与被依赖的先后顺序一并写明;
 3. **热重载矩阵**:逐应用标"是 / 否" —— 带 HMR 的 dev server 改动后**不用**提示重启;`go run .` 这类无热重载的进程改动后
@@ -412,6 +414,7 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
 
   实测数字(拿运行中的 IDE MCP 拉 `tools/list`):IDE 暴露 **64** 个 → 隐藏 48 → **模型可见 16 个**,
   而且这 16 个**恰好等于引导里点名的 16 个** —— 没有"能看见但没人告诉它用途"的残留。
+
 - 探测只确认「MCP 服务是否在监听」;**「当前项目是否已在 IDE 打开」靠一次项目作用域的 MCP 调用判断**
   (`get_project_modules`,带 `IJ_MCP_SERVER_PROJECT_PATH`):返回模块 = 已打开 → 跳过 `open -a`;报
   `Unable to determine the target project` = 未打开 → `open -a` 打开。MCP 关闭时会用一次短探测并立即给出设置提示。
