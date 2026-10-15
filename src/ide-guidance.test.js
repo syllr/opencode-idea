@@ -254,21 +254,28 @@ describe('buildIdeGuidance', () => {
     expect(without).not.toContain('idea_create_shell_run_configuration');
   });
 
-  it('keeps every ### heading immediately followed by its own content', () => {
-    // The document's convention: `#`/`##` are followed by a blank line, `###` is
-    // not — a `###` block is a list under its heading with no gap. This is also
-    // the shape a stray blank line breaks, so it is worth pinning.
+  it('never leaves a heading without content, and never doubles a blank line', () => {
+    // Deliberately loose about the gap itself: a heading may be followed by a
+    // blank line (how the file reads best as a document) or by its body directly.
+    // What must not happen is an empty section or a stray run of blank lines —
+    // those are how a hand-edited document rots, and they survive review because
+    // the rendered result looks almost right.
     for (const text of [
       buildIdeGuidance(PROJECT),
       buildIdeGuidance(PROJECT, { runLifecycleTools: RUN_LIFECYCLE_TOOLS }),
     ]) {
+      expect(text).not.toContain('\n\n\n');
       const lines = text.split('\n');
       for (const [index, line] of lines.entries()) {
-        if (!line.startsWith('### ')) continue;
-        expect(line, `第 ${index + 1} 行`).not.toBe('');
-        expect(lines[index + 1]?.trim(), `${line} 后面不该有空行`).not.toBe('');
+        if (!/^#{1,3} /.test(line)) continue;
+        let next = index + 1;
+        while (next < lines.length && lines[next].trim() === '') next += 1;
+        expect(lines[next], `${line} 后面是空节`).toBeTruthy();
+        // `#`/`##` may own nothing but subsections; a leaf `###` may not.
+        if (line.startsWith('### ')) {
+          expect(lines[next], `${line} 后面直接跟了标题`).not.toMatch(/^#{1,3} /);
+        }
       }
-      expect(text).not.toContain('\n\n\n');
     }
   });
 

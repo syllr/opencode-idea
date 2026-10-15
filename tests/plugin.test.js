@@ -709,6 +709,7 @@ describe('plugin setup', () => {
     const stock = { system: [], tools: { read: {}, idea_read_file: {}, idea_build_project: {} } };
     await state.sessionHook(stock);
     expect(stock.system[1].text).toContain('idea_get_run_configurations');
+    expect(stock.system[1].text).toContain('不要翻 `.run/`');
     expect(stock.system[1].text).not.toContain('idea_rerun_run_configuration');
     expect(stock.system[1].text).not.toContain('pkill');
 

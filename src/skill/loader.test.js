@@ -93,6 +93,21 @@ describe('shipped skills', () => {
     expect(template).toContain('按顺序写清第 1 步、第 2 步、第 3 步');
   });
 
+  it('splits the app table by operating system', () => {
+    // The same project starts differently per platform — an interpreter path is
+    // enough to make a configuration usable on one OS and dead on another (a
+    // Windows PowerShell INTERPRETER_PATH cannot run on macOS). One table would
+    // have to mix them, and the model would reach for the wrong one.
+    const template = readTemplate();
+    expect(template).toContain('按操作系统分成两张表');
+    expect(template).toContain('### macOS / Linux');
+    expect(template).toContain('### Windows');
+    expect(template).toContain('INTERPRETER_PATH');
+    // Exactly two app tables, one per platform.
+    const header = '| 应用 | run configuration | 目录 | 端口 | 启动前流程 | 说明 |';
+    expect(template.split(header)).toHaveLength(3);
+  });
+
   it('restarts without asking, so the loop stays unattended', () => {
     // The point of routing restarts through the tool is that nobody has to be
     // there. A consent step would put a human back in the loop.
@@ -137,14 +152,17 @@ describe('shipped skills', () => {
     expect(template.startsWith('<!-- idea-standalone:begin -->')).toBe(true);
     expect(template.trimEnd().endsWith('<!-- idea-standalone:end -->')).toBe(true);
 
-    // Every heading is one level, and the four parts are numbered in order. Both
-    // halves matter: a lost section is invisible otherwise, and a level slip
-    // silently changes how the block nests inside the host AGENTS.md.
+    // Every heading is one level deeper than its parent (`#` block title, `##`
+    // sections, `###` the per-platform sub-tables), and the parts are numbered in
+    // order. Both halves matter: a lost section is invisible otherwise, and a
+    // level slip silently changes how the block nests inside the host AGENTS.md.
     const headings = template.split('\n').filter((line) => /^#{1,6} /.test(line));
     expect(headings).toEqual([
       '# Standalone 模式纪律',
       '## 一、什么是 standalone 模式',
       '## 二、standalone 下启动哪些应用(必须经 IDEA run configuration)',
+      '### macOS / Linux',
+      '### Windows',
       '## 三、热重载矩阵:改代码后要不要提醒重启',
     ]);
 
