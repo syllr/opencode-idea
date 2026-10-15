@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseSkillFrontmatter, readSkill, readSkills, SKILL_FILE_NAME } from './loader.js';
+import { IDEA_SERVER_NAME } from '../mcp/idea.js';
 import { HIDDEN_IDEA_TOOLS } from '../plugin.js';
 
 const TEMPLATE = path.join(path.dirname(readSkill('idea-standalone').path), 'assets/AGENTS.template.md');
@@ -12,7 +13,10 @@ const readTemplate = () => readFileSync(TEMPLATE, 'utf8');
 describe('shipped skills', () => {
   it('loads every skill directory into a Skill.Info-shaped definition', () => {
     const skills = readSkills();
-    expect(skills.map((skill) => skill.id)).toEqual(['idea-standalone']);
+    expect(skills.map(({ skill }) => skill.id)).toEqual(['idea-standalone']);
+    // The tools a skill drives belong to the skill, not to the plugin: the
+    // requirement ships in the frontmatter, so adding a skill stays a directory.
+    expect(readSkills().map(({ requires }) => requires)).toEqual([['idea_rerun_run_configuration']]);
 
     const skill = readSkill('idea-standalone');
     // `Skill.Info` requires exactly these keys (see @opencode/schema/skill):
@@ -36,7 +40,7 @@ describe('shipped skills', () => {
     // model to hand-write `.run/*.run.xml` was the fragile half (a wrong `type`
     // makes the IDE ignore the whole file, silently). Anything that needs a
     // configuration the agent cannot create now goes to the user.
-    expect(readSkills().map((skill) => skill.id)).not.toContain('idea-run-config');
+    expect(readSkills().map(({ skill }) => skill.id)).not.toContain('idea-run-config');
     expect(() => readSkill('idea-run-config')).toThrow();
   });
 
@@ -197,13 +201,35 @@ describe('shipped skills', () => {
     for (const tool of HIDDEN_IDEA_TOOLS) {
       expect(content, `${tool} 已被隐藏`).not.toContain(tool);
     }
+    // Same for the gate itself: a skill requiring a hidden tool could never be
+    // offered, so it would sit in the package teaching nothing to nobody.
+    for (const { requires } of readSkills()) {
+      for (const tool of requires) {
+        expect(HIDDEN_IDEA_TOOLS, `${tool} 已被隐藏,不能作为 requires`).not.toContain(tool);
+      }
+    }
+  });
+
+  it('gates each skill on the name OpenCode reports, not the IDE wire name', () => {
+    // The gate compares `requires` against `ctx.tool.list()`, i.e. the names the
+    // model sees. For IDE tools that is the server-namespaced spelling: the IDE
+    // serves `rerun_run_configuration`, OpenCode reports `idea_rerun_run_configuration`.
+    // Getting this wrong gates the skill off on every machine, silently — which
+    // is exactly how it would look if the companion plugin were simply absent.
+    for (const { requires } of readSkills()) {
+      for (const tool of requires) {
+        expect(tool.startsWith(`${IDEA_SERVER_NAME}_`), `${tool} 是 IDE 的原始名,缺 OpenCode 的服务器前缀`).toBe(
+          true,
+        );
+      }
+    }
   });
 
   it('fails loudly when a SKILL.md has no usable metadata', () => {
     expect(() => parseSkillFrontmatter('# no frontmatter here', 'skills/x/SKILL.md')).toThrow(/frontmatter/);
     // `readSkill` is what requires a description; every shipped skill must have
     // one, otherwise OpenCode never offers it to the model.
-    expect(readSkills().every((skill) => skill.description.length > 0)).toBe(true);
+    expect(readSkills().every(({ skill }) => skill.description.length > 0)).toBe(true);
   });
 
   it('reads quoted and bare values without a YAML engine', () => {

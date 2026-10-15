@@ -515,7 +515,8 @@ export default {
     let commandRegistration;
     /** @type {{ dispose: () => Promise<void> | void } | undefined} */
     let skillRegistration;
-    let skillsRegistered = false;
+    /** Ids of the skills currently registered, so a sync can tell "unchanged". */
+    let registeredSkillIds = [];
     let disposed = false;
 
     // Latches when a request showed the `idea_*` tools are gone. It is cleared
@@ -574,8 +575,7 @@ export default {
       // The skill lifecycle follows the mark: marking the project registers the
       // IDEA skills, clearing the mark removes them again. Same semantics as the
       // reconnect behavior, so the two can never disagree.
-      if (marked) await ensureSkills();
-      else await removeSkills();
+      await syncSkills();
     };
 
     // Resolve the mark once, so the request hooks can read it synchronously.
@@ -616,7 +616,11 @@ export default {
       // Without this, a session that already captured a snapshot keeps the old
       // tool list until the session is reopened.
       if (typeof ctx.tool?.reload === 'function') await ctx.tool.reload();
-      return waitForIdeaTools();
+      const ready = await waitForIdeaTools();
+      // The catalog decides which of the shipped skills may be offered, so this
+      // is the first moment that question has an answer; see `syncSkills`.
+      await syncSkills();
+      return ready;
     };
 
     const activateIde = async (port) => {
@@ -875,41 +879,101 @@ export default {
       }
     };
 
+    /**
+     * The IDEA tools this project's IDE is serving right now.
+     *
+     * Empty is the honest answer for "does the IDE serve X?" before anything has
+     * connected — and it fails that way on error too, because the alternative
+     * (assuming a tool exists) is the one mistake that cannot be walked back
+     * after the model has seen it.
+     *
+     * @returns {Promise<Set<string>>}
+     */
+    const servedIdeaToolNames = async () => {
+      if (typeof ctx.tool?.list !== 'function') return new Set();
+      try {
+        return new Set(toolIds(await ctx.tool.list()));
+      } catch {
+        return new Set();
+      }
+    };
+
+    /** Same ids in the same order — `readSkills()` sorts, so the order is stable. */
+    const isSameSkillSet = (skills, ids) =>
+      skills.length === ids.length && skills.every((skill, index) => skill.id === ids[index]);
+
     // The shipped skills are static knowledge (`skills/<id>/SKILL.md`), e.g. the
     // standalone-mode discipline (every app starts from an IDEA run
-    // configuration, and starting one is the user's call). Registered only for a
-    // project that has been marked as an IDEA project, so unrelated projects
-    // never see an IDEA-specific skill.
+    // configuration, and starting one is the user's call, so the skill has to be
+    // there to write the project's own rules). They pass two independent gates,
+    // because a skill can be wrong twice over:
+    //
+    //   * the project mark — an unrelated project never sees an IDEA skill;
+    //   * the tools the IDE actually serves — a skill that teaches a call the
+    //     model cannot make is not knowledge, it is a failed call waiting to
+    //     happen. `idea-standalone` drives `idea_rerun_run_configuration`, which
+    //     only the companion plugin `idea-mcp-enhance` serves, so a stock IDE must
+    //     not see it at all. Each skill declares its own dependency in its
+    //     frontmatter (`requires:`), so this stays a data question.
+    //
+    // The catalog is unknown at setup: the mark is read from storage offline,
+    // before anything has connected to the IDE. So this is a reconcile rather
+    // than a one-shot — every catalog refresh re-runs it, and it offers exactly
+    // what is justified right now. Until the IDE has answered, the gated skills
+    // simply do not exist.
     //
     // Deliberately NOT wrapped in a catch: these are core features of the plugin,
     // so a rejected definition must fail loudly. Swallowing it would ship a
     // silently incomplete plugin — which is exactly how 0.0.6 lost
     // `/open-in-idea` without anyone noticing until the command was gone.
-    const ensureSkills = async () => {
-      if (skillsRegistered || typeof ctx.skill?.transform !== 'function') return;
-      skillsRegistered = true;
-      // Read the documents before the transform: callbacks must stay synchronous.
-      const skills = readSkills();
-      skillRegistration = await ctx.skill.transform((editor) => {
-        for (const skill of skills) editor.add(skill);
-      });
-    };
-    /** Remove the IDEA skills again when the project is unmarked. */
-    const removeSkills = async () => {
-      if (!skillsRegistered || !skillRegistration) return;
-      skillsRegistered = false;
-      const registration = skillRegistration;
+    const syncSkillsOnce = async () => {
+      if (typeof ctx.skill?.transform !== 'function') return;
+
+      const served = await servedIdeaToolNames();
+      const wanted = (markCache === true ? readSkills() : [])
+        .filter(({ requires }) => requires.every((name) => served.has(name)))
+        .map(({ skill }) => skill);
+      if (isSameSkillSet(wanted, registeredSkillIds)) return;
+
+      // Tear down and register again, the same way the MCP server is
+      // re-registered: a transform that only ever adds would leave a stale skill
+      // behind, and one that only removes could never bring it back.
+      registeredSkillIds = [];
+      const previous = skillRegistration;
       skillRegistration = undefined;
-      try {
-        await registration.dispose();
-      } catch {
-        // best effort
+      if (previous) {
+        try {
+          await previous.dispose();
+        } catch {
+          // best effort
+        }
       }
+      if (wanted.length === 0) return;
+      skillRegistration = await ctx.skill.transform((editor) => {
+        for (const skill of wanted) editor.add(skill);
+      });
+      registeredSkillIds = wanted.map((skill) => skill.id);
     };
-    // A project marked in an earlier run gets its skills at setup; a project
-    // marked for the first time gets them when `/open-in-idea` runs (both paths
-    // go through `setMark` / this setup hook).
-    if (markCache === true) await ensureSkills();
+
+    // Serialized like the reconciler, and for the same reason: one call disposes
+    // a registration before it makes the next, so two overlapping calls would
+    // leak one of them. That overlap is easy to reach — `/close-in-idea` can land
+    // while a reconnect is still in flight. With the chain in place, callers may
+    // fire this without awaiting.
+    let skillSyncChain = Promise.resolve();
+    const syncSkills = () => {
+      const run = () => syncSkillsOnce();
+      const next = skillSyncChain.then(run, run);
+      skillSyncChain = next.then(
+        () => {},
+        () => {},
+      );
+      return next;
+    };
+    // A project marked in an earlier run gets its skills as soon as the IDE has
+    // answered; a project marked for the first time gets them when
+    // `/open-in-idea` runs (both paths go through `setMark` / this setup hook).
+    await syncSkills();
 
     // `/open-in-idea`: manual, re-entrant trigger that also loads the IDE
     // capabilities immediately, and marks the project so later messages keep the
@@ -994,6 +1058,15 @@ export default {
         if (markCache === true || serving) {
           appendIdeRecoveryGuidance(event?.system, { marked: markCache === true, serving });
         }
+        // A skill follows its tools in both directions, and this is the one place
+        // that sees the answer change WITHOUT a reconnect: a request that has
+        // lost the enhance tools must not keep the skill that drives them. Fired,
+        // not awaited — the hook is synchronous, and the chain in `syncSkills`
+        // makes that safe. `refreshIdeTools` covers the other direction.
+        //
+        // Skipped when there is nothing it could change, so a project that never
+        // touched the IDE does not pay a catalog read on every request.
+        if (markCache === true || registeredSkillIds.length > 0) void syncSkills();
         if (!injectGuidance) return;
         // Guidance promises tools the model can call, so it only goes out when
         // they are actually in this request.

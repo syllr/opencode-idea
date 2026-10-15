@@ -21,6 +21,12 @@
 //
 // The frontmatter reader below handles only the flat `key: value` form this
 // package writes. It is not a YAML engine and must not grow into one.
+//
+// One frontmatter key is the loader's own rather than OpenCode's: `requires`, a
+// comma-separated list of the tools the skill is written around. It is read here
+// and deliberately kept OUT of the registered definition — the caller filters on
+// it instead (see `readSkills`), because a skill whose tools are absent must not
+// be registered at all.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -68,12 +74,40 @@ export function parseSkillFrontmatter(text, source) {
 }
 
 /**
+ * Split a frontmatter list value: `a, b` -> `['a', 'b']`.
+ *
+ * @param {string | undefined} value
+ * @returns {string[]}
+ */
+function splitList(value) {
+  if (!value) return [];
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== '');
+}
+
+/**
  * Load one skill directory into a `Skill.Info`-shaped definition.
  *
  * @param {string} id Directory name, used as the skill id.
  * @returns {{ id: string, name: string, description: string, path: string, content: string }}
  */
 export function readSkill(id) {
+  return readSkillPackage(id).skill;
+}
+
+/**
+ * A skill plus the tools it needs before it is worth offering.
+ *
+ * The two are kept apart on purpose: `skill` must satisfy `Skill.Info` exactly,
+ * while `requires` is this package's own metadata and must NOT be registered —
+ * it is what the caller filters on.
+ *
+ * @param {string} id Directory name, used as the skill id.
+ * @returns {{ skill: { id: string, name: string, description: string, path: string, content: string }, requires: string[] }}
+ */
+export function readSkillPackage(id) {
   const file = new URL(`${id}/${SKILL_FILE_NAME}`, SKILLS_DIR);
   const source = `skills/${id}/${SKILL_FILE_NAME}`;
   const text = readFileSync(file, 'utf8');
@@ -83,23 +117,26 @@ export function readSkill(id) {
     throw new Error(`${source}: frontmatter needs a "description", otherwise the skill is never offered`);
   }
   return {
-    id,
-    name: fields.name || id,
-    description,
-    path: fileURLToPath(file),
-    content: text.replace(FRONTMATTER, '').replace(/^\s+/, '').trimEnd(),
+    skill: {
+      id,
+      name: fields.name || id,
+      description,
+      path: fileURLToPath(file),
+      content: text.replace(FRONTMATTER, '').replace(/^\s+/, '').trimEnd(),
+    },
+    requires: splitList(fields.requires),
   };
 }
 
 /**
- * Every shipped skill, sorted by id.
+ * Every shipped skill, sorted by id, each with the tools it requires.
  *
- * @returns {Array<{ id: string, name: string, description: string, path: string, content: string }>}
+ * @returns {Array<{ skill: { id: string, name: string, description: string, path: string, content: string }, requires: string[] }>}
  */
 export function readSkills() {
   return readdirSync(SKILLS_DIR, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort()
-    .map((id) => readSkill(id));
+    .map((id) => readSkillPackage(id));
 }

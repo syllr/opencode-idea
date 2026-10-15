@@ -30,7 +30,7 @@ setup(启动, 每项目一次):
   不探测、不注册 MCP
 
 /open-in-idea(手动触发, 阻塞到就绪):
-  1. 写项目标记 = true + 同步内存缓存;注册 `idea-standalone` skill
+  1. 写项目标记 = true + 同步内存缓存;按 IDE 实际提供的工具同步 skill
   2. 探测本地 JetBrains IDE MCP 服务(/stream)
      - 已就绪 → 再问 IDE「当前项目是否已打开」(`get_project_modules`,带项目路径)
        · 已打开 → 不重复 open;未打开 → open -a 打开
@@ -214,9 +214,20 @@ opencode-idea 对这一组工具做三件事:
 > **静默忽略整个文件、日志里也不报**,模型的唯一判据只有"`idea_get_run_configurations` 里看不看得到";而它想补的"新建"能力现在
 > 由配套插件提供。要配置但没有工具,就**交给用户**,比让模型猜 option 名可靠。
 
-**skill 的生命周期跟随项目标记**:`/open-in-idea` 打标记时注册、`/close-in-idea` 清标记时注销;曾被标记过的项目在
-`setup` 时(读回标记)就会注册。未标记的项目不受影响。文档放在 `skills/<id>/SKILL.md`(每个 skill 一个目录,`name` /
-`description` 走 YAML frontmatter),由 `src/skill/loader.js` 扫描加载 —— **加新 skill 只需加一个目录,不用改代码**。
+**skill 的生命周期跟随两道门,缺一不可**:
+
+1. **项目标记** —— `/open-in-idea` 打标记时注册、`/close-in-idea` 清标记时注销;曾被标记过的项目在 `setup` 时(读回标记)
+   也会走这一步。未标记的项目不受影响。
+2. **IDE 真的在提供这个 skill 依赖的工具** —— skill 在自己的 frontmatter 里用 `requires:` 声明它绕着哪个工具写(例如
+   `idea-standalone` 声明 `idea_rerun_run_configuration`,那个工具只有配套插件提供)。**没这个工具就不注册这个 skill**:
+   一个教模型去调"它根本看不到的工具"的 skill,不是知识,是一次注定的失败调用。工具的可见性是双向跟随的 —— `setup` 时还没
+   连过 IDE、目录未知,所以那时**不注册**;等 IDE 应答(`/open-in-idea` 或重连)后目录才算已知,该出现的才出现;反过来,某个
+   请求里工具没了,skill 也跟着撤(不需要等重连)。
+   `requires` 必须写 **OpenCode 侧的名字**(IDE 工具带 `idea_` 服务器前缀),因为门就是拿它跟 `ctx.tool.list()` 比;
+   写成 IDE 的原始名(`rerun_run_configuration`)会让这个 skill 在任何机器上都不出现,而且没有任何报错。
+
+文档放在 `skills/<id>/SKILL.md`(每个 skill 一个目录,`name` / `description` / `requires` 走 YAML frontmatter,`requires` 由
+loader 消费、**不会进入注册给 OpenCode 的定义**),由 `src/skill/loader.js` 扫描加载 —— **加新 skill 只需加一个目录,不用改代码**。
 
 ## Standalone 模式纪律 (skill)
 
@@ -368,8 +379,8 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
 
 ## 行为
 
-- **被标记的项目**:启动读回标记后挂上 shell 环境钩子 (环境值待接入后填充)、注册 `idea-standalone` skill;IDE MCP 由
-  `/open-in-idea` 注册。
+- **被标记的项目**:启动读回标记后挂上 shell 环境钩子 (环境值待接入后填充)、按 IDE 实际提供的工具同步 skill(IDE 还没应答时
+  依赖配套工具的 skill 不注册);IDE MCP 由 `/open-in-idea` 注册。
 - **未标记的项目**:不改环境、不注册、不注入任何 IDEA 提示 (每请求零开销;setup 时只做一次项目标记读取)。
 - **手动接入 + 就绪即返回**:`/open-in-idea` 会 `open -a` 拉起 IDEA 并**等 IDE MCP 就绪**(冷启动数十秒,上限 60s);就绪后
   **先注销旧的 `idea` → 再重新注册**(远程 Streamable HTTP),等 `idea_*` 工具就绪,最后才通知。**每次执行都重建**。命令返回即可用;
