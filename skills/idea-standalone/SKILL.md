@@ -14,18 +14,16 @@ description: "为项目生成/维护 standalone(经 IDEA 启动、本机进程�
 - **标记之内由本 skill 生成与维护;标记之外的项目内容一律不动。**
 - **目标产物的骨架、各段内容约定与写作规范以 [assets/AGENTS.template.md](assets/AGENTS.template.md) 为准**,本 skill 不另行维护
   章节骨架或逐段规则;生成或更新前必须先读该文件,并严格沿用其中的标题层级、标记与生成提示。
-- 只对这个项目生效; **不写**全局配置目录 (`~/.config/opencode/`),也不另建规则文件。
 
 ## 读取
 
 - 读 `<项目根>/AGENTS.md`,确认是否已存在 `idea-standalone` 标记块(更新)或需要在文件末尾追加(新增)。
-- 收集事实,**一律不猜**:
-  - `idea_get_run_configurations` → 真实存在的配置名(第二段 `run configuration` 列只能来自这里)。
-  - `idea_search_file` 传 `q="*.run.xml"` + `paths: [".run"]` → 每个配置实际干什么(命令 / 脚本 / npm script)。
-  - `package.json` / `pom.xml` / `go.mod` / `pyproject.toml` / `Cargo.toml` → 项目类型,决定第三段的热重载列。
-  - 端口:从 run configuration 的 option 或项目自身配置里读。
-- 需要 `run configuration` 但项目里没有:**交给用户** —— 请他在 IDEA 里自己建一个。不要手搓启动命令,也不要自己写 `.run/*.run.xml`。
-- 补齐缺口:哪些应用进 standalone、哪些配置名对不上、端口与热重载不确定 —— **逐条向用户确认**。
+- **`idea_get_run_configurations` 直接调用,不传任何参数** → 项目里已有的 run configuration 就是**用户已经在 IDEA 里配好的那些**,这一次调用会把它们的名字连同启动细节(程序参数、工作目录、环境变量、是否支持启动时覆盖)一并给出。
+  第二段的 `run configuration` 列、以及端口,**只能来自这里** —— 不需要再去逐个翻 `.run/*.run.xml`,那份列表已经是配置的结果。
+- 项目类型(`package.json` / `pom.xml` / `go.mod` / `pyproject.toml` / `Cargo.toml`)→ 决定第三段的热重载列。
+- 端口:先看上面那份启动细节里有没有;项目自身配置里也读不到就**问用户**,不要编。
+- `run configuration` 列表里缺某个应用:**交给用户** —— 请他在 IDEA 里自己建一个,然后**重新查一次**。不要手搓启动命令,也不要自己写 `.run/*.run.xml`。
+- 补齐缺口:哪些应用进 standalone、哪些配置名对不上、端口与热重载不确定 —— **逐条向用户确认**,不猜。
 - 生成或更新前先读 [assets/AGENTS.template.md](assets/AGENTS.template.md),确认四段与各段生成提示。
 
 ## 生成与更新
@@ -38,24 +36,3 @@ description: "为项目生成/维护 standalone(经 IDEA 启动、本机进程�
 4. **更新**(已有标记块):只替换 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 之间的内容,块外一字不动。
 5. 用原生 `edit` 做定向替换;文件不存在时才用 `write` 创建。**不要整文件重写**。
 6. 复读并核对:标记块内逐段与模板一致,块外内容与改动前逐字一致,报告产物清单。
-
-## 联动
-
-- **根 `AGENTS.md` 是共享文件**:`project-scaffold` 的宪法块、项目自己写的内容都在里面。本 skill 只动自己的标记块。
-- 与 `code-guide`(子目录 `AGENTS.md`)互不重叠:本 skill 只写项目根,且只在标记块内。
-
-## 完成判定
-
-- `AGENTS.md` 里存在且只存在一个 `idea-standalone` 标记块;块内四段齐全(第四段起为用户补充条款)。
-- 标记块内逐段按 [assets/AGENTS.template.md](assets/AGENTS.template.md) 的生成提示核对,结构一致,没有模板未定义的内容、没有残留 `{...}`。
-- **标记外的内容一字未改**;其他 skill 的标记块未被触碰。
-- 第二段表格里每个配置名都能在 `idea_get_run_configurations` 里查到 —— **查不到就是错的**,不许用"应该生效了"结案。
-- 配置名、端口、热重载三项都有依据,取自实际配置与代码。
-
-## 边界
-
-- 只写项目根 `AGENTS.md` 里属于自己的标记块;不写 `.opencode/`、不写全局配置目录、不改业务代码。
-- 标记之外一律不动,包括项目自己写的内容和其他 skill 的标记块。
-- 第二段的启动方式 **只能是 IDEA run configuration**;不写手搓启动命令。
-- AI 不启停本机进程(含 `idea_execute_run_configuration`);判断需要重启时先取得用户明确授权。
-- 配置名、端口、热重载三项不确定就问用户,不编。

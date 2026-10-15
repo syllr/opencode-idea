@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseSkillFrontmatter, readSkill, readSkills, SKILL_FILE_NAME } from './loader.js';
+import { HIDDEN_IDEA_TOOLS } from '../plugin.js';
 
 describe('shipped skills', () => {
   it('loads every skill directory into a Skill.Info-shaped definition', () => {
@@ -88,6 +89,26 @@ describe('shipped skills', () => {
     // them may survive into the produced block.
     expect(template).toContain('{...}');
     expect(template).toContain('不留进产物');
+  });
+
+  it('reads the configurations from the tool, not by walking .run/', () => {
+    // `idea_get_run_configurations` called with no arguments answers exactly the
+    // question this skill asks: the configurations the USER has already set up,
+    // launch details included. Reading the `.run/*.run.xml` files one by one
+    // would re-derive what that call already returns.
+    const content = readSkill('idea-standalone').content;
+    expect(content).toContain('直接调用,不传任何参数');
+    expect(content).toContain('用户已经在 IDEA 里配好的那些');
+    expect(content).toContain('不需要再去逐个翻 `.run/*.run.xml`');
+  });
+
+  it('references no tool that the plugin hides from the model', () => {
+    // Hidden tools are stripped from every request, so a skill that names one is
+    // telling the model to call something it cannot see.
+    const content = readSkill('idea-standalone').content;
+    for (const tool of HIDDEN_IDEA_TOOLS) {
+      expect(content, `${tool} 已被隐藏`).not.toContain(tool);
+    }
   });
 
   it('fails loudly when a SKILL.md has no usable metadata', () => {
