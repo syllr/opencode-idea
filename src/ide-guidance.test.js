@@ -65,7 +65,7 @@ describe('工具清单(按功能,不按项目重复)', () => {
   it('writes each capability once, with every project command after the arrow', () => {
     const text = stock();
     expect(text).toContain(
-      '→ 根项目 `ide_search_symbol` ｜ modelserver `modelserver_search_symbol`',
+      '根项目 `ide_search_symbol` ｜ modelserver `modelserver_search_symbol`',
     );
     // 功能说明只出现一次:没有"按项目各抄一遍"的第二段。
     expect(text.match(/按名字找符号的声明位置/g)).toHaveLength(1);
@@ -188,7 +188,7 @@ describe('工具清单(按功能,不按项目重复)', () => {
   it('names each project only once per command list', () => {
     const text = stock();
     // 每条 cmd_* 都长成 "根项目 `命令` ｜ 子项目名 `命令`"，没有第三份。
-    for (const line of text.split('\n').filter((l) => l.includes('→ 根项目'))) {
+    for (const line of text.split('\n').filter((l) => l.startsWith('- 根项目'))) {
       expect(line.match(/`ide_/g)?.length).toBe(1);
       expect(line.match(/`modelserver_/g)?.length).toBe(1);
     }
@@ -220,7 +220,7 @@ describe('run-lifecycle 能力', () => {
       '**改完代码重启无热重载的进程**',
     );
     expect(text).toContain(
-      '→ 根项目 `ide_rerun_run_configuration` ｜ modelserver `modelserver_rerun_run_configuration`',
+      '根项目 `ide_rerun_run_configuration` ｜ modelserver `modelserver_rerun_run_configuration`',
     );
     expect(text).toContain('`ide_list_running_configurations`');
     // 只在清单里出现一次,不重复成两段。
@@ -242,7 +242,7 @@ describe('单项目', () => {
     const text = buildIdeGuidanceText([ROOT], { tools: {} });
     expect(text).toContain('本会话接入了 1 个 JetBrains 项目');
     expect(text).toContain('- **根项目** `.`(IntelliJ IDEA 打开)→ MCP 工具前缀 `ide_*`');
-    expect(text).toContain('→ 根项目 `ide_search_symbol`');
+    expect(text).toContain('根项目 `ide_search_symbol`');
     expect(text).not.toContain('modelserver_');
   });
 });

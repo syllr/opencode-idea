@@ -26,11 +26,12 @@
 - **唯一例外**:压缩包内的条目(路径带 `.jar!/`,原生 `read` 打不开)—— 见下面「读压缩包内的东西」。
 - 某条功能下面没有你正要操作的那个项目的命令,就是那个项目没接上:提示用户执行 `/open-in-idea`,不要重试,也不要去别处找。
 
-## 工具(按功能列;`→` 后面是这条功能在各项目的命令)
+## 工具(每条第一行是各项目的命令,接着是它的用法)
 
 ### 符号(只有 IDE 的语义索引能给)
 
-- **按名字找符号的声明位置**(`q` 传查询文本,**固定带上 `include_external: true`**):本插件最不可替代的能力 —— 它搜的是**符号**(类 / 接口 / 方法 / 函数 / 字段 / 类型 / 常量这类**有名字的定义**)的**声明位置**,不是"哪段文本提到过它"(那是 `grep` 的事);带上 `include_external` 才会连**依赖库和标准库**一起搜,于是你能直接定位第三方库里的实现 —— 这是原生 `grep` / `glob` 够不着的地方(IDE 自己的 `search_text` / `search_file` 也只搜项目内)。
+- {{cmd_search_symbol}}
+  **按名字找符号的声明位置**(`q` 传查询文本,**固定带上 `include_external: true`**):本插件最不可替代的能力 —— 它搜的是**符号**(类 / 接口 / 方法 / 函数 / 字段 / 类型 / 常量这类**有名字的定义**)的**声明位置**,不是"哪段文本提到过它"(那是 `grep` 的事);带上 `include_external` 才会连**依赖库和标准库**一起搜,于是你能直接定位第三方库里的实现 —— 这是原生 `grep` / `glob` 够不着的地方(IDE 自己的 `search_text` / `search_file` 也只搜项目内)。
   - **典型用法 ①:代码里引用了某个库的 API(最常见)** —— 读代码时看到 `from fastapi import FastAPI`、`import org.apache.poi...FormulaParser`、`gorm.DeletedAt`、`from 'vue'` 这类引用时,**包名就在代码里**,直接**用「包名+符号名」当 `q` 搜**,一次定位到它的实现:
     - **Java**:全限定名 —— `com.nimbusds.jose.util.Base64`(实测 1 条命中 `~/.m2/.../poi-5.3.0-sources.jar!/...`)
     - **Go**:包名.符号 —— `gorm.DeletedAt`(实测 2 条,全在 `go/pkg/mod/gorm.io/gorm@...`)
@@ -46,48 +47,67 @@
   - **它返回的路径,原样交给同一个项目的 `<P>_read_file` 就是源码**:两者同属一个项目、相对路径的基准一致,所以不用拼绝对路径、不用管是什么语言 —— 压缩包里的条目它也照样读(`.class` 还会反编译)。
     例:`<P>_search_symbol({ q: "UvicornWorker", include_external: true })` 给出 `../../../Library/.../uvicorn/workers.py` → `<P>_read_file({ file_path: "那个字符串" })`。
   - **依赖索引是按项目的**:任何依赖都用**它所在项目**的那个 MCP 工具去搜 —— 根项目的依赖用根项目的命令,子项目的依赖用子项目的命令。拿一个项目的工具去搜另一个项目的依赖,只会在那个项目自己的文件里找,**拿不到库**。
-  - **别把这条路径交给原生 `read`**:原生 read 的基准是本会话的工作目录(根项目),拿子项目的相对路径去读会落到错误的位置。→ {{cmd_search_symbol}}
-- **一个符号的签名 / 文档 / 声明位置**:`filePath` + `line` + `column`。→ {{cmd_get_symbol_info}}
-- **调用关系**:`symbolFqn` 传符号名,`analysisKind` 取 `INCOMING_CALLS` / `OUTGOING_CALLS`;`depth` 控层数,`childOffset` 翻页。→ {{cmd_analyze_calls}}
+  - **别把这条路径交给原生 `read`**:原生 read 的基准是本会话的工作目录(根项目),拿子项目的相对路径去读会落到错误的位置。
+- {{cmd_get_symbol_info}}
+  **一个符号的签名 / 文档 / 声明位置**:`filePath` + `line` + `column`。
+- {{cmd_analyze_calls}}
+  **调用关系**:`symbolFqn` 传符号名,`analysisKind` 取 `INCOMING_CALLS` / `OUTGOING_CALLS`;`depth` 控层数,`childOffset` 翻页。
 
 ### 项目与编辑器
 
-- **项目视角的目录树**(尊重内容根与排除项):`maxDepth` 控深度。→ {{cmd_list_directory_tree}}
-- **项目模块及类型**。→ {{cmd_get_project_modules}}
-- **项目直接声明的依赖**。→ {{cmd_get_project_dependencies}}
-- **用户在 IDE 里打开了哪些文件**(含当前激活的那个)。→ {{cmd_get_all_open_file_paths}}
-- **把文件在 IDE 里打开并激活**,给用户看。→ {{cmd_open_file_in_editor}}
+- {{cmd_list_directory_tree}}
+  **项目视角的目录树**(尊重内容根与排除项):`maxDepth` 控深度。
+- {{cmd_get_project_modules}}
+  **项目模块及类型**。
+- {{cmd_get_project_dependencies}}
+  **项目直接声明的依赖**。
+- {{cmd_get_all_open_file_paths}}
+  **用户在 IDE 里打开了哪些文件**(含当前激活的那个)。
+- {{cmd_open_file_in_editor}}
+  **把文件在 IDE 里打开并激活**,给用户看。
 
 ### 重构与格式化
 
-- **按符号改名**,项目内的引用一并更新。→ {{cmd_rename_refactoring}}
-- **按 IDE 的代码风格重排**。→ {{cmd_reformat_file}}
+- {{cmd_rename_refactoring}}
+  **按符号改名**,项目内的引用一并更新。
+- {{cmd_reformat_file}}
+  **按 IDE 的代码风格重排**。
 
 ### 校验
 
-- **批量检查**:`files` 传数组;只列有问题的文件。→ {{cmd_lint_files}}
-- **单文件检查**:`filePath`;结果在 `errors`。→ {{cmd_get_file_problems}}
-- **构建校验**:`filesToRebuild` 可只构建指定文件;有问题返回在 `problems`,没返回即没问题。→ {{cmd_build_project}}
+- {{cmd_lint_files}}
+  **批量检查**:`files` 传数组;只列有问题的文件。
+- {{cmd_get_file_problems}}
+  **单文件检查**:`filePath`;结果在 `errors`。
+- {{cmd_build_project}}
+  **构建校验**:`filesToRebuild` 可只构建指定文件;有问题返回在 `problems`,没返回即没问题。
 
 ### 读压缩包内的东西
 
-- **压缩包内的条目**(路径形如 `libs/foo.jar!/com/x/Bar.class` 或 `jar://` URL)只有它能读 —— 原生 `read` 打不开压缩包,而它还能把 `.class` **反编译成源码**;「符号」那条搜出来的路径也用它(原样传即可)。→ {{cmd_read_file}}
+- {{cmd_read_file}}
+  **压缩包内的条目**(路径形如 `libs/foo.jar!/com/x/Bar.class` 或 `jar://` URL)只有它能读 —— 原生 `read` 打不开压缩包,而它还能把 `.class` **反编译成源码**;「符号」那条搜出来的路径也用它(原样传即可)。
 
 ### 运行配置
 
-- **项目里有哪些运行配置**:传 `filePath` 可列该文件的运行入口。**不要翻 `.run/` 目录** —— 存在 `.idea/` 里的那些看不到。→ {{cmd_get_run_configurations}}
-- **跑已有配置**:Shell Script 要 `EXECUTE_IN_TERMINAL: false`;覆盖参数(`programArguments` / `workingDirectory` / `envs`)需配置支持 `supportsDynamicLaunchOverrides`。→ {{cmd_execute_run_configuration}}
+- {{cmd_get_run_configurations}}
+  **项目里有哪些运行配置**:传 `filePath` 可列该文件的运行入口。**不要翻 `.run/` 目录** —— 存在 `.idea/` 里的那些看不到。
+- {{cmd_execute_run_configuration}}
+  **跑已有配置**:Shell Script 要 `EXECUTE_IN_TERMINAL: false`;覆盖参数(`programArguments` / `workingDirectory` / `envs`)需配置支持 `supportsDynamicLaunchOverrides`。
 {{#if canCreateRunConfiguration}}
-- **新建项目级 Shell 配置**(`configurationName` + `scriptPath` / `scriptText` / `cloneFrom` 三选一;写 `.run/<name>.run.xml`):**重操作** —— 只给固定要跑、反复要用的流程建,**且建之前必须先取得用户同意**;只支持 Shell 类型,**其他类型请用户在 IDE 里建**。→ {{cmd_create_shell_run_configuration}}
+- {{cmd_create_shell_run_configuration}}
+  **新建项目级 Shell 配置**(`configurationName` + `scriptPath` / `scriptText` / `cloneFrom` 三选一;写 `.run/<name>.run.xml`):**重操作** —— 只给固定要跑、反复要用的流程建,**且建之前必须先取得用户同意**;只支持 Shell 类型,**其他类型请用户在 IDE 里建**。
 {{/if}}
 {{#if canListRunningConfigurations}}
-- **当前真正在跑的配置**(几个实例 / 各自 pid / 退出码):停 / 重启前后都先用它看状态。→ {{cmd_list_running_configurations}}
+- {{cmd_list_running_configurations}}
+  **当前真正在跑的配置**(几个实例 / 各自 pid / 退出码):停 / 重启前后都先用它看状态。
 {{/if}}
 {{#if canStopRunConfiguration}}
-- **停掉该配置的全部实例并等它们退出**:没在跑也返回成功。→ {{cmd_stop_run_configuration}}
+- {{cmd_stop_run_configuration}}
+  **停掉该配置的全部实例并等它们退出**:没在跑也返回成功。
 {{/if}}
 {{#if canRerunRunConfiguration}}
-- **改完代码重启无热重载的进程**:在跑就重启、没在跑就启动;读 `started` 判断新进程是否真的起来了。不要用 `pkill` / `kill` / `shell` 代替。→ {{cmd_rerun_run_configuration}}
+- {{cmd_rerun_run_configuration}}
+  **改完代码重启无热重载的进程**:在跑就重启、没在跑就启动;读 `started` 判断新进程是否真的起来了。不要用 `pkill` / `kill` / `shell` 代替。
 {{/if}}
 
 ## 命令执行(所有项目通用)
