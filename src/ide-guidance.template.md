@@ -23,13 +23,20 @@
 - 下面这些 IDE 工具也是原生工具:直接调用(参数按各工具 schema 传),不要包进 `execute`;它们不在 Code Mode 的工具目录里,`search` 搜不到。
 - **只有 IDE 才有的能力才用它们**:符号级检索、项目模型、检查与构建、重构与格式化、run configuration。
 - **读写与搜索用原生工具**(`read` / `write` / `edit` / `grep` / `glob`):不要为读一个文件、写一个文件、搜一段文本去绕 IDE 工具。
+- **唯一例外**:路径里带 `.jar!/` 的(压缩包里的条目)用下面「读压缩包内的东西」那条 —— 原生 `read` 打不开它。
 - 某条功能下面没有你正要操作的那个项目的命令,就是那个项目没接上:提示用户执行 `/open-in-idea`,不要重试,也不要去别处找。
 
 ## 工具(按功能列;`→` 后面是这条功能在各项目的命令)
 
 ### 符号(只有 IDE 的语义索引能给)
 
-- **按名字找符号的声明位置**:要看签名 / 文档接着用「符号信息」那条。→ {{cmd_search_symbol}}
+- **按名字找符号的声明位置**(`q` 传查询文本):默认只搜**本项目自己的代码**;**要连依赖库和标准库一起搜,传 `include_external: true`** —— 这是"看第三方库源码"的入口。返回的路径形态随语言不同,读法也不同:
+  - **Java / Kotlin**:`~/.m2/.../xxx-**sources.jar!**/pkg/Foo.java`、JDK 的 `.../**src.zip!**/java/lang/String.java`(在压缩包里)→ 用「读压缩包内的东西」那条
+  - **Python**:`.../site-packages/foo.py`、PyCharm 远程解释器缓存 `.../Caches/JetBrains/PyCharm*/remote_sources/.../foo.py`(普通文件)→ **原生 `read`**
+  - **Node / TS**:`.../node_modules/.pnpm/.../foo.d.ts`(普通文件)→ **原生 `read`**
+  - **Go**:`~/go/pkg/mod/...` 下的 `.go`(普通文件)→ **原生 `read`**
+  - 返回的路径是**相对「该项目根」**的。交给原生 `read` 前先补成绝对路径(项目清单里给了每个项目的绝对路径),把 `..` 展开 —— 本会话的 cwd 是根项目,直接拿子项目的相对路径去读会读到别的文件。
+    要看签名 / 文档接着用「符号信息」那条。→ {{cmd_search_symbol}}
 - **一个符号的签名 / 文档 / 声明位置**:`filePath` + `line` + `column`。→ {{cmd_get_symbol_info}}
 - **调用关系**:`symbolFqn` 传符号名,`analysisKind` 取 `INCOMING_CALLS` / `OUTGOING_CALLS`;`depth` 控层数,`childOffset` 翻页。→ {{cmd_analyze_calls}}
 
@@ -52,9 +59,9 @@
 - **单文件检查**:`filePath`;结果在 `errors`。→ {{cmd_get_file_problems}}
 - **构建校验**:`filesToRebuild` 可只构建指定文件;有问题返回在 `problems`,没返回即没问题。→ {{cmd_build_project}}
 
-### 包内文件
+### 读压缩包内的东西
 
-- **读包内文件**(`<jar>!/<entry>` 形式的依赖 jar 内文件、`jrt://` 形式的 JDK 镜像):这是原生 `read` 做不到的;普通文件一律用 `read`。→ {{cmd_read_file}}
+- **读压缩包里的条目**,路径形如 `libs/foo.jar!/com/x/Bar.class`(或 `jar://` URL):它既能读 jar 内的资源文件,又能把 `.class` **反编译成源码**看 —— 这两件原生 `read` 都做不到。**判据就是路径里有没有 `.jar!/`**:没有的话,不管它是依赖、是别的模块的文件、还是本项目的文件,一律用原生 `read`(更快、更省 token)。**这种路径从哪来**:上面搜符号时带 `include_external` 就会给出依赖源码的路径;项目里放着的 jar 用原生 `glob`(`**/*.jar`)也能找到。→ {{cmd_read_file}}
 
 ### 运行配置
 

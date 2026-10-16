@@ -2,8 +2,11 @@
 // per-directory launch guard.
 
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { appNameFor, createLaunchGuard, openInIde } from '../src/ide-launcher.js';
+import { appNameFor, createLaunchGuard, detectInstalledIdes, openInIde } from '../src/ide-launcher.js';
 
 /** A spawn stub that records calls and closes with `code`. */
 function fakeSpawn(code = 0) {
@@ -34,6 +37,52 @@ describe('appNameFor', () => {
     // by hand — which is why `autoLaunchSupported()` tells the two apart.
     expect(appNameFor('idea', { platform: 'win32' })).toBeUndefined();
     expect(appNameFor('pycharm', { platform: 'linux' })).toBeUndefined();
+  });
+});
+
+describe('detectInstalledIdes', () => {
+  /** 造一个假的应用目录，里面放给定的 bundle。 */
+  function fakeApps(bundles) {
+    const dir = mkdtempSync(path.join(tmpdir(), 'apps-'));
+    for (const bundle of bundles) mkdirSync(path.join(dir, `${bundle}.app`));
+    return dir;
+  }
+
+  it('finds installed IDEs by application bundle, not by process', () => {
+    // 进程探测只能看到"正在运行"的 IDE,装了没开就漏 —— 这里按安装目录找,与是否运行无关。
+    const dir = fakeApps(['IntelliJ IDEA', 'PyCharm']);
+    expect(detectInstalledIdes({ dirs: [dir] }).sort()).toEqual(['idea', 'pycharm']);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('accepts the CE variants', () => {
+    const dir = fakeApps(['PyCharm CE', 'IntelliJ IDEA CE']);
+    expect(detectInstalledIdes({ dirs: [dir] }).sort()).toEqual(['idea', 'pycharm']);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('reports only what is installed', () => {
+    const dir = fakeApps(['IntelliJ IDEA']);
+    expect(detectInstalledIdes({ dirs: [dir] })).toEqual(['idea']);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('ignores unrelated bundles and missing directories', () => {
+    const dir = fakeApps(['Safari', 'Visual Studio Code']);
+    expect(detectInstalledIdes({ dirs: [dir, '/no/such/dir'] })).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('recognises the Toolbox and versioned directory names too', () => {
+    // Windows / Linux 的安装目录形如 `PyCharm 2026.2`、Toolbox 的 `PyCharm`,没有 .app 后缀。
+    const dir = fakeApps(['PyCharm 2026.2', 'IntelliJ IDEA 2026.2']);
+    expect(detectInstalledIdes({ dirs: [dir] }).sort()).toEqual(['idea', 'pycharm']);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('returns nothing when no known directory can be read', () => {
+    // 空数组是"没探测出来",不是"没装" —— 调用方必须照常问用户。
+    expect(detectInstalledIdes({ dirs: ['/no/such/dir'] })).toEqual([]);
   });
 });
 

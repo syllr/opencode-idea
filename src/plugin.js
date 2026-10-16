@@ -61,6 +61,7 @@ import {
   appNameFor,
   autoLaunchSupported,
   createLaunchGuard,
+  detectInstalledIdes,
   openInIde,
 } from './ide-launcher.js';
 import {
@@ -413,7 +414,7 @@ export function ideFeedback(result) {
         : `未检测到 ${where} 的 MCP 服务。请确认已打开,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后再次执行 /open-in-idea。`;
     }
     case 'launch-failed':
-      return `无法拉起 ${nameOf(result?.project)}(未找到应用或启动失败)。请手动打开后重试 /open-in-idea。`;
+      return `无法拉起 ${nameOf(result?.project)}(未找到应用或启动失败)。请确认它已安装 —— 没装的话先装上,再重试 /open-in-idea。`;
     case 'disabled':
       return '插件已通过 openInIde: false 关闭 IDE 启动。请手动打开 IDE,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后重试 /open-in-idea。';
     case 'manual-launch':
@@ -1156,9 +1157,25 @@ export default {
       const call = target.isRoot
         ? 'configure_ide_project({ ide: "<idea|pycharm>" })'
         : `configure_ide_project({ path: "${target.label}", ide: "<idea|pycharm>" })`;
+      // 插件自己摸底,而不是让模型去"找 IDE" —— 它找到的办法通常是 `ps aux | grep`(只能
+      // 看到**正在运行**的进程,装了没开就漏),又慢又不准。这里是按应用目录读一次得到的。
+      const installed = detectInstalledIdes();
+      const missing = SUPPORTED_IDES.filter((app) => !installed.includes(app));
+      const detectLines = installed.length
+        ? [
+            `插件已探测本机安装情况:装有 ${installed.map((app) => IDE_LABELS[app] ?? app).join('、')}` +
+              (missing.length
+                ? `;没找到 ${missing.map((app) => IDE_LABELS[app] ?? app).join('、')}(用户若要用它,需要自己先装)`
+                : '') +
+              '。',
+            '**不要再自己去跑命令或翻进程** —— 这是按应用目录得到的结论,进程里没有不代表没装。',
+            '',
+          ]
+        : [];
       const text = [
         `${NOTICE_PREFIX}需要确定 ${where} 用哪个 IDE 打开。`,
         '',
+        ...detectLines,
         '请向用户提问,并**在得到答复后调用 `configure_ide_project` 工具**写入配置。可选值只有两个:',
         '- `idea` → IntelliJ IDEA',
         '- `pycharm` → PyCharm',

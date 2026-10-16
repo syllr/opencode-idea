@@ -65,11 +65,29 @@ describe('工具清单(按功能,不按项目重复)', () => {
   it('writes each capability once, with every project command after the arrow', () => {
     const text = stock();
     expect(text).toContain(
-      '- **按名字找符号的声明位置**:要看签名 / 文档接着用「符号信息」那条。→ 根项目 `ide_search_symbol` ｜ modelserver `modelserver_search_symbol`',
+      '→ 根项目 `ide_search_symbol` ｜ modelserver `modelserver_search_symbol`',
     );
     // 功能说明只出现一次:没有"按项目各抄一遍"的第二段。
     expect(text.match(/按名字找符号的声明位置/g)).toHaveLength(1);
     expect(text.match(/### 符号/g)).toHaveLength(1);
+  });
+
+  it('teaches the library-source workflow, per language', () => {
+    // 实测出来的核心价值:默认不搜库,带上 include_external 才能命中依赖源码。而"怎么读"
+    // 随语言不同 —— JVM 的依赖在压缩包里(只有 IDE 的 read_file 能读),Python / Node / Go
+    // 的依赖就是磁盘上的普通文件(原生 read 直接读)。写成一种语言的例子会误导其它语言。
+    const text = stock();
+    expect(text).toContain('include_external: true');
+    expect(text).toContain('sources.jar!');
+    expect(text).toContain('Python');
+    expect(text).toContain('node_modules');
+    // 相对路径这个坑:搜索返回的是相对**该项目根**的路径,而会话 cwd 是根项目。
+    expect(text).toContain('相对「该项目根」');
+    expect(text).toContain('会读到别的文件');
+    // "不加 search_text 那 AI 怎么找依赖里的文本" —— 答案是从 symbol 搜索的返回路径推出依赖目录,
+    // 再用原生 grep/glob 搜;并说明 search_text 那三个够不着依赖(实测传项目外路径直接报错)。
+    expect(text).toContain('依赖的物理目录');
+    expect(text).toContain('points to the location outside of the project directory');
   });
 
   it('covers every routed capability', () => {
@@ -123,11 +141,14 @@ describe('工具清单(按功能,不按项目重复)', () => {
     expect(text).not.toContain('版本控制用原生');
   });
 
-  it('keeps the read_file capability scoped to what native cannot do', () => {
+  it('scopes read_file to archive entries, with a checkable test', () => {
+    // 规则必须给**可操作的判据**(路径里有没有 `.jar!/`),不能只说"包内文件"这种术语 ——
+    // 实测模型就是靠不住这个概念,才拿它去读普通文件。
     const text = stock();
-    expect(text).toContain('读包内文件');
-    expect(text).toContain('jrt://');
-    expect(text).toContain('普通文件一律用 `read`');
+    expect(text).toContain('读压缩包里的条目');
+    expect(text).toContain('.jar!/');
+    expect(text).toContain('反编译');
+    expect(text).toContain('一律用原生 `read`');
   });
 
   it('writes no caveats or edge cases', () => {

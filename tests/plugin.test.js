@@ -9,7 +9,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 const openCalls = vi.hoisted(() => []);
 // The platform the mocked launcher pretends to run on. Tests that need a
 // platform without a launcher set this to e.g. 'win32'; afterEach restores it.
-const launcher = vi.hoisted(() => ({ platform: 'darwin', onOpen: null }));
+const launcher = vi.hoisted(() => ({ platform: 'darwin', onOpen: null, installedIdes: ['idea'] }));
 vi.mock('../src/ide-launcher.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
@@ -18,6 +18,8 @@ vi.mock('../src/ide-launcher.js', async (importOriginal) => {
     // command asks the user to open the IDE by hand.
     autoLaunchSupported: () => launcher.platform === 'darwin',
     appNameFor: (app) => (launcher.platform === 'darwin' ? actual.appNameFor(app) : undefined),
+    // 本机装了哪些 IDE:测试里固定成"只装了 IDEA",好断言提问文本里那句探测结论。
+    detectInstalledIdes: () => launcher.installedIdes,
     openInIde: async (...args) => {
       openCalls.push(args);
       // A real `open -a` makes the IDE open the project, which is what the
@@ -62,6 +64,7 @@ afterEach(async () => {
   openCalls.length = 0;
   launcher.platform = 'darwin';
   launcher.onOpen = null;
+  launcher.installedIdes = ['idea'];
   IDE_PORTS.idea = REAL_IDE_PORTS.idea;
   IDE_PORTS.pycharm = REAL_IDE_PORTS.pycharm;
   if (running) {
@@ -1682,6 +1685,47 @@ describe('多项目接入（root + 子项目，各自用不同 IDE）', () => {
     expect(state.prompts[0].text).toContain('configure_ide_project');
     expect(state.prompts[0].metadata.displayText).toContain('IntelliJ IDEA');
     expect(state.prompts[0].metadata.displayText).toContain('PyCharm');
+
+    await cleanup();
+  });
+
+  it('hands the model the local IDE inventory instead of making it probe', async () => {
+    // 实测踩过:模型收到"问用户选哪个 IDE"后自己跑 `ps aux | grep`,那只看到**正在运行**
+    // 的进程 —— PyCharm 装了没开就被报成"未发现"。所以插件自己按应用目录探一次,把结论写进
+    // 任务文本,并明确禁止模型再去翻进程。
+    const { ctx, state } = fakeCtx();
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({
+      sessionID: 's1',
+      prompt: { text: '' },
+      delivery: 'steer',
+    });
+
+    const text = state.prompts[0].text;
+    expect(text).toContain('插件已探测本机安装情况');
+    expect(text).toContain('装有 IntelliJ IDEA');
+    expect(text).toContain('没找到 PyCharm');
+    expect(text).toContain('不要再自己去跑命令或翻进程');
+
+    await cleanup();
+  });
+
+  it('says nothing about installation when the probe found nothing', async () => {
+    // 非 macOS(或探测失败)时不能瞎说 —— 空数组是"没探出来",不是"没装"。
+    launcher.installedIdes = [];
+    const { ctx, state } = fakeCtx();
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-idea').execute({
+      sessionID: 's1',
+      prompt: { text: '' },
+      delivery: 'steer',
+    });
+
+    const text = state.prompts[0].text;
+    expect(text).not.toContain('插件已探测本机安装情况');
+    expect(text).toContain('configure_ide_project');
 
     await cleanup();
   });
