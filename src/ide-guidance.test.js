@@ -39,6 +39,19 @@ describe('项目清单', () => {
     expect(text).toContain(CHILD.path);
   });
 
+  it('marks the root project as excluding the subprojects', () => {
+    // 子项目就在根目录的目录树里,不写明"扣掉",模型就得自己猜 modelserver 的文件算谁的。
+    const text = stock();
+    expect(text).toContain('**子项目就是根目录下的目录**');
+    expect(text).toContain('根目录中扣掉这些子项目之后的部分');
+    expect(text).toContain('**不含下列子项目**');
+  });
+
+  it('does not claim exclusions when the root is the only project', () => {
+    const text = buildIdeGuidanceText([ROOT], { tools: {} });
+    expect(text).not.toContain('**不含下列子项目**');
+  });
+
   it('states the routing rule and points at subproject AGENTS.md on demand', () => {
     // 子项目的 AGENTS.md 不会自动进上下文(OpenCode 只按 cwd 向上收集,而 cwd 是 root)。
     const text = stock();

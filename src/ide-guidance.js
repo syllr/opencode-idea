@@ -54,11 +54,15 @@ const TEMPLATE = readFileSync(TEMPLATE_PATH, 'utf8');
  * @param {ReadonlyArray<{ label: string, path: string, app: string, server: string, isRoot: boolean }>} projects
  */
 function routeTableFor(projects) {
+  const hasChildren = projects.some((project) => !project.isRoot);
   return projects
     .map((project) => {
       const kind = project.isRoot ? '根项目' : '子项目';
       const ide = IDE_LABELS[project.app] ?? project.app;
-      return `- **${kind}** \`${project.label}\`(${ide} 打开)→ MCP 工具前缀 \`${project.server}_*\`,项目路径 \`${project.path}\``;
+      // 根项目的那一行必须写明"不含下列子项目" —— 子项目就在它的目录树里,不写清楚,
+      // "modelserver 的文件算根项目还是子项目"就成了模型要自己猜的问题。
+      const scope = project.isRoot && hasChildren ? ',**不含下列子项目**' : '';
+      return `- **${kind}** \`${project.label}\`(${ide} 打开)→ MCP 工具前缀 \`${project.server}_*\`,项目路径 \`${project.path}\`${scope}`;
     })
     .join('\n');
 }
