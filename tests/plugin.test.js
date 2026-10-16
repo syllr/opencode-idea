@@ -1931,6 +1931,30 @@ describe('多项目接入（root + 子项目，各自用不同 IDE）', () => {
     await cleanup();
   });
 
+  it('在非 macOS 上连子项目也不拉起 IDE(与 IDEA 同一套规则)', async () => {
+    // 旧逻辑:非 mac 一律不 open。加了 PyCharm 之后这条不能只对 idea 成立 ——
+    // `appNameFor` 与 app 无关,所以 pycharm 同样拿不到 app,走到 manual-launch。
+    launcher.platform = 'win32';
+    // 这个 fake IDE 认得 modelserver 这个项目 —— 但它是以子项目身份接进来的。
+    const fake = await startFakeIde();
+    fake.setProjectOpen(childPath, true);
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
+    state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
+    const cleanup = await plugin.setup(ctx);
+
+    openCalls.length = 0;
+    // 登记子项目(PyCharm)并接入。
+    await state.registeredTools.configure_ide_project.execute({ path: 'modelserver', ide: 'pycharm' });
+
+    // 从来不请求拉起:Windows 上没有 `open -a`。
+    expect(openCalls).toHaveLength(0);
+    // 但已经打开着的端点照样连上 —— 不拉起 ≠ 不能用。
+    expect(state.mcp).toBeGreaterThan(0);
+
+    await cleanup();
+  });
+
   it('delete-in-ide 删掉整个配置，子项目一并清掉', async () => {
     const fake = await startFakeIdeForProject();
     fake.setProjectOpen(childPath, true);
