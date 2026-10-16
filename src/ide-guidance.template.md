@@ -30,12 +30,11 @@
 
 ### 符号(只有 IDE 的语义索引能给)
 
-- **按名字找符号的声明位置**(`q` 传查询文本):默认只搜**本项目自己的代码**;**要连依赖库和标准库一起搜,传 `include_external: true`** —— 这是"看第三方库源码"的入口。返回的路径形态随语言不同,读法也不同:
-  - **Java / Kotlin**:`~/.m2/.../xxx-**sources.jar!**/pkg/Foo.java`、JDK 的 `.../**src.zip!**/java/lang/String.java`(在压缩包里)→ 用「读压缩包内的东西」那条
-  - **Python**:`.../site-packages/foo.py`、PyCharm 远程解释器缓存 `.../Caches/JetBrains/PyCharm*/remote_sources/.../foo.py`(普通文件)→ **原生 `read`**
-  - **Node / TS**:`.../node_modules/.pnpm/.../foo.d.ts`(普通文件)→ **原生 `read`**
-  - **Go**:`~/go/pkg/mod/...` 下的 `.go`(普通文件)→ **原生 `read`**
-  - 返回的路径是**相对「该项目根」**的。交给原生 `read` 前先补成绝对路径(项目清单里给了每个项目的绝对路径),把 `..` 展开 —— 本会话的 cwd 是根项目,直接拿子项目的相对路径去读会读到别的文件。
+- **按名字找符号的声明位置**(`q` 传查询文本):默认只搜**本项目自己的代码**;**要连依赖库和标准库一起搜,传 `include_external: true`** —— 这是"看第三方库源码"的入口(搜不到东西时,带上它再试一次)。
+  - **它返回的路径,原样交给同一个项目的 `<P>_read_file` 就是源码**:两者同属一个项目、相对路径的基准一致,所以不用拼绝对路径、不用管是什么语言 —— 压缩包里的条目它也照样读(`.class` 还会反编译)。
+    例:`<P>_search_symbol({ q: "UvicornWorker", include_external: true })` 给出 `../../../Library/.../uvicorn/workers.py` → `<P>_read_file({ file_path: "那个字符串" })`。
+  - **别把这条路径交给原生 `read`**:原生 read 的基准是本会话的工作目录(根项目),拿子项目的相对路径去读会落到错误的位置。
+  - 要在依赖里搜**文本 / 文件名**(符号搜不到时):从上面返回的路径就能看出依赖的物理目录(如 `node_modules/`、`remote_sources/<hash>/`),在它下面用原生 `grep` / `glob` 搜。
     要看签名 / 文档接着用「符号信息」那条。→ {{cmd_search_symbol}}
 - **一个符号的签名 / 文档 / 声明位置**:`filePath` + `line` + `column`。→ {{cmd_get_symbol_info}}
 - **调用关系**:`symbolFqn` 传符号名,`analysisKind` 取 `INCOMING_CALLS` / `OUTGOING_CALLS`;`depth` 控层数,`childOffset` 翻页。→ {{cmd_analyze_calls}}
@@ -61,7 +60,8 @@
 
 ### 读压缩包内的东西
 
-- **读压缩包里的条目**,路径形如 `libs/foo.jar!/com/x/Bar.class`(或 `jar://` URL):它既能读 jar 内的资源文件,又能把 `.class` **反编译成源码**看 —— 这两件原生 `read` 都做不到。**判据就是路径里有没有 `.jar!/`**:没有的话,不管它是依赖、是别的模块的文件、还是本项目的文件,一律用原生 `read`(更快、更省 token)。**这种路径从哪来**:上面搜符号时带 `include_external` 就会给出依赖源码的路径;项目里放着的 jar 用原生 `glob`(`**/*.jar`)也能找到。→ {{cmd_read_file}}
+- **它管两件事**:① **「符号」那条搜出来的路径**(原样传即可,别自己去拼绝对路径);② **压缩包里的条目**,路径形如 `libs/foo.jar!/com/x/Bar.class` 或 `jar://` URL —— 能读 jar 内的资源文件,还能把 `.class` **反编译成源码**。这两件原生 `read` 都做不到。
+- **其余情况** —— 你自己就知道路径的普通文件(项目源码、`node_modules` 里的文件、Python 的 `.py`)—— 用**原生 `read`**,更快也更省 token。→ {{cmd_read_file}}
 
 ### 运行配置
 
