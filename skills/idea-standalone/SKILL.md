@@ -1,6 +1,6 @@
 ---
 name: idea-standalone
-requires: idea_rerun_run_configuration
+requires: rerun_run_configuration
 description: "为项目生成/维护 standalone(启动收口只有 IDEA run configuration)模式的纪律,写进**项目根 `AGENTS.md`** 里由 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 包裹的标记块。当用户要做 standalone 规范、要固化「本机跑哪几个应用」「哪些应用热重载、哪些改了必须重启」「启停走哪个工具」这类项目级纪律时使用。产物固定三段:standalone 是什么、经 IDEA run configuration 启动哪些应用、逐应用的热重载与重启提示纪律。"
 ---
 
@@ -19,8 +19,10 @@ description: "为项目生成/维护 standalone(启动收口只有 IDEA run conf
 
 ## 读取
 
+- **工具名前缀跟着项目走**:本项目的工具前缀由它接入时的名字决定 —— root 是 `ide`,子项目是它的目录名。下文的
+  `<前缀>_` 就是它(例如 `ide_get_run_configurations` 或 `modelserver_get_run_configurations`)。
 - 读 `<项目根>/AGENTS.md`,确认是否已存在 `idea-standalone` 标记块(更新)或需要在文件末尾追加(新增)。
-- **`idea_get_run_configurations` 直接调用,不传任何参数** → 项目里已有的 run configuration 就是**用户已经在 IDEA 里配好的那些**,
+- **该项目的 `<前缀>_get_run_configurations` 直接调用,不传任何参数** → 项目里已有的 run configuration 就是**用户已经在 IDEA 里配好的那些**,
   这一次调用会把它们的名字连同启动细节(程序参数、工作目录、环境变量、是否支持启动时覆盖)一并给出。
   第二段的 `run configuration` 列、以及端口,**只能来自这里** —— 不需要再去逐个翻 `.run/*.run.xml`,那份列表已经是配置的结果。
 - 项目类型(`package.json` / `pom.xml` / `go.mod` / `pyproject.toml` / `Cargo.toml`)→ 决定第三段的热重载列。

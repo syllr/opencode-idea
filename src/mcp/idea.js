@@ -37,29 +37,23 @@ export function ideProjectPath(projectPath) {
   return projectPath.replace(/\\/g, '/');
 }
 
-/** OpenCode MCP server name registered for the IDE. */
-export const IDEA_SERVER_NAME = 'idea';
-
 /** Streamable-HTTP endpoint exposed by the IDE MCP server (IntelliJ 2026.2+). */
 export const MCP_STREAM_PATH = '/stream';
 
-/** Port the IDE MCP server listens on when not configured explicitly. */
-export const DEFAULT_PORTS = [64342];
-
 const PROTOCOL_VERSION = '2025-06-18';
-// A probe is only a local availability check. Keep it short: a disabled IDE
-// MCP endpoint must not make the user wait for the launch timeout before the
-// actionable notification is sent.
-const PROBE_TIMEOUT_MS = 1000;
 const CALL_TIMEOUT_MS = 15000;
 
 /**
  * Build the OpenCode MCP server config for a given IDE port + project.
  *
  * `codemode: false` exposes the IDE tools directly on the provider tool list
- * (as `idea_<tool>`) instead of routing them through Code Mode. Direct exposure
- * passes each tool's full schema to the model, so parameter names are known
- * without exploration. The rest of an MCP server's options are unchanged.
+ * (as `<server>_<tool>`) instead of routing them through Code Mode. Direct
+ * exposure passes each tool's full schema to the model, so parameter names are
+ * known without exploration. The rest of an MCP server's options are unchanged.
+ *
+ * The server NAME is not decided here: it is the project's tool prefix, chosen
+ * by the caller (root -> `ide`, a subproject -> its directory name). See
+ * `ide-projects.js` for why the prefix encodes the LEVEL, not the IDE product.
  *
  * @param {number} port
  * @param {string} projectPath
@@ -94,66 +88,6 @@ function withExecutionTimeout(config, options) {
   return config;
 }
 
-
-/**
- * Is an IDE MCP server listening on `port`? One Streamable-HTTP `initialize`
- * POST decides it: any 2xx JSON reply means the server is up.
- *
- * @param {number} port
- * @param {{ fetchImpl?: typeof fetch, timeoutMs?: number }} [options]
- * @returns {Promise<boolean>}
- */
-export async function probePort(port, options = {}) {
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? PROBE_TIMEOUT_MS);
-  try {
-    const response = await fetchImpl(`http://127.0.0.1:${port}${MCP_STREAM_PATH}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
-      // Do not follow redirects. IntelliJ can keep its normal HTTP port open
-      // while MCP is disabled and redirect `/stream` to an HTML 404 page;
-      // following that redirect only adds latency and still means unavailable.
-      redirect: 'manual',
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'initialize',
-        params: {
-          protocolVersion: PROTOCOL_VERSION,
-          capabilities: {},
-          clientInfo: { name: 'opencode-idea', version: '0.0.17' },
-        },
-      }),
-      signal: controller.signal,
-    });
-    return response.ok;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-    controller.abort();
-  }
-}
-
-/**
- * Find the first port whose IDE MCP server responds. Returns the port, or
- * `undefined` when none is available.
- *
- * @param {number[]} ports
- * @param {{ fetchImpl?: typeof fetch, timeoutMs?: number }} [options]
- * @returns {Promise<number | undefined>}
- */
-export async function findIdePort(ports, options = {}) {
-  // Probe all candidate ports concurrently. These are fallback locations for
-  // one IDE MCP endpoint, not several active MCP servers. Sequential probes
-  // multiply the timeout by the number of candidates and made a disabled MCP
-  // look like a hang.
-  const results = await Promise.all(
-    ports.map(async (port) => [port, await probePort(port, options)]),
-  );
-  return results.find(([, available]) => available)?.[0];
-}
 
 /**
  * Call one MCP tool over the Streamable-HTTP endpoint. Returns the raw tool

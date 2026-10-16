@@ -1,4 +1,4 @@
-// IDEA MCP routing guidance injected into the model's system prompt.
+// IDE MCP routing guidance injected into the model's system prompt.
 //
 // The TEXT lives in `ide-guidance.template.md`, not here. It is a prompt document
 // a human has to review as a document — with the conditionals visible as
@@ -14,10 +14,16 @@
 //   2. Only IDE-only capability is routed here; reading, writing and searching
 //      stay on the native tools.
 //
-// The IDE MCP server is registered with `codemode: false`, so every idea_* tool is
-// exposed directly on the provider tool list with its full schema; the document
-// says which tool to use for which operation, plus the parameters and result
-// shapes that are not obvious from the schema alone.
+// ## 一个会话,多个项目,多套前缀
+//
+// 每个接入的项目都用**自己的** MCP server 注册（root = `ide`，子项目 = 目录名），
+// 所以同一个 IDE 工具会以 `ide_search_symbol` / `modelserver_search_symbol` 这样
+// 多份出现。模板因此写成"单项目"的样子、里面全部用 `{{toolPrefix}}_...`，由这里
+// 逐个项目渲染：第一个项目额外带出与项目无关的「总则 / 命令执行」公共段
+// (`{{#if first}}`)，其余只出自己那一节。
+//
+// 这样模型读到的是"在 modelserver 里就用 modelserver_*"，而不是一条需要自己换算
+// 前缀的规则 —— 少一层推理,就少一类"拿错项目工具"的失败。
 //
 // The `{{#if can…}}` blocks gate the companion plugin's tools (`mcp/enhance.js`),
 // which only exist when the user installed it. Nothing in the document says so:
@@ -26,12 +32,8 @@
 
 import { readFileSync } from 'node:fs';
 
-import {
-  CREATE_SHELL_RUN_CONFIGURATION_TOOL,
-  LIST_RUNNING_CONFIGURATIONS_TOOL,
-  RERUN_RUN_CONFIGURATION_TOOL,
-  STOP_RUN_CONFIGURATION_TOOL,
-} from './mcp/enhance.js';
+import { IDE_LABELS } from './ide-projects.js';
+import { runLifecycleCapabilities } from './mcp/enhance.js';
 import { renderTemplate } from './template.js';
 
 /** The prompt document, next to this module so it ships with it. */
@@ -41,28 +43,77 @@ const TEMPLATE_PATH = new URL('ide-guidance.template.md', import.meta.url);
 const TEMPLATE = readFileSync(TEMPLATE_PATH, 'utf8');
 
 /**
- * Build the guidance text for one project path.
+ * 「目录 → 工具前缀」速查表。
  *
- * @param {string} projectPath
- * @param {{ runLifecycleTools?: readonly string[] }} [options] Which of the
- *   companion plugin's tools this request carries (`servingRunLifecycleTools`);
- *   omit for a stock IDE.
+ * 放进公共段,是因为模型**先要知道"该用哪个前缀"**,再去看具体工具。没有这张表,它得从
+ * 每一节的标题里自己重建映射 —— 那是多一次推理,而推理错了的代价是"拿 root 的工具去操作
+ * 子项目",恰恰是这套多前缀设计要防的事。
+ *
+ * @param {ReadonlyArray<{ label: string, app: string, server: string }>} projects
+ */
+function routeTableFor(projects) {
+  return projects
+    .map((project) => `- \`${project.label}\`（${IDE_LABELS[project.app] ?? project.app}）→ \`${project.server}_*\``)
+    .join('\n');
+}
+
+/**
+ * 一个项目的引导段。
+ *
+ * @param {{ path: string, server: string, app: string, label: string, isRoot: boolean }} project
+ * @param {{
+ *   first?: boolean,
+ *   projectCount?: number,
+ *   routeTable?: string,
+ *   capabilities?: Record<string, unknown>,
+ * }} [options] `first` 决定是否带出公共段；只有整份引导的第一个项目才为 true。
+ *   `capabilities` 是该项目的 run-lifecycle 工具可用性（`runLifecycleCapabilities`）。
  * @returns {string}
  */
-export function buildIdeGuidance(projectPath, options = {}) {
-  const present = options.runLifecycleTools ?? [];
+export function buildIdeGuidance(project, options = {}) {
+  const capabilities = options.capabilities ?? {};
   return renderTemplate(TEMPLATE, {
-    projectPath,
-    canCreateRunConfiguration: present.includes(CREATE_SHELL_RUN_CONFIGURATION_TOOL),
-    canListRunningConfigurations: present.includes(LIST_RUNNING_CONFIGURATIONS_TOOL),
-    canStopRunConfiguration: present.includes(STOP_RUN_CONFIGURATION_TOOL),
-    canRerunRunConfiguration: present.includes(RERUN_RUN_CONFIGURATION_TOOL),
+    first: options.first === true,
+    projectCount: options.projectCount ?? 1,
+    routeTable: options.routeTable ?? '',
+    projectLabel: project.label,
+    projectPath: project.path,
+    rootTag: project.isRoot === true ? '(root)' : '',
+    ideLabel: IDE_LABELS[project.app] ?? project.app,
+    toolPrefix: project.server,
+    canCreateRunConfiguration: capabilities.canCreateRunConfiguration === true,
+    canListRunningConfigurations: capabilities.canListRunningConfigurations === true,
+    canStopRunConfiguration: capabilities.canStopRunConfiguration === true,
+    canRerunRunConfiguration: capabilities.canRerunRunConfiguration === true,
   });
 }
 
+/**
+ * 把本会话接入的全部项目渲染成一份引导文本。
+ *
+ * @param {ReadonlyArray<{ path: string, server: string, app: string, label: string, isRoot: boolean }>} projects
+ * @param {{ tools?: Record<string, unknown> }} [options] `tools` 是本次请求的工具快照
+ *   （`event.tools`），用来判断每个项目的 run-lifecycle 工具在不在。
+ * @returns {string}
+ */
+export function buildIdeGuidanceText(projects, options = {}) {
+  const routeTable = routeTableFor(projects);
+  return projects
+    .map((project, index) =>
+      buildIdeGuidance(project, {
+        first: index === 0,
+        projectCount: projects.length,
+        routeTable,
+        capabilities: runLifecycleCapabilities(options.tools, `${project.server}_`),
+      }),
+    )
+    .join('\n\n')
+    .trim();
+}
+
 export const MCP_RECOVERY_GUIDANCE = [
-  '### IDEA MCP failure recovery',
-  'If an idea.* / idea_* tool is missing, MCP is disconnected, the connection is refused, or a tool times out: stop retrying immediately; do not run extra probes or wait in tool calls. Tell the user that IDEA MCP is unavailable and ask them to run /open-in-idea to reconnect.',
+  '### IDE MCP failure recovery',
+  'If an IDE MCP tool (the `<prefix>_*` ones) is missing, MCP is disconnected, the connection is refused, or a tool times out: stop retrying immediately; do not run extra probes or wait in tool calls. Tell the user that IDE MCP is unavailable and ask them to run /open-in-idea to reconnect.',
 ].join('\n');
 
 /**
@@ -71,12 +122,12 @@ export const MCP_RECOVERY_GUIDANCE = [
  * single connection error is all it saw — the reconnect is already happening.
  */
 export const MCP_RECOVERY_GUIDANCE_MARKED = [
-  '### IDEA MCP failure recovery',
-  'This project is IDEA-connected and the plugin reconnects the IDE MCP automatically. When an idea_* call fails with a connection error (for example `MCP server "idea" is not available`), do not run extra probes or wait in tool calls: the reconnect is already under way, so retry the operation once. Only if it still fails, tell the user that IDEA MCP is unavailable and to run /open-in-idea.',
+  '### IDE MCP failure recovery',
+  'This project is IDE-connected and the plugin reconnects the IDE MCP automatically. When an IDE MCP call fails with a connection error (for example `MCP server "ide" is not available`), do not run extra probes or wait in tool calls: the reconnect is already under way, so retry the operation once. Only if it still fails, tell the user that IDE MCP is unavailable and to run /open-in-idea.',
 ].join('\n');
 
 /**
- * Recovery instruction for a marked project whose idea_* tools are NOT in this
+ * Recovery instruction for a marked project whose IDE tools are NOT in this
  * request's tool list. The connection dropped and the plugin is already
  * reconnecting, but the reconnect only lands on a LATER request — so within this
  * one a call can only fail with `No tool named "..." is currently available`.
@@ -84,26 +135,26 @@ export const MCP_RECOVERY_GUIDANCE_MARKED = [
  * exactly that doomed call.
  */
 export const MCP_RECOVERY_GUIDANCE_RECONNECTING = [
-  '### IDEA MCP failure recovery',
-  'No idea_* tool is in this request: the IDE connection dropped and the plugin is reconnecting in the background. Do NOT call any idea_* tool now — it will fail with `No tool named "..." is currently available` — and do not go looking for them through Code Mode either: idea_* tools are only ever listed as native tools, so a search finds nothing. Do not fall back to shell/read/write for in-project work. Continue with what you can, or tell the user the IDE is reconnecting; if idea_* tools are still missing on a later message, ask the user to run /open-in-idea.',
+  '### IDE MCP failure recovery',
+  'No IDE MCP tool (the `<prefix>_*` ones) is in this request: the IDE connection dropped and the plugin is reconnecting in the background. Do NOT call any of them now — it will fail with `No tool named "..." is currently available` — and do not go looking for them through Code Mode either: they are only ever listed as native tools, so a search finds nothing. Do not fall back to shell/read/write for in-project work. Continue with what you can, or tell the user the IDE is reconnecting; if the tools are still missing on a later message, ask the user to run /open-in-idea.',
 ].join('\n');
 
 /**
  * Push the guidance onto a session `system` array. Called for every primary
  * model request, so it stays idempotent per request.
  *
- * The text depends on which run-lifecycle tools this request carries, so the
- * idempotence check compares the built text rather than assuming one variant.
+ * The text depends on which projects are connected and which run-lifecycle tools
+ * this request carries, so the idempotence check compares the built text rather
+ * than assuming one variant.
  *
  * @param {unknown} system
- * @param {string} projectPath
- * @param {{ runLifecycleTools?: readonly string[] }} [options] Run-lifecycle
- *   tools present in this request's tool snapshot.
+ * @param {ReadonlyArray<{ path: string, server: string, app: string, label: string, isRoot: boolean }>} projects
+ * @param {{ tools?: Record<string, unknown> }} [options]
  */
-export function appendIdeGuidance(system, projectPath, options = {}) {
+export function appendIdeGuidance(system, projects, options = {}) {
   if (!Array.isArray(system)) return;
-  if (!projectPath) return;
-  const text = buildIdeGuidance(projectPath, options);
+  if (!Array.isArray(projects) || projects.length === 0) return;
+  const text = buildIdeGuidanceText(projects, options);
   if (system.some((part) => part?.text === text)) return;
   system.push({ type: 'text', text });
 }
@@ -112,7 +163,7 @@ export function appendIdeGuidance(system, projectPath, options = {}) {
  * @param {unknown} system
  * @param {{ marked?: boolean, serving?: boolean }} [options] `marked` picks the
  *   auto-reconnect variant; `serving: false` additionally picks the variant for
- *   a request that has no idea_* tools at all, where a call can only fail.
+ *   a request that has no IDE tools at all, where a call can only fail.
  */
 export function appendIdeRecoveryGuidance(system, { marked = false, serving = true } = {}) {
   if (!Array.isArray(system)) return;

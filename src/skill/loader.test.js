@@ -2,8 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseSkillFrontmatter, readSkill, readSkills, SKILL_FILE_NAME } from './loader.js';
-import { IDEA_SERVER_NAME } from '../mcp/idea.js';
-import { HIDDEN_IDEA_TOOLS } from '../plugin.js';
+import { HIDDEN_IDE_TOOL_SUFFIXES } from '../plugin.js';
 
 const TEMPLATE = path.join(path.dirname(readSkill('idea-standalone').path), 'assets/AGENTS.template.md');
 
@@ -16,7 +15,7 @@ describe('shipped skills', () => {
     expect(skills.map(({ skill }) => skill.id)).toEqual(['idea-standalone']);
     // The tools a skill drives belong to the skill, not to the plugin: the
     // requirement ships in the frontmatter, so adding a skill stays a directory.
-    expect(readSkills().map(({ requires }) => requires)).toEqual([['idea_rerun_run_configuration']]);
+    expect(readSkills().map(({ requires }) => requires)).toEqual([['rerun_run_configuration']]);
 
     const skill = readSkill('idea-standalone');
     // `Skill.Info` requires exactly these keys (see @opencode/schema/skill):
@@ -46,7 +45,7 @@ describe('shipped skills', () => {
 
   it('keeps the standalone skill teaching the four-part rule', () => {
     const content = readSkill('idea-standalone').content;
-    expect(content).toContain('idea_get_run_configurations');
+    expect(content).toContain('<前缀>_get_run_configurations');
     expect(content).toContain('standalone');
     expect(content).toContain('热重载');
     // The skeleton lives in the template, so the skill's job is to point at it.
@@ -60,14 +59,14 @@ describe('shipped skills', () => {
     // kind, so they go through rerun/stop.
     // Exactly one tool runs these apps. Start vs restart is not a distinction the
     // model should have to make — rerun covers both, so the rule says so once.
-    expect(readTemplate()).toContain('**跑应用只用 `idea_rerun_run_configuration`**');
+    expect(readTemplate()).toContain('**跑应用只用 `<前缀>_rerun_run_configuration`**');
     expect(readTemplate()).toContain('不必分辨"这是启动还是重启"');
     expect(readTemplate()).toContain('**命令 / Job 类型**');
     // Nothing else is offered as a way to run or stop them here.
-    expect(readTemplate()).not.toContain('idea_stop_run_configuration');
-    expect(readTemplate()).not.toContain('idea_list_running_configurations');
+    expect(readTemplate()).not.toContain('<前缀>_stop_run_configuration');
+    expect(readTemplate()).not.toContain('<前缀>_list_running_configurations');
     // And the prohibition must be stated, not just implied.
-    expect(readTemplate()).toContain('不要用 `idea_execute_run_configuration` 跑这些应用');
+    expect(readTemplate()).toContain('不要用 `<前缀>_execute_run_configuration` 跑这些应用');
   });
 
   it('pins the entry point, not the shape, of how an app runs', () => {
@@ -176,7 +175,7 @@ describe('shipped skills', () => {
     // generating step must not survive into it.
     expect(template).toContain('产物里整块删掉');
     expect(readSkill('idea-standalone').content).toContain('产物里整块删掉');
-    expect(template).toContain('idea_get_run_configurations');
+    expect(template).toContain('<前缀>_get_run_configurations');
     // The template carries metavariables; it also carries the rule that none of
     // them may survive into the produced block.
     expect(template).toContain('{...}');
@@ -184,7 +183,7 @@ describe('shipped skills', () => {
   });
 
   it('reads the configurations from the tool, not by walking .run/', () => {
-    // `idea_get_run_configurations` called with no arguments answers exactly the
+    // `<前缀>_get_run_configurations` called with no arguments answers exactly the
     // question this skill asks: the configurations the USER has already set up,
     // launch details included. Reading the `.run/*.run.xml` files one by one
     // would re-derive what that call already returns.
@@ -196,31 +195,32 @@ describe('shipped skills', () => {
 
   it('references no tool that the plugin hides from the model', () => {
     // Hidden tools are stripped from every request, so a skill that names one is
-    // telling the model to call something it cannot see.
+    // telling the model to call something it cannot see. The hidden list is held
+    // as SUFFIXES (the real name carries a per-project prefix), which is also how
+    // a skill refers to a tool here.
     const content = readSkill('idea-standalone').content;
-    for (const tool of HIDDEN_IDEA_TOOLS) {
-      expect(content, `${tool} 已被隐藏`).not.toContain(tool);
+    for (const suffix of HIDDEN_IDE_TOOL_SUFFIXES) {
+      expect(content, `${suffix} 已被隐藏`).not.toContain(suffix);
     }
     // Same for the gate itself: a skill requiring a hidden tool could never be
     // offered, so it would sit in the package teaching nothing to nobody.
     for (const { requires } of readSkills()) {
       for (const tool of requires) {
-        expect(HIDDEN_IDEA_TOOLS, `${tool} 已被隐藏,不能作为 requires`).not.toContain(tool);
+        expect(HIDDEN_IDE_TOOL_SUFFIXES, `${tool} 已被隐藏,不能作为 requires`).not.toContain(tool);
       }
     }
   });
 
-  it('gates each skill on the name OpenCode reports, not the IDE wire name', () => {
-    // The gate compares `requires` against `ctx.tool.list()`, i.e. the names the
-    // model sees. For IDE tools that is the server-namespaced spelling: the IDE
-    // serves `rerun_run_configuration`, OpenCode reports `idea_rerun_run_configuration`.
-    // Getting this wrong gates the skill off on every machine, silently — which
-    // is exactly how it would look if the companion plugin were simply absent.
+  it('gates each skill on a bare suffix, not on any one project prefix', () => {
+    // The gate compares `requires` against `ctx.tool.list()`. Tool names are
+    // `<project prefix><suffix>` — the root is `ide_`, each subproject is its
+    // directory name — so a hard-coded prefix could only ever gate the skill on
+    // ONE project, and would look exactly like "the companion plugin is absent"
+    // everywhere else. The plugin composes the real names at check time.
     for (const { requires } of readSkills()) {
       for (const tool of requires) {
-        expect(tool.startsWith(`${IDEA_SERVER_NAME}_`), `${tool} 是 IDE 的原始名,缺 OpenCode 的服务器前缀`).toBe(
-          true,
-        );
+        expect(tool.startsWith('idea_'), `${tool} 不该带死的服务器前缀`).toBe(false);
+        expect(tool.startsWith('ide_'), `${tool} 不该带死的服务器前缀`).toBe(false);
       }
     }
   });

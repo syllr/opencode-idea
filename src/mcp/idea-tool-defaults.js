@@ -9,8 +9,8 @@
 //
 // ## Why an argument can be owned at all
 //
-// `idea_build_project` is the only way a model can learn whether the code it just
-// wrote compiles, and its verdict depends on file freshness the model cannot see:
+// `<prefix>build_project`(每个项目前缀各一份,例如 `ide_build_project`)是模型判断
+// 刚写的代码能否编译的唯一手段,而它的结论依赖模型看不到的文件新鲜度:
 // an INCREMENTAL build compares against the IDE's own view of the files and
 // recompiles only what that view calls dirty. When the edit happened OUTSIDE the
 // IDE, the view can still be clean and the build becomes a no-op that reports
@@ -47,18 +47,25 @@
 /**
  * Arguments this plugin sets on every call, and therefore must not advertise.
  *
- * @type {ReadonlyArray<{ tool: string, argument: string, value: unknown }>}
+ * 工具用**后缀**标识，不写完整名字：同一个 IDE 工具会以每个项目的前缀各出现一次
+ * (`ide_build_project` / `modelserver_build_project` / ...)，写死 `idea_...` 会让
+ * 多项目场景里只有 root 被命中，子项目那几份原样漏过去 —— 那正是这个模块要避免的
+ * "schema 说一套、调用做另一套"。
+ *
+ * @type {ReadonlyArray<{ suffix: string, argument: string, value: unknown }>}
  */
 export const FORCED_ARGUMENTS = [
   {
-    tool: 'idea_build_project',
+    suffix: 'build_project',
     argument: 'rebuild',
     value: true,
   },
 ];
 
-/** The IDE tool whose verdict must not depend on the IDE's view of file freshness. */
-export const BUILD_PROJECT_TOOL = 'idea_build_project';
+/** 由前缀集合拼出这张表涉及的**全部**真实工具名。 */
+export function forcedToolNames(prefixes) {
+  return prefixes.flatMap((prefix) => FORCED_ARGUMENTS.map((owned) => `${prefix}${owned.suffix}`));
+}
 
 /**
  * Set every owned argument on one call.
@@ -75,15 +82,17 @@ export const BUILD_PROJECT_TOOL = 'idea_build_project';
  *
  * @param {unknown} tool Effective tool name for this call (`event.tool`).
  * @param {unknown} input Mutable argument draft for this call (`event.input`).
+ * @param {readonly string[]} prefixes 本会话所有项目的工具前缀（`ide_` 等）。
  * @returns {boolean} Whether `input` was modified.
  */
-export function applyIdeaToolDefaults(tool, input) {
+export function applyIdeToolDefaults(tool, input, prefixes) {
   if (typeof tool !== 'string') return false;
   if (input === null || typeof input !== 'object') return false;
 
   let changed = false;
   for (const owned of FORCED_ARGUMENTS) {
-    if (owned.tool !== tool) continue;
+    const matches = prefixes.some((prefix) => tool === `${prefix}${owned.suffix}`);
+    if (!matches) continue;
     if (input[owned.argument] === owned.value) continue;
     input[owned.argument] = owned.value;
     changed = true;
@@ -131,6 +140,9 @@ export function removeSchemaProperty(schema, name) {
  * function of what it is given — which is also what makes it testable without a
  * runtime.
  *
+ * 每个项目前缀各处理一遍：同一个 IDE 工具会在工具表里以多份出现，漏掉任何一份都会
+ * 让那一份的 schema 继续广告这个旋钮。
+ *
  * Safe to run when the IDE is absent: `get` returns undefined for a tool that is
  * not registered, and OpenCode replays the transform after every MCP catalog
  * refresh, so the tools are adjusted once they appear.
@@ -139,16 +151,19 @@ export function removeSchemaProperty(schema, name) {
  *   get: (id: string) => { input?: unknown } | undefined,
  *   update: (id: string, update: (tool: { input?: unknown }) => void) => void,
  * }} editor
+ * @param {readonly string[]} prefixes
  */
-export function hideForcedArguments(editor) {
-  for (const owned of FORCED_ARGUMENTS) {
-    const tool = editor.get(owned.tool);
+export function hideForcedArguments(editor, prefixes) {
+  for (const name of forcedToolNames(prefixes)) {
+    const owned = FORCED_ARGUMENTS.find((entry) => name.endsWith(entry.suffix));
+    if (!owned) continue;
+    const tool = editor.get(name);
     if (!tool) continue;
     const next = removeSchemaProperty(tool.input, owned.argument);
     if (next === tool.input) continue;
     // Assign the whole schema: the editor documents that schemas are replaced,
     // not mutated in place.
-    editor.update(owned.tool, (draft) => {
+    editor.update(name, (draft) => {
       draft.input = next;
     });
   }

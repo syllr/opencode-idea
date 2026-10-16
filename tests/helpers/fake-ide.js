@@ -8,22 +8,22 @@
 
 import { createServer } from 'node:http';
 
-const OPEN_PROJECTS = new Set();
-
 /**
  * Start a fake IDE MCP server. Resolves `{ server, port, streamRequests,
  * setProjectOpen }`. Pass `port` to bind a specific port (0 = random).
  *
+ * 每个实例有**自己**的一份"已打开项目"集合：IDEA 与 PyCharm 是两个进程，一个认得
+ * 一个项目，不该让另一个也跟着认得（多项目场景全靠这一点区分端口归属）。
+ *
  * `setProjectOpen(path, open)`: live switch for whether a project path counts as
- * open. `setProjectOpen(false)` is shorthand for the single path bound by the
- * current test (`OPEN_PROJECTS` is process-wide, so tests that need the "not
- * open" case call it right after starting).
+ * open. `setProjectOpen(false)` is shorthand for clearing this instance's set.
  *
  * @param {number} [port]
  */
 export function startFakeIde(port = 0) {
   return new Promise((resolve) => {
     let streamRequests = 0;
+    const openProjects = new Set();
     const server = createServer((req, res) => {
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname !== '/stream' || req.method !== 'POST') {
@@ -53,7 +53,7 @@ export function startFakeIde(port = 0) {
         }
         if (message.method === 'tools/call') {
           const project = req.headers['ij_mcp_server_project_path'];
-          if (!project || !OPEN_PROJECTS.has(project)) {
+          if (!project || !openProjects.has(project)) {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(
               JSON.stringify({
@@ -92,9 +92,9 @@ export function startFakeIde(port = 0) {
         streamRequests: () => streamRequests,
         /** Mark a project path as open in this fake IDE (a string path, or `false`). */
         setProjectOpen: (path, open = true) => {
-          if (typeof path === 'string' && open) OPEN_PROJECTS.add(path);
-          else if (typeof path === 'string') OPEN_PROJECTS.delete(path);
-          else OPEN_PROJECTS.clear();
+          if (typeof path === 'string' && open) openProjects.add(path);
+          else if (typeof path === 'string') openProjects.delete(path);
+          else openProjects.clear();
         },
       }),
     );

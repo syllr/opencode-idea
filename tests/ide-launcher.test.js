@@ -3,7 +3,7 @@
 
 import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_IDE_APP, createLaunchGuard, openInIde, resolveIdeApp } from '../src/ide-launcher.js';
+import { appNameFor, createLaunchGuard, openInIde } from '../src/ide-launcher.js';
 
 /** A spawn stub that records calls and closes with `code`. */
 function fakeSpawn(code = 0) {
@@ -17,34 +17,23 @@ function fakeSpawn(code = 0) {
   return { impl, calls };
 }
 
-describe('resolveIdeApp', () => {
-  it('defaults to IntelliJ IDEA', () => {
-    expect(resolveIdeApp(undefined)).toBe(DEFAULT_IDE_APP);
-    expect(resolveIdeApp(true)).toBe(DEFAULT_IDE_APP);
+describe('appNameFor', () => {
+  it('maps each supported IDE to its macOS app name', () => {
+    expect(appNameFor('idea')).toBe('IntelliJ IDEA');
+    expect(appNameFor('pycharm')).toBe('PyCharm');
   });
 
-  it('maps the "idea" alias and passes custom app names through', () => {
-    expect(resolveIdeApp('idea')).toBe('IntelliJ IDEA');
-    expect(resolveIdeApp('IntelliJ IDEA CE')).toBe('IntelliJ IDEA CE');
-  });
-
-  it('disables launching with false', () => {
-    expect(resolveIdeApp(false)).toBeUndefined();
+  it('has no app for an IDE it does not support', () => {
+    expect(appNameFor('vscode')).toBeUndefined();
+    expect(appNameFor('')).toBeUndefined();
   });
 
   it('resolves no app on platforms without a launcher', () => {
     // Only macOS `open -a` is implemented. Elsewhere a spawn of `open` fails
-    // with ENOENT, so no app is resolved and the user is asked to open the IDE.
-    expect(resolveIdeApp(undefined, { platform: 'win32' })).toBeUndefined();
-    expect(resolveIdeApp('idea', { platform: 'win32' })).toBeUndefined();
-    expect(resolveIdeApp('idea', { platform: 'linux' })).toBeUndefined();
-  });
-
-  it('keeps resolving the app on macOS regardless of the option', () => {
-    expect(resolveIdeApp(undefined, { platform: 'darwin' })).toBe(DEFAULT_IDE_APP);
-    expect(resolveIdeApp('idea', { platform: 'darwin' })).toBe('IntelliJ IDEA');
-    // An explicit opt-out still wins on the platform that supports launching.
-    expect(resolveIdeApp(false, { platform: 'darwin' })).toBeUndefined();
+    // with ENOENT, so no app is resolved and the user is asked to open the IDE
+    // by hand — which is why `autoLaunchSupported()` tells the two apart.
+    expect(appNameFor('idea', { platform: 'win32' })).toBeUndefined();
+    expect(appNameFor('pycharm', { platform: 'linux' })).toBeUndefined();
   });
 });
 

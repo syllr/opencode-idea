@@ -18,42 +18,54 @@
 // has to be gated on the tools really being in the request (`servingRunLifecycleTools`).
 
 /**
- * The enhance plugin's tool names as OpenCode reports them.
+ * The enhance plugin's tool names, as **suffixes**.
  *
- * OpenCode namespaces an MCP server's tools with the server name, and this
- * plugin registers the IDE server as `idea`, so the wire names are the enhance
- * plugin's own tool names (`list_running_configurations`, ...) carrying an
- * `idea_` prefix.
+ * OpenCode namespaces an MCP server's tools with the server name, and each
+ * project is registered under its own prefix (root = `ide`, a subproject = its
+ * directory name). So the wire name is `<prefix><suffix>` — for example
+ * `ide_rerun_run_configuration` or `modelserver_rerun_run_configuration`.
+ *
+ * 存后缀而不是完整名字：同一个工具在每个项目前缀下各有一份，写死任何一个前缀都会
+ * 让别的项目查不到它。
  *
  * Keep in sync with `RunLifecycleSchemas.kt` in the enhance repository — the
- * names are its contract, and there is no runtime way to discover "which plugin
- * provided this tool": MCP carries no such marker.
+ * suffixes are its contract, and there is no runtime way to discover "which
+ * plugin provided this tool": MCP carries no such marker.
  */
-export const CREATE_SHELL_RUN_CONFIGURATION_TOOL = 'idea_create_shell_run_configuration';
-export const LIST_RUNNING_CONFIGURATIONS_TOOL = 'idea_list_running_configurations';
-export const STOP_RUN_CONFIGURATION_TOOL = 'idea_stop_run_configuration';
-export const RERUN_RUN_CONFIGURATION_TOOL = 'idea_rerun_run_configuration';
+export const CREATE_SHELL_RUN_CONFIGURATION_SUFFIX = 'create_shell_run_configuration';
+export const LIST_RUNNING_CONFIGURATIONS_SUFFIX = 'list_running_configurations';
+export const STOP_RUN_CONFIGURATION_SUFFIX = 'stop_run_configuration';
+export const RERUN_RUN_CONFIGURATION_SUFFIX = 'rerun_run_configuration';
 
 /** All of them, in the order the guidance lists them: create, see, stop, restart. */
-export const RUN_LIFECYCLE_TOOLS = [
-  CREATE_SHELL_RUN_CONFIGURATION_TOOL,
-  LIST_RUNNING_CONFIGURATIONS_TOOL,
-  STOP_RUN_CONFIGURATION_TOOL,
-  RERUN_RUN_CONFIGURATION_TOOL,
+export const RUN_LIFECYCLE_SUFFIXES = [
+  CREATE_SHELL_RUN_CONFIGURATION_SUFFIX,
+  LIST_RUNNING_CONFIGURATIONS_SUFFIX,
+  STOP_RUN_CONFIGURATION_SUFFIX,
+  RERUN_RUN_CONFIGURATION_SUFFIX,
 ];
 
 /**
- * Which of the enhance plugin's tools this request actually carries.
+ * Which of the enhance plugin's tools **this project's prefix** carries in this
+ * request.
  *
- * A subset rather than a boolean, because the enhance plugin is versioned
- * independently: an older release can ship fewer of these tools, and guidance
- * must never name one the model cannot call.
+ * 返回布尔组合而不是名字列表：提示词要的是"这段能不能写",而且每个项目各算各的
+ * —— 一个项目装了 enhance、另一个没装是可能的。
+ *
+ * 客户端版本差异同理：enhance 版本独立发布，旧版可能少几个工具，所以逐个判断,
+ * 提示词绝不能点名一个模型调不到的工具。
  *
  * @param {Record<string, unknown> | undefined} tools This request's tool record
  *   (`event.tools` from the `context` hook).
- * @returns {string[]} The present ones, in {@link RUN_LIFECYCLE_TOOLS} order.
+ * @param {string} prefix 该项目的工具前缀（含下划线）。
  */
-export function servingRunLifecycleTools(tools) {
-  if (!tools || typeof tools !== 'object') return [];
-  return RUN_LIFECYCLE_TOOLS.filter((name) => name in tools);
+export function runLifecycleCapabilities(tools, prefix) {
+  const has = (suffix) =>
+    Boolean(tools) && typeof tools === 'object' && `${prefix}${suffix}` in tools;
+  return {
+    canCreateRunConfiguration: has(CREATE_SHELL_RUN_CONFIGURATION_SUFFIX),
+    canListRunningConfigurations: has(LIST_RUNNING_CONFIGURATIONS_SUFFIX),
+    canStopRunConfiguration: has(STOP_RUN_CONFIGURATION_SUFFIX),
+    canRerunRunConfiguration: has(RERUN_RUN_CONFIGURATION_SUFFIX),
+  };
 }

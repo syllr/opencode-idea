@@ -10,6 +10,7 @@
     "src/plugin.js",
     "src/template.js",
     "src/ide-guidance.template.md",
+    "src/ide-projects.js",
     "src/mcp/idea.js",
     "src/mcp/enhance.js",
     "src/mcp/idea-tool-defaults.js",
