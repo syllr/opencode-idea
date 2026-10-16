@@ -5,7 +5,6 @@ import {
   MCP_RECOVERY_GUIDANCE_RECONNECTING,
   appendIdeGuidance,
   appendIdeRecoveryGuidance,
-  buildIdeGuidance,
   buildIdeGuidanceText,
 } from './ide-guidance.js';
 
@@ -24,52 +23,70 @@ const CHILD = {
   isRoot: false,
 };
 
-/** 与 guidance 对应的工具后缀清单（不含前缀）。 */
-const TOOL_SUFFIXES = [
-  // 包内文件
-  'read_file',
-  // 符号
-  'search_symbol',
-  'get_symbol_info',
-  'analyze_calls',
-  // 项目与编辑器
-  'list_directory_tree',
-  'get_project_modules',
-  'get_project_dependencies',
-  'get_all_open_file_paths',
-  'open_file_in_editor',
-  // 重构与格式化
-  'rename_refactoring',
-  'reformat_file',
-  // 校验
-  'lint_files',
-  'get_file_problems',
-  'build_project',
-  // 运行配置
-  'get_run_configurations',
-  'execute_run_configuration',
-];
+/** 两个项目的会话,IDE 只提供内置工具（没装配套插件）。 */
+const stock = () => buildIdeGuidanceText([ROOT, CHILD], { tools: {} });
 
-describe('buildIdeGuidance（单个项目）', () => {
-  it('names the project, its IDE, and its tool prefix', () => {
-    const text = buildIdeGuidance(ROOT, { first: true, projectCount: 1 });
+describe('项目清单', () => {
+  it('lists the root and every subproject with its own MCP tool prefix', () => {
+    const text = stock();
+    expect(text).toContain('## 本会话接入的项目与各自的 MCP 工具');
+    expect(text).toContain('- **根项目** `.`(IntelliJ IDEA 打开)→ MCP 工具前缀 `ide_*`');
+    expect(text).toContain(
+      '- **子项目** `modelserver`(PyCharm 打开)→ MCP 工具前缀 `modelserver_*`',
+    );
+    // 项目路径也在清单里（模型可能拿到绝对路径）。
     expect(text).toContain(ROOT.path);
-    expect(text).toContain('IntelliJ IDEA');
-    expect(text).toContain('`ide_`');
-    expect(text).toContain('只作用于');
+    expect(text).toContain(CHILD.path);
   });
 
-  it('covers every routed tool, spelled with THIS project prefix', () => {
-    const text = buildIdeGuidance(CHILD, { first: true, projectCount: 1 });
-    for (const suffix of TOOL_SUFFIXES) {
-      expect(text).toContain(`modelserver_${suffix}`);
+  it('states the routing rule and points at subproject AGENTS.md on demand', () => {
+    // 子项目的 AGENTS.md 不会自动进上下文(OpenCode 只按 cwd 向上收集,而 cwd 是 root)。
+    const text = stock();
+    expect(text).toContain('操作哪个目录下的文件/代码,就用那个目录对应的命令');
+    expect(text).toContain('按需读文件');
+    expect(text).toContain('AGENTS.md');
+  });
+});
+
+describe('工具清单(按功能,不按项目重复)', () => {
+  it('writes each capability once, with every project command after the arrow', () => {
+    const text = stock();
+    expect(text).toContain(
+      '- **按名字找符号的声明位置**:要看签名 / 文档接着用「符号信息」那条。→ 根项目 `ide_search_symbol` ｜ modelserver `modelserver_search_symbol`',
+    );
+    // 功能说明只出现一次:没有"按项目各抄一遍"的第二段。
+    expect(text.match(/按名字找符号的声明位置/g)).toHaveLength(1);
+    expect(text.match(/### 符号/g)).toHaveLength(1);
+  });
+
+  it('covers every routed capability', () => {
+    const text = stock();
+    for (const suffix of [
+      'search_symbol',
+      'get_symbol_info',
+      'analyze_calls',
+      'list_directory_tree',
+      'get_project_modules',
+      'get_project_dependencies',
+      'get_all_open_file_paths',
+      'open_file_in_editor',
+      'rename_refactoring',
+      'reformat_file',
+      'lint_files',
+      'get_file_problems',
+      'build_project',
+      'read_file',
+      'get_run_configurations',
+      'execute_run_configuration',
+    ]) {
+      // 每条功能后面都要有**两个项目**的命令名。
+      expect(text).toContain(`\`ide_${suffix}\``);
+      expect(text).toContain(`\`modelserver_${suffix}\``);
     }
-    // 而且绝不出现别的前缀 —— 否则模型会拿 root 的工具去操作子项目。
-    expect(text).not.toContain('`ide_search_symbol`');
   });
 
-  it('states the parameters and the positive flow for each tool', () => {
-    const text = buildIdeGuidance(ROOT, { first: true, projectCount: 1 });
+  it('states the parameters and the positive flow for each capability', () => {
+    const text = stock();
     expect(text).toContain('`analysisKind` 取 `INCOMING_CALLS` / `OUTGOING_CALLS`');
     expect(text).toContain('`childOffset` 翻页');
     expect(text).toContain('EXECUTE_IN_TERMINAL: false');
@@ -77,16 +94,30 @@ describe('buildIdeGuidance（单个项目）', () => {
     expect(text).toContain('没返回即没问题');
   });
 
-  it('keeps the owned build argument out of the guidance too', () => {
-    // `rebuild` is removed from the tool's published schema and set by the
-    // plugin (src/mcp/idea-tool-defaults.js). Naming it in the guidance would
-    // put back exactly the knob the schema no longer offers.
-    const text = buildIdeGuidance(ROOT, { first: true, projectCount: 1 });
+  it('keeps the owned build argument and the hidden terminal tool out', () => {
+    const text = stock();
     expect(text).not.toContain('rebuild');
+    expect(text).not.toContain('execute_terminal_command');
+    expect(text).not.toContain('executeInShell');
+    expect(text).not.toContain('白名单');
+  });
+
+  it('routes only IDE-only capabilities here; reading and searching stay native', () => {
+    const text = stock();
+    expect(text).toContain('只有 IDE 才有的能力才用它们');
+    expect(text).toContain('读写与搜索用原生工具');
+    expect(text).not.toContain('## 例外');
+    expect(text).not.toContain('版本控制用原生');
+  });
+
+  it('keeps the read_file capability scoped to what native cannot do', () => {
+    const text = stock();
+    expect(text).toContain('读包内文件');
+    expect(text).toContain('jrt://');
+    expect(text).toContain('普通文件一律用 `read`');
   });
 
   it('writes no caveats or edge cases', () => {
-    const text = buildIdeGuidance(ROOT, { first: true, projectCount: 1 });
     for (const caveat of [
       '不要传',
       '静默',
@@ -97,61 +128,23 @@ describe('buildIdeGuidance（单个项目）', () => {
       '一堆同名符号',
       '只能读项目',
     ]) {
-      expect(text).not.toContain(caveat);
+      expect(stock()).not.toContain(caveat);
     }
   });
 
-  it('routes environment-dependent commands through a run configuration', () => {
-    const text = buildIdeGuidance(ROOT, { first: true, projectCount: 1 });
-    expect(text).toContain('需要项目环境的命令');
-    expect(text).toContain('`ide_execute_run_configuration`');
-    expect(text).toContain('不需要项目环境的命令:用原生 `shell`');
-  });
-
-  it('never names the hidden IDE terminal tool', () => {
-    // `execute_terminal_command` does not inherit the project's environment, so it
-    // is hidden (`HIDDEN_IDE_TOOL_SUFFIXES`) and no longer routed to. Guidance
-    // must not send the model at a tool that is not in its tool list.
-    for (const text of [
-      buildIdeGuidance(ROOT, { first: true, projectCount: 1 }),
-      buildIdeGuidance(ROOT, {
-        first: true,
-        projectCount: 1,
-        capabilities: { canRerunRunConfiguration: true },
-      }),
-    ]) {
-      expect(text).not.toContain('execute_terminal_command');
-      expect(text).not.toContain('executeInShell');
-      expect(text).not.toContain('reuseExistingTerminalWindow');
-      expect(text).not.toContain('白名单');
+  it('names each project only once per command list', () => {
+    const text = stock();
+    // 每条 cmd_* 都长成 "根项目 `命令` ｜ 子项目名 `命令`"，没有第三份。
+    for (const line of text.split('\n').filter((l) => l.includes('→ 根项目'))) {
+      expect(line.match(/`ide_/g)?.length).toBe(1);
+      expect(line.match(/`modelserver_/g)?.length).toBe(1);
     }
   });
+});
 
-  it('routes only IDE-only capabilities through the prefixed tools', () => {
-    // The rule used to be "everything inside the project goes through the IDE".
-    // It is now capability-based: reading, writing and searching are native, and
-    // only what needs the IDE's own model/semantics goes through them.
-    const text = buildIdeGuidance(ROOT, { first: true, projectCount: 1 });
-    expect(text).toContain('只有 IDE 才有的能力才用它们');
-    expect(text).toContain('读写与搜索用原生工具');
-    expect(text).toContain('不要为读一个文件、写一个文件、搜一段文本去绕 IDE 工具');
-    expect(text).not.toContain('## 例外');
-    expect(text).not.toContain('版本控制用原生');
-  });
-
-  it('keeps the read_file tool but scopes it to what native cannot do', () => {
-    // It is the ONLY way to read inside a dependency jar (`<jar>!/<entry>`) or the
-    // JDK image (`jrt://`). Kept for exactly that, and pointed back at `read` for
-    // everything else.
-    const text = buildIdeGuidance(ROOT, { first: true, projectCount: 1 });
-    expect(text).toContain('`ide_read_file`');
-    expect(text).toContain('只在要读包内文件时用它');
-    expect(text).toContain('jrt://');
-    expect(text).toContain('普通文件一律用 `read`');
-  });
-
-  it('says nothing about run-lifecycle tools for a stock IDE', () => {
-    const text = buildIdeGuidance(ROOT, { first: true, projectCount: 1, capabilities: {} });
+describe('run-lifecycle 能力', () => {
+  it('says nothing about them for stock IDEes', () => {
+    const text = stock();
     for (const suffix of [
       'create_shell_run_configuration',
       'list_running_configurations',
@@ -162,71 +155,42 @@ describe('buildIdeGuidance（单个项目）', () => {
     }
   });
 
-  it('names only the run-lifecycle capabilities it is given', () => {
-    const text = buildIdeGuidance(ROOT, {
-      first: true,
-      projectCount: 1,
-      capabilities: { canRerunRunConfiguration: true, canListRunningConfigurations: true },
-    });
-    expect(text).toContain('`ide_rerun_run_configuration`');
+  it('lists them once the companion plugin serves them', () => {
+    const tools = {
+      'ide_rerun_run_configuration': {},
+      'modelserver_rerun_run_configuration': {},
+      'ide_list_running_configurations': {},
+      'modelserver_list_running_configurations': {},
+    };
+    const text = buildIdeGuidanceText([ROOT, CHILD], { tools });
+    expect(text).toContain(
+      '**改完代码重启无热重载的进程**',
+    );
+    expect(text).toContain(
+      '→ 根项目 `ide_rerun_run_configuration` ｜ modelserver `modelserver_rerun_run_configuration`',
+    );
     expect(text).toContain('`ide_list_running_configurations`');
-    expect(text).not.toContain('create_shell_run_configuration');
-    expect(text).not.toContain('stop_run_configuration');
+    // 只在清单里出现一次,不重复成两段。
+    expect(text.match(/\*\*改完代码重启无热重载的进程\*\*/g)).toHaveLength(1);
   });
 
-  it('states the Code Mode rule before the routing rules', () => {
-    const text = buildIdeGuidance(ROOT, { first: true, projectCount: 1 });
-    const native = text.indexOf('原生工具(当前工具列表里直接列出的那些)');
-    const routing = text.indexOf('只有 IDE 才有的能力才用它们');
-    expect(native).toBeGreaterThanOrEqual(0);
-    expect(routing).toBeGreaterThan(native);
-  });
-});
-
-describe('buildIdeGuidanceText（整个会话）', () => {
-  it('renders one section per project, each with its own prefix', () => {
-    const text = buildIdeGuidanceText([ROOT, CHILD], { tools: {} });
-    expect(text.match(/^## 项目 /gm)).toHaveLength(2);
-    expect(text).toContain('`ide_search_symbol`');
-    expect(text).toContain('`modelserver_search_symbol`');
-    expect(text).toContain('IntelliJ IDEA');
-    expect(text).toContain('PyCharm');
-  });
-
-  it('renders the shared sections exactly once', () => {
-    const text = buildIdeGuidanceText([ROOT, CHILD], { tools: {} });
-    expect(text.match(/# IDE MCP:只有非 IDE 不可的能力才走 IDE/g)).toHaveLength(1);
-    expect(text.match(/## 总则/g)).toHaveLength(1);
-    expect(text.match(/## 命令执行/g)).toHaveLength(1);
-  });
-
-  it('puts a directory → prefix table in the shared section', () => {
-    // 模型要先知道"该用哪个前缀"再挑工具;没有这张表它得从各节标题里自己重建映射,
-    // 而推错的代价正是"拿 root 的工具去操作子项目"。
-    const text = buildIdeGuidanceText([ROOT, CHILD], { tools: {} });
-    expect(text).toContain('## 目录 → 工具前缀(先看这张表)');
-    expect(text).toContain('- `.`（IntelliJ IDEA）→ `ide_*`');
-    expect(text).toContain('- `modelserver`（PyCharm）→ `modelserver_*`');
-    // 只在公共段出现一次。
-    expect(text.match(/→ `modelserver_\*`/g)).toHaveLength(1);
-  });
-
-  it('tells the model to read a subproject AGENTS.md on demand', () => {
-    // 子项目的 AGENTS.md 不会自动进上下文(OpenCode 只按 cwd 向上收集,而 cwd 是 root),
-    // 所以要明确让模型按需读。
-    const text = buildIdeGuidanceText([ROOT, CHILD], { tools: {} });
-    expect(text).toContain('AGENTS.md');
-    expect(text).toContain('按需读文件');
-  });
-
-  it('judges run-lifecycle tools per project prefix', () => {
+  it('offers one when only one project serves it', () => {
+    // 提示词只有一份,所以"这套能力在本次会话里存不存在"由任一项目决定。
     const text = buildIdeGuidanceText([ROOT, CHILD], {
       tools: { 'modelserver_rerun_run_configuration': {} },
     });
-    // 子项目那一节有 rerun,root 那一节没有。
-    const [rootSection, childSection] = text.split(/^## 项目 /m).slice(1);
-    expect(rootSection).not.toContain('rerun_run_configuration');
-    expect(childSection).toContain('`modelserver_rerun_run_configuration`');
+    expect(text).toContain('**改完代码重启无热重载的进程**');
+    expect(text).toContain('`modelserver_rerun_run_configuration`');
+  });
+});
+
+describe('单项目', () => {
+  it('renders one project without the subproject framing', () => {
+    const text = buildIdeGuidanceText([ROOT], { tools: {} });
+    expect(text).toContain('本会话接入了 1 个 JetBrains 项目');
+    expect(text).toContain('- **根项目** `.`(IntelliJ IDEA 打开)→ MCP 工具前缀 `ide_*`');
+    expect(text).toContain('→ 根项目 `ide_search_symbol`');
+    expect(text).not.toContain('modelserver_');
   });
 });
 

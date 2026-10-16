@@ -17,13 +17,12 @@
 // ## 一个会话,多个项目,多套前缀
 //
 // 每个接入的项目都用**自己的** MCP server 注册（root = `ide`，子项目 = 目录名），
-// 所以同一个 IDE 工具会以 `ide_search_symbol` / `modelserver_search_symbol` 这样
-// 多份出现。模板因此写成"单项目"的样子、里面全部用 `{{toolPrefix}}_...`，由这里
-// 逐个项目渲染：第一个项目额外带出与项目无关的「总则 / 命令执行」公共段
-// (`{{#if first}}`)，其余只出自己那一节。
+// 所以同一个 IDE 工具会以 `ide_search_symbol` / `modelserver_search_symbol` 这样多份
+// 出现。但**功能是同一套,只有前缀不同** —— 所以模板只写一遍功能说明,每条功能后面用
+// `{{cmd_xxx}}` 列出它在各项目下的命令名（由 `commandVariables` 扫模板自动生成）。
 //
-// 这样模型读到的是"在 modelserver 里就用 modelserver_*"，而不是一条需要自己换算
-// 前缀的规则 —— 少一层推理,就少一类"拿错项目工具"的失败。
+// 这样模型同时拿到"这条功能是什么"和"这个项目里它叫什么",不需要自己拼前缀 —— 少一层
+// 推理,就少一类"拿错项目工具"的失败;而且文本不会随项目数成倍增长。
 //
 // The `{{#if can…}}` blocks gate the companion plugin's tools (`mcp/enhance.js`),
 // which only exist when the user installed it. Nothing in the document says so:
@@ -43,72 +42,88 @@ const TEMPLATE_PATH = new URL('ide-guidance.template.md', import.meta.url);
 const TEMPLATE = readFileSync(TEMPLATE_PATH, 'utf8');
 
 /**
- * 「目录 → 工具前缀」速查表。
+ * 「本会话有哪些项目、各自用哪个 MCP 工具前缀」的清单。
  *
- * 放进公共段,是因为模型**先要知道"该用哪个前缀"**,再去看具体工具。没有这张表,它得从
+ * 放在公共段最前面,是因为模型**先要知道"该用哪个前缀"**,再去看具体工具。没有这张清单,它得从
  * 每一节的标题里自己重建映射 —— 那是多一次推理,而推理错了的代价是"拿 root 的工具去操作
  * 子项目",恰恰是这套多前缀设计要防的事。
  *
- * @param {ReadonlyArray<{ label: string, app: string, server: string }>} projects
+ * 明确写出"根项目 / 子项目"这个层级词:前缀本身(root `ide` vs 子项目目录名)不足以让模型一眼
+ * 看出谁是谁,而它的判断依据是"这个文件在哪个目录下"。
+ *
+ * @param {ReadonlyArray<{ label: string, path: string, app: string, server: string, isRoot: boolean }>} projects
  */
 function routeTableFor(projects) {
   return projects
-    .map((project) => `- \`${project.label}\`（${IDE_LABELS[project.app] ?? project.app}）→ \`${project.server}_*\``)
+    .map((project) => {
+      const kind = project.isRoot ? '根项目' : '子项目';
+      const ide = IDE_LABELS[project.app] ?? project.app;
+      return `- **${kind}** \`${project.label}\`(${ide} 打开)→ MCP 工具前缀 \`${project.server}_*\`,项目路径 \`${project.path}\``;
+    })
     .join('\n');
 }
 
 /**
- * 一个项目的引导段。
+ * 每条功能在各项目下的命令名，预渲染成一行。
  *
- * @param {{ path: string, server: string, app: string, label: string, isRoot: boolean }} project
- * @param {{
- *   first?: boolean,
- *   projectCount?: number,
- *   routeTable?: string,
- *   capabilities?: Record<string, unknown>,
- * }} [options] `first` 决定是否带出公共段；只有整份引导的第一个项目才为 true。
- *   `capabilities` 是该项目的 run-lifecycle 工具可用性（`runLifecycleCapabilities`）。
- * @returns {string}
+ * 变量名**直接扫模板得到**:模板里写 `{{cmd_search_symbol}}`，这里就填
+ * `` `.` `ide_search_symbol` ｜ `modelserver` `modelserver_search_symbol` ``。
+ * 所以模板增删一条工具不需要动这里的代码，也不会出现"模板里写了、代码忘了给值"的空行。
+ *
+ * @param {ReadonlyArray<{ label: string, server: string }>} projects
  */
-export function buildIdeGuidance(project, options = {}) {
-  const capabilities = options.capabilities ?? {};
-  return renderTemplate(TEMPLATE, {
-    first: options.first === true,
-    projectCount: options.projectCount ?? 1,
-    routeTable: options.routeTable ?? '',
-    projectLabel: project.label,
-    projectPath: project.path,
-    rootTag: project.isRoot === true ? '(root)' : '',
-    ideLabel: IDE_LABELS[project.app] ?? project.app,
-    toolPrefix: project.server,
-    canCreateRunConfiguration: capabilities.canCreateRunConfiguration === true,
-    canListRunningConfigurations: capabilities.canListRunningConfigurations === true,
-    canStopRunConfiguration: capabilities.canStopRunConfiguration === true,
-    canRerunRunConfiguration: capabilities.canRerunRunConfiguration === true,
-  });
+function commandVariables(projects) {
+  /** @type {Record<string, string>} */
+  const variables = {};
+  for (const match of TEMPLATE.matchAll(/\{\{\s*(cmd_[A-Za-z0-9_]+)\s*\}\}/g)) {
+    const name = match[1];
+    const suffix = name.slice('cmd_'.length);
+    variables[name] = projects
+      // 每条都写清"哪个项目 → 哪个命令"：根项目直接用它的角色名,子项目用目录名。
+      // 不写 `.`/目录名这种需要回看清单才能解读的代号 —— 模型读每条功能时不必回头查表。
+      .map((project) => `${project.isRoot ? '根项目' : project.label} \`${project.server}_${suffix}\``)
+      .join(' ｜ ');
+  }
+  return variables;
 }
 
 /**
- * 把本会话接入的全部项目渲染成一份引导文本。
+ * 本会话里这些 run-lifecycle 能力可不可用。
+ *
+ * 提示词只有一份，所以这里要回答的是"这套能力在本次会话里存不存在" —— 任一项目提供即算存在。
+ * 同一个人的几个 IDE 装不装配套插件通常是一致的；万一不一致，模板里那句"没装就交给用户"兜住。
+ *
+ * @param {ReadonlyArray<{ server: string }>} projects
+ * @param {Record<string, unknown> | undefined} tools
+ */
+function mergeRunLifecycle(projects, tools) {
+  const all = projects.map((project) => runLifecycleCapabilities(tools, `${project.server}_`));
+  return {
+    canCreateRunConfiguration: all.some((c) => c.canCreateRunConfiguration),
+    canListRunningConfigurations: all.some((c) => c.canListRunningConfigurations),
+    canStopRunConfiguration: all.some((c) => c.canStopRunConfiguration),
+    canRerunRunConfiguration: all.some((c) => c.canRerunRunConfiguration),
+  };
+}
+
+/**
+ * 把本会话接入的全部项目渲染成**一份**引导文本。
+ *
+ * 只渲染一次,不按项目重复:功能说明与项目无关,只有命令名带项目前缀 —— 所以每条功能后面直接
+ * 列出各项目的命令名(`cmd_*` 变量),而不是把整份工具清单按前缀抄 N 遍。
  *
  * @param {ReadonlyArray<{ path: string, server: string, app: string, label: string, isRoot: boolean }>} projects
  * @param {{ tools?: Record<string, unknown> }} [options] `tools` 是本次请求的工具快照
- *   （`event.tools`），用来判断每个项目的 run-lifecycle 工具在不在。
+ *   （`event.tools`），用来判断 run-lifecycle 工具在不在。
  * @returns {string}
  */
 export function buildIdeGuidanceText(projects, options = {}) {
-  const routeTable = routeTableFor(projects);
-  return projects
-    .map((project, index) =>
-      buildIdeGuidance(project, {
-        first: index === 0,
-        projectCount: projects.length,
-        routeTable,
-        capabilities: runLifecycleCapabilities(options.tools, `${project.server}_`),
-      }),
-    )
-    .join('\n\n')
-    .trim();
+  return renderTemplate(TEMPLATE, {
+    projectCount: projects.length,
+    routeTable: routeTableFor(projects),
+    ...mergeRunLifecycle(projects, options.tools),
+    ...commandVariables(projects),
+  });
 }
 
 export const MCP_RECOVERY_GUIDANCE = [
