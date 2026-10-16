@@ -23,19 +23,30 @@
 - 下面这些 IDE 工具也是原生工具:直接调用(参数按各工具 schema 传),不要包进 `execute`;它们不在 Code Mode 的工具目录里,`search` 搜不到。
 - **只有 IDE 才有的能力才用它们**:符号级检索、项目模型、检查与构建、重构与格式化、run configuration。
 - **读写与搜索用原生工具**(`read` / `write` / `edit` / `grep` / `glob`):不要为读一个文件、写一个文件、搜一段文本去绕 IDE 工具。
-- **唯一例外**:路径里带 `.jar!/` 的(压缩包里的条目)用下面「读压缩包内的东西」那条 —— 原生 `read` 打不开它。
+- **唯一例外**:压缩包内的条目(路径带 `.jar!/`,原生 `read` 打不开)—— 见下面「读压缩包内的东西」。
 - 某条功能下面没有你正要操作的那个项目的命令,就是那个项目没接上:提示用户执行 `/open-in-idea`,不要重试,也不要去别处找。
 
 ## 工具(按功能列;`→` 后面是这条功能在各项目的命令)
 
 ### 符号(只有 IDE 的语义索引能给)
 
-- **按名字找符号的声明位置**(`q` 传查询文本):默认只搜**本项目自己的代码**;**要连依赖库和标准库一起搜,传 `include_external: true`** —— 这是"看第三方库源码"的入口(搜不到东西时,带上它再试一次)。
+- **按名字找符号的声明位置**(`q` 传查询文本,**固定带上 `include_external: true`**):本插件最不可替代的能力 —— 它搜的是**符号**(类 / 接口 / 方法 / 函数 / 字段 / 类型 / 常量这类**有名字的定义**)的**声明位置**,不是"哪段文本提到过它"(那是 `grep` 的事);带上 `include_external` 才会连**依赖库和标准库**一起搜,于是你能直接定位第三方库里的实现 —— 这是原生 `grep` / `glob` 够不着的地方(IDE 自己的 `search_text` / `search_file` 也只搜项目内)。
+  - **典型用法 ①:代码里引用了某个库的 API(最常见)** —— 读代码时看到 `from fastapi import FastAPI`、`import org.apache.poi...FormulaParser`、`gorm.DeletedAt`、`from 'vue'` 这类引用时,**包名就在代码里**,直接**用「包名+符号名」当 `q` 搜**,一次定位到它的实现:
+    - **Java**:全限定名 —— `com.nimbusds.jose.util.Base64`(实测 1 条命中 `~/.m2/.../poi-5.3.0-sources.jar!/...`)
+    - **Go**:包名.符号 —— `gorm.DeletedAt`(实测 2 条,全在 `go/pkg/mod/gorm.io/gorm@...`)
+    - **Python**:模块路径给得越全越准 —— `torch.nn.modules.module.Module`(目标全在最前);`torch.nn.Module` 也能把目标排进前 2
+    - **Node/TS**:用 **import 的那层包名**(不是子模块路径)—— `vue.Teleport` 有效,`@vue/runtime-core.TeleportProps` 搜不到
+  - **典型用法 ②:调研一个库有哪些 API** —— 包名从依赖清单里拿(pom.xml / package.json / go.mod / requirements.txt),**直接拿包名当 `q` 搜**,结果基本就落在这个库里,再读入口:
+    - **Python**:`fastapi` → `fastapi/applications.py`、`fastapi/__init__.py`(**入口就是导出清单**:直接看到 `FastAPI`、`HTTPException` 这些公开名字)
+    - **Java**:`poi` → `~/.m2/.../poi-5.3.0-sources.jar!/org/apache/poi/...`;读该库的入口类
+    - **Go**:`gorm` → `go/pkg/mod/gorm.io/gorm@v1.31.0/...`
+    - **Node/TS 例外**:包名当 `q` 搜不到(实测 `element-plus` → 0 条)。要用**代码里 import 的符号名**;包名是简单标识符时可以「包名.符号」(`vue.Teleport` 有效),但**带 `-` 或 `@scope/` 的这么拼是 0 条**(`element-plus.ElMessage`、`@vue/runtime-core.TeleportProps` 都搜不到)。而裸符号名会跨多个子项目(`ElMessage` 命中 user / admin / vcop 三处),这时用 `paths` 圈到那个 `node_modules` —— `paths: ['frontend/user/**']` 就收敛到一处。
+  - **它只覆盖「项目已经引入」的依赖**:搜不到某个库,基本就是这个库还没进依赖 —— 别反复试:要么先把它加进依赖(pom / requirements / package.json),要么改用 web 搜索 / GitHub 看它的源码。
+  - **同名符号往往有多处定义**(标准库一份、几个依赖各一份,还有测试和示例),所以**按代码上下文选**:看调用处 import 的是哪个包、传参是什么类型、返回路径属于哪个库 —— 别把第一行当答案。
   - **它返回的路径,原样交给同一个项目的 `<P>_read_file` 就是源码**:两者同属一个项目、相对路径的基准一致,所以不用拼绝对路径、不用管是什么语言 —— 压缩包里的条目它也照样读(`.class` 还会反编译)。
     例:`<P>_search_symbol({ q: "UvicornWorker", include_external: true })` 给出 `../../../Library/.../uvicorn/workers.py` → `<P>_read_file({ file_path: "那个字符串" })`。
-  - **别把这条路径交给原生 `read`**:原生 read 的基准是本会话的工作目录(根项目),拿子项目的相对路径去读会落到错误的位置。
-  - 要在依赖里搜**文本 / 文件名**(符号搜不到时):从上面返回的路径就能看出依赖的物理目录(如 `node_modules/`、`remote_sources/<hash>/`),在它下面用原生 `grep` / `glob` 搜。
-    要看签名 / 文档接着用「符号信息」那条。→ {{cmd_search_symbol}}
+  - **依赖索引是按项目的**:任何依赖都用**它所在项目**的那个 MCP 工具去搜 —— 根项目的依赖用根项目的命令,子项目的依赖用子项目的命令。拿一个项目的工具去搜另一个项目的依赖,只会在那个项目自己的文件里找,**拿不到库**。
+  - **别把这条路径交给原生 `read`**:原生 read 的基准是本会话的工作目录(根项目),拿子项目的相对路径去读会落到错误的位置。→ {{cmd_search_symbol}}
 - **一个符号的签名 / 文档 / 声明位置**:`filePath` + `line` + `column`。→ {{cmd_get_symbol_info}}
 - **调用关系**:`symbolFqn` 传符号名,`analysisKind` 取 `INCOMING_CALLS` / `OUTGOING_CALLS`;`depth` 控层数,`childOffset` 翻页。→ {{cmd_analyze_calls}}
 
@@ -60,8 +71,7 @@
 
 ### 读压缩包内的东西
 
-- **它管两件事**:① **「符号」那条搜出来的路径**(原样传即可,别自己去拼绝对路径);② **压缩包里的条目**,路径形如 `libs/foo.jar!/com/x/Bar.class` 或 `jar://` URL —— 能读 jar 内的资源文件,还能把 `.class` **反编译成源码**。这两件原生 `read` 都做不到。
-- **其余情况** —— 你自己就知道路径的普通文件(项目源码、`node_modules` 里的文件、Python 的 `.py`)—— 用**原生 `read`**,更快也更省 token。→ {{cmd_read_file}}
+- **压缩包内的条目**(路径形如 `libs/foo.jar!/com/x/Bar.class` 或 `jar://` URL)只有它能读 —— 原生 `read` 打不开压缩包,而它还能把 `.class` **反编译成源码**;「符号」那条搜出来的路径也用它(原样传即可)。→ {{cmd_read_file}}
 
 ### 运行配置
 
@@ -83,7 +93,6 @@
 ## 命令执行(所有项目通用)
 
 - 需要项目环境的命令(依赖 IDE 里配好的 JDK / Node / Python 版本等):用该项目前缀的 run configuration 工具,不要用原生 `shell`。
-- run configuration 是**重资产**:一个项目通常只建几个(固定要跑的构建 / 装依赖 / dev server 之类),**不是随手一条命令就建一个**。
-- 要新建:先确认它**反复要用、且属于项目固定流程**;确认后**先告诉用户要建什么、为什么,取得同意再动手**,别自己决定。
+- run configuration 是**重资产**:一个项目通常只建几个(固定要跑的构建 / 装依赖 / dev server 之类),**不是随手一条命令就建一个**。要新建时先确认它**反复要用、且属于项目固定流程**,再**先告诉用户要建什么、为什么,取得同意才动手**,别自己决定。
 - **配置一律不由你写**:不要手写 `.run/*.run.xml`,也不要手搓启动命令。
 - 不需要项目环境的命令:用原生 `shell`。
