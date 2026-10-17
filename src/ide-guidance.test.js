@@ -285,7 +285,7 @@ describe('appendIdeRecoveryGuidance', () => {
     const system = [];
     appendIdeRecoveryGuidance(system, { marked: false, serving: false });
     expect(system).toEqual([{ type: 'text', text: MCP_RECOVERY_GUIDANCE }]);
-    expect(MCP_RECOVERY_GUIDANCE).toContain('/open-in-idea');
+    expect(MCP_RECOVERY_GUIDANCE).toContain('/open-in-ide');
   });
 
   it('never names a bare `idea_` prefix', () => {

@@ -246,7 +246,7 @@ export function parseSubprojectArgument(text) {
 /**
  * 从参数文本里切出 IDE 名。
  *
- * `/open-in-idea pycharm` 是"AI 不配合时的直通逃生口"：正常流程由 AI 向用户提问后
+ * `/open-in-ide pycharm` 是"AI 不配合时的直通逃生口"：正常流程由 AI 向用户提问后
  * 调工具写回，带参只是保险。空串表示"没给"，由调用方决定是提问还是用默认值。
  *
  * @param {unknown} text

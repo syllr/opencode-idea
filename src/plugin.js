@@ -14,7 +14,7 @@
 //      its own project through the `IJ_MCP_SERVER_PROJECT_PATH` header; injects
 //      per-project direct-call guidance; and hides the IDE tools that must not
 //      reach the model (for every prefix);
-//   2. registers `/open-in-idea` (接入 root 与其全部子项目), `/delete-in-ide`
+//   2. registers `/open-in-ide` (接入 root 与其全部子项目), `/delete-in-ide`
 //      (删掉整个配置) and `/add-sub-module-in-ide <路径>` (登记一个子项目),
 //      plus the `configure_ide_project` tool the MODEL calls to write the IDE a
 //      user picked into the config;
@@ -24,7 +24,7 @@
 // setup does NOT probe or connect any IDE. The commands probe, open the IDE, and
 // load the MCP servers + guidance on demand.
 //
-// `/open-in-idea` opens each configured project in ITS OWN IDE, waits until its
+// `/open-in-ide` opens each configured project in ITS OWN IDE, waits until its
 // MCP endpoint is ready, registers it under its prefix, and keeps the config in
 // `ctx.storage`. A live endpoint alone does NOT mean our project is open there
 // (the running IDE may have a different project open), so the open flow asks the
@@ -38,7 +38,7 @@
 //     after OpenCode evicted the project's Location services (the Location's
 //     LayerMap uses `idleTimeToLive: "60 minutes"`) or after the process
 //     restarted — setup deliberately does not connect, so without this the
-//     session would stay tool-less until the user ran `/open-in-idea` by hand.
+//     session would stay tool-less until the user ran `/open-in-ide` by hand.
 //     `prompt` is awaited before the request is built, so the message that
 //     triggers it already carries the tools;
 //   * the `context` hook, when a request that HAD IDE tools no longer does;
@@ -405,26 +405,26 @@ export function ideFeedback(result) {
       return list ? `IDE MCP 已连接并接入:${list}。` : 'IDE MCP 已连接。';
     }
     case 'tools-loading':
-      return 'IDE MCP 已连接,但原生 IDE 工具列表尚未完成注册。请稍后再次执行 /open-in-idea。';
+      return 'IDE MCP 已连接,但原生 IDE 工具列表尚未完成注册。请稍后再次执行 /open-in-ide。';
     case 'mcp-unavailable': {
       const where = nameOf(result?.project);
       const ide = appOf(result?.project);
       return result?.opened
-        ? `已请求打开/激活 ${where} 并等待 MCP 服务启动,但未检测到 MCP 服务。请在 ${ide} 中开启 MCP 服务(Settings → MCP Server,需 2026.2+)并启用 Brave Mode,然后再次执行 /open-in-idea。`
-        : `未检测到 ${where} 的 MCP 服务。请确认已打开,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后再次执行 /open-in-idea。`;
+        ? `已请求打开/激活 ${where} 并等待 MCP 服务启动,但未检测到 MCP 服务。请在 ${ide} 中开启 MCP 服务(Settings → MCP Server,需 2026.2+)并启用 Brave Mode,然后再次执行 /open-in-ide。`
+        : `未检测到 ${where} 的 MCP 服务。请确认已打开,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后再次执行 /open-in-ide。`;
     }
     case 'launch-failed':
-      return `无法拉起 ${nameOf(result?.project)}(未找到应用或启动失败)。请确认它已安装 —— 没装的话先装上,再重试 /open-in-idea。`;
+      return `无法拉起 ${nameOf(result?.project)}(未找到应用或启动失败)。请确认它已安装 —— 没装的话先装上,再重试 /open-in-ide。`;
     case 'disabled':
-      return '插件已通过 openInIde: false 关闭 IDE 启动。请手动打开 IDE,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后重试 /open-in-idea。';
+      return '插件已通过 openInIde: false 关闭 IDE 启动。请手动打开 IDE,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后重试 /open-in-ide。';
     case 'manual-launch':
-      return '当前系统不支持自动打开 IDE(仅 macOS 实现了启动)。请手动打开 IDE,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后再次执行 /open-in-idea。';
+      return '当前系统不支持自动打开 IDE(仅 macOS 实现了启动)。请手动打开 IDE,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后再次执行 /open-in-ide。';
     case 'deleted':
-      return '已删除本项目的 IDE 配置:已注销全部 IDE MCP 并清除配置。如需重新接入,请执行 /open-in-idea。';
+      return '已删除本项目的 IDE 配置:已注销全部 IDE MCP 并清除配置。如需重新接入,请执行 /open-in-ide。';
     case 'bad-argument':
       return `命令参数有误:${result?.message ?? ''}`;
     case 'not-configured':
-      return '当前项目还没有 IDE 配置。请先执行 /open-in-idea 接入根项目,再登记子项目。';
+      return '当前项目还没有 IDE 配置。请先执行 /open-in-ide 接入根项目,再登记子项目。';
     case 'invalid-subproject':
       return `无法登记子项目:${result?.message ?? ''}`;
     case 'needs-ide':
@@ -435,7 +435,7 @@ export function ideFeedback(result) {
 }
 
 /**
- * The text the MODEL sees for `/open-in-idea` feedback. It is explicitly a
+ * The text the MODEL sees for `/open-in-ide` feedback. It is explicitly a
  * notification, not a task: the model must only acknowledge it. The user sees
  * the clean notice instead, via `metadata.displayText`.
  */
@@ -850,7 +850,7 @@ export default {
      * `open -a` only requests activation/opening. A cold IDE needs time before
      * its bundled MCP server listens, so poll until the endpoint appears AND
      * answers for THIS project. This is the step that makes a single
-     * `/open-in-idea` enough on a cold start.
+     * `/open-in-ide` enough on a cold start.
      *
      * @param {{ path: string, app: string }} project
      * @returns {Promise<number | undefined>}
@@ -946,7 +946,7 @@ export default {
     };
 
     /**
-     * `/open-in-idea` 的主流程：让每个已登记项目的 IDE 都就绪，然后把它们注册进
+     * `/open-in-ide` 的主流程：让每个已登记项目的 IDE 都就绪，然后把它们注册进
      * OpenCode。
      *
      * 每个项目各自拉起**自己的** IDE —— root 在 IDEA、某子项目在 PyCharm 是常态，
@@ -970,7 +970,7 @@ export default {
       let toolsReady = false;
       try {
         // 重新探测一次并整体注册：ensureProject 只保证 IDE 就绪，注册要按"当前真正
-        // 打开着哪些项目"重来一遍，这样 `/open-in-idea` 每次都是同一套结果。
+        // 打开着哪些项目"重来一遍，这样 `/open-in-ide` 每次都是同一套结果。
         toolsReady = (await reconcile({ probeIde: true })) === true;
       } catch {
         // capability load is best effort; feedback still matters
@@ -987,7 +987,7 @@ export default {
      * The `context` hook latches the rebuild the moment a request shows the tools
      * are gone, but a latch alone only fires on the NEXT user message — one whole
      * turn later, which is exactly the gap that made a dead session sit there
-     * until `/open-in-idea` was run by hand. This runs out of band (it never
+     * until `/open-in-ide` was run by hand. This runs out of band (it never
      * blocks the request) so the next request — the following agent-loop step, or
      * any later message — already carries the tools again.
      *
@@ -1089,7 +1089,7 @@ export default {
     // Deliberately NOT wrapped in a catch: these are core features of the plugin,
     // so a rejected definition must fail loudly. Swallowing it would ship a
     // silently incomplete plugin — which is exactly how 0.0.6 lost
-    // `/open-in-idea` without anyone noticing until the command was gone.
+    // `/open-in-ide` without anyone noticing until the command was gone.
     const syncSkillsOnce = async () => {
       if (typeof ctx.skill?.transform !== 'function') return;
 
@@ -1138,7 +1138,7 @@ export default {
     };
     // A project configured in an earlier run gets its skills as soon as the IDE
     // has answered; a project configured for the first time gets them when
-    // `/open-in-idea` runs (both paths go through `writeConfig` / this setup hook).
+    // `/open-in-ide` runs (both paths go through `writeConfig` / this setup hook).
     await syncSkills();
 
     /**
@@ -1227,7 +1227,7 @@ export default {
         return { content: `已把根项目配置为 ${IDE_LABELS[ide]} 并接入。` };
       }
       if (!current) {
-        return { content: '当前项目还没有 IDE 配置。请先执行 /open-in-idea。' };
+        return { content: '当前项目还没有 IDE 配置。请先执行 /open-in-ide。' };
       }
       const absPath = resolve(projectPath, rawPath);
       if (!existsSync(absPath)) {
@@ -1268,15 +1268,15 @@ export default {
       execute: async (args) => configureIdeProject(args),
     });
 
-    // `/open-in-idea` 接入 root 与其全部子项目；`/add-sub-module-in-ide <路径>` 登记
+    // `/open-in-ide` 接入 root 与其全部子项目；`/add-sub-module-in-ide <路径>` 登记
     // 一个子项目（IDE 由模型问用户后写回）；`/delete-in-ide` 删除整个配置。
     //
-    // 命名说明：命令名里的 `idea` 是历史包袱（工具前缀早已改成与产品无关的 `ide_`），
-    // 保留它是为了不改用户天天敲的名字；它的语义是"接入 IDE"，不是"接入 IntelliJ"。
+    // 三个名字都带 `-ide` 而不是 `-idea`：这里说的是"接入 IDE"，与具体产品无关 —— root 可能是
+    // IDEA、子项目可能是 PyCharm，和工具前缀（`ide_*` / `<目录名>_*`）是同一套口径。
     if (typeof ctx.command?.transform === 'function') {
       commandRegistration = await ctx.command.transform((editor) => {
         editor.add({
-          name: 'open-in-idea',
+          name: 'open-in-ide',
           description: '接入当前项目:root 及其全部已登记子项目,各自用配置好的 IDE 打开',
           execute: async (input) => {
             const parsed = parseIdeArgument(input?.prompt?.text);
@@ -1350,7 +1350,7 @@ export default {
           execute: async (input) => {
             await writeConfig(null);
             // 注销全部 server。走串行化的 reconcile，所以在飞的重建（另一个
-            // `/open-in-idea`、请求期自愈）不会在配置已删之后再注册回来。
+            // `/open-in-ide`、请求期自愈）不会在配置已删之后再注册回来。
             await reconcile({ probeIde: false });
             await sendFeedback(input, { status: 'deleted' });
           },
@@ -1434,7 +1434,7 @@ export default {
       //   * `registrations.length === 0` — 本插件实例压根没有注册任何 IDE server,这
       //     正是 OpenCode 回收 Location 服务(LayerMap idleTimeToLive = 60 分钟)
       //     或进程重启后新实例的样子。setup 故意不连接,没有这一步会话就会永久
-      //     没有工具,只能靠用户手敲 `/open-in-idea`。
+      //     没有工具,只能靠用户手敲 `/open-in-ide`。
       //
       // 只探测、不启动 IDE:走 `reconcile({ probeIde: true })`,而不是会 `open -a`
       // 的 `reviveIde()` —— 一条用户消息不该把 IDE 拉起来。

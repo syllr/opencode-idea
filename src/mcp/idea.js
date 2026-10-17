@@ -13,7 +13,7 @@
 //     HTTP header `IJ_MCP_SERVER_PROJECT_PATH` (see `serverConfig`).
 //   * Availability probe: a single `initialize` POST to `/stream` succeeds when
 //     the MCP server is up. We do NOT check whether a specific project is open —
-//     the user triggers `/open-in-idea` for the project they want, so "server is
+//     the user triggers `/open-in-ide` for the project they want, so "server is
 //     up" is the only thing worth knowing.
 
 export const PROJECT_HEADER = 'IJ_MCP_SERVER_PROJECT_PATH';

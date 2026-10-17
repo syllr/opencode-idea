@@ -18,12 +18,12 @@ OpenCode 插件,面向 JetBrains 项目 (IntelliJ IDEA / PyCharm / WebStorm 等)
 
 | 命令                            | 作用                                                                            |
 | ------------------------------- | ------------------------------------------------------------------------------- |
-| `/open-in-idea [ide]`           | 接入 root 及其全部已登记子项目;第一次**没有配置**时由 AI 问用户 root 用哪个 IDE |
+| `/open-in-ide [ide]`           | 接入 root 及其全部已登记子项目;第一次**没有配置**时由 AI 问用户 root 用哪个 IDE |
 | `/add-sub-module-in-ide <路径>` | 登记一个子项目(相对 root 的路径);随后由 AI 问用户它用哪个 IDE                   |
 | `/delete-in-ide`                | 删掉**整个**配置(root + 全部子项目)并注销全部 IDE MCP                           |
 
 配置持久化在 `ctx.storage`(`project/<root 路径>`),重启 OpenCode 后仍在。之后**没有任何后台轮询**——恢复完全靠请求驱动:插件发现"该有
-IDE 工具却没有"(新实例)或"IDE 工具调用失败"(掉线)时,**在下一条消息发出前静默接回**(用户无感)。没跑过 `/open-in-idea` 的 root
+IDE 工具却没有"(新实例)或"IDE 工具调用失败"(掉线)时,**在下一条消息发出前静默接回**(用户无感)。没跑过 `/open-in-ide` 的 root
 保持全手动、零自主动作。
 
 > **为什么改成请求驱动**:OpenCode 把一个 Location(项目)的全部服务缓存在 `LayerMap` 里,空闲 **60 分钟**
@@ -39,7 +39,7 @@ setup(启动, 每 root 一次):
   b. 注册 3 个命令 + session context/prompt 钩子 + tool 钩子 + configure_ide_project 工具
   不探测、不注册任何 MCP
 
-/open-in-idea(手动触发, 阻塞到就绪):
+/open-in-ide(手动触发, 阻塞到就绪):
   1. 还没有配置时:
      - 带了 ide 参数 → 直接写入 root 的 IDE(直通逃生口,不经过模型)
      - 没带参数   → 发给模型一条**任务**:请它问用户 root 用 IDEA 还是 PyCharm,拿到答复后调用
@@ -55,7 +55,7 @@ setup(启动, 每 root 一次):
   5. 发结果通知(用户看到干净气泡,模型只回"收到")
 
 /add-sub-module-in-ide <路径>(手动触发):
-  1. 没有配置 → 直接报错,提示先执行 /open-in-idea(不提问、不写任何东西)
+  1. 没有配置 → 直接报错,提示先执行 /open-in-ide(不提问、不写任何东西)
   2. 有配置   → 校验路径:必须在 root 下、目录存在、目录名合法、前缀不与已登记项目重名、不占用保留名
   3. 通过     → 发给模型一条**任务**:请它问用户这个子项目用哪个 IDE,答复后调用
                 configure_ide_project 回写。(带多个参数 = 报错,不猜)
@@ -82,18 +82,18 @@ setup(启动, 每 root 一次):
   ※ 三者都只在**确实有事发生**时动;没人用这个项目时,插件完全静止
 ```
 
-## 接入 (`/open-in-idea` 与 `/add-sub-module-in-ide`)
+## 接入 (`/open-in-ide` 与 `/add-sub-module-in-ide`)
 
-### `/open-in-idea [ide]`
+### `/open-in-ide [ide]`
 
-输入 `/open-in-idea`,把 root 及其**全部已登记子项目**接入。每个项目都用**它自己配置的 IDE** 打开:
+输入 `/open-in-ide`,把 root 及其**全部已登记子项目**接入。每个项目都用**它自己配置的 IDE** 打开:
 
 1. **第一次(还没有配置)** —— 插件不猜:
    - 不带参数 → 插件先按**安装目录**探一次本机装了哪些 IDE(macOS 是 `/Applications` 与 `~/Applications`,
      Windows / Linux 按各自的常见位置),把结论写进任务文本,再让模型问用户。**不让模型自己去翻进程** ——
      `ps aux | grep` 只看得见**正在运行**的 IDE,装了没开就漏(实测踩过:PyCharm 明明装着,却被报成"未发现"),
      而且慢。**只有这一次**需要用户回答;
-   - 带参数(`/open-in-idea pycharm`)→ 直通写入,不经过模型(模型不配合时的逃生口)。
+   - 带参数(`/open-in-ide pycharm`)→ 直通写入,不经过模型(模型不配合时的逃生口)。
 
    探测结果只用来"帮用户做选择",不决定"哪个 IDE 正开着这个项目" —— 后者始终由用户回答。探不到时
    (非 mac、或路径未知)那句提示干脆不出现,照常问用户。
@@ -118,7 +118,7 @@ fast-fail,不会在后台轮询;重复触发共享同一次打开请求,**每个
 
 把一个子项目登记进配置。参数是**相对 root 的路径**(例如 `modelserver`),而且**只接受一个参数**:
 
-1. 没有配置 → 直接报错,提示先执行 `/open-in-idea`(不提问、不写任何东西);
+1. 没有配置 → 直接报错,提示先执行 `/open-in-ide`(不提问、不写任何东西);
 2. 校验:必须位于 root 之下、目录真实存在、**目录名合法**、前缀不与已登记项目重名、不占用保留名 `ide`;
 3. 通过后发给模型一条**任务**:请它问用户这个子项目用哪个 IDE,答复后调用 `configure_ide_project` 回写。
 
@@ -141,9 +141,9 @@ configure_ide_project({ path: "modelserver", ide: "pycharm" })   // 配置一个
 ## 删除接入 (`/delete-in-ide`)
 
 输入 `/delete-in-ide`:**注销全部 IDE MCP** + 删除**整个**配置(root 与全部子项目,持久化 + 内存缓存一并清),
-并清空注入的环境变量。之后 IDE 工具不再可用,也不会再因失败自动接入。想重新接入,再次执行 `/open-in-idea`。
+并清空注入的环境变量。之后 IDE 工具不再可用,也不会再因失败自动接入。想重新接入,再次执行 `/open-in-ide`。
 
-**热更新会断开**:插件源码变更会触发 V2 热重载,注册随旧实例一起释放。**改完插件后重跑一次 `/open-in-idea`** 即可恢复。
+**热更新会断开**:插件源码变更会触发 V2 热重载,注册随旧实例一起释放。**改完插件后重跑一次 `/open-in-ide`** 即可恢复。
 
 ## 按能力选工具 (直接调用引导)
 
@@ -170,7 +170,7 @@ IDE MCP 可用时,插件通过 **系统提示注入**告诉模型**哪些事该�
 
    不会把整份工具目录重复塞进 system prompt,也不要求模型先写编排代码。IDEA MCP 工具自身的
    description/schema 仍是参数使用的权威来源;工具返回业务错误时先修正参数,不要误判成工具不可用。MCP 不可用时立即
-   提示用户执行 `/open-in-idea`,不重复探测或等待。
+   提示用户执行 `/open-in-ide`,不重复探测或等待。
 
    **总则里最靠前的两条是 Code Mode 规则**,而且第一条是**通用**的,不是 `ide_*` 特例:`工具列表里已经直接列出的原生工具,
 直接调用,不需要也不应该用 Code Mode 的 `search` 去找`;第二条才落到 `ide_*`(它就是原生工具,且不在 Code Mode 目录里)。
@@ -268,12 +268,12 @@ opencode-idea 对这一组工具做三件事:
 
 **skill 的生命周期跟随两道门,缺一不可**:
 
-1. **项目配置** —— `/open-in-idea` 写入配置时注册、`/delete-in-ide` 删配置时注销;以前配置过的 root 在 `setup` 时(读回配置)
+1. **项目配置** —— `/open-in-ide` 写入配置时注册、`/delete-in-ide` 删配置时注销;以前配置过的 root 在 `setup` 时(读回配置)
    也会走这一步。未配置的 root 不受影响。
 2. **IDE 真的在提供这个 skill 依赖的工具** —— skill 在自己的 frontmatter 里用 `requires:` 声明它绕着哪个工具写,而且写的是**后缀**
    (例如 `idea-standalone` 声明 `rerun_run_configuration`,真实工具名是 `<项目前缀>rerun_run_configuration`)。**没这个工具就不注册这个 skill**:
    一个教模型去调"它根本看不到的工具"的 skill,不是知识,是一次注定的失败调用。工具的可见性是双向跟随的 —— `setup` 时还没
-   连过 IDE、目录未知,所以那时**不注册**;等 IDE 应答(`/open-in-idea` 或重连)后目录才算已知,该出现的才出现;反过来,某个
+   连过 IDE、目录未知,所以那时**不注册**;等 IDE 应答(`/open-in-ide` 或重连)后目录才算已知,该出现的才出现;反过来,某个
    请求里工具没了,skill 也跟着撤(不需要等重连)。
    `requires` 必须写 **OpenCode 侧的名字**(IDE 工具带 `ide_` 服务器前缀),因为门就是拿它跟 `ctx.tool.list()` 比;
    写成 IDE 的原始名(`rerun_run_configuration`)会让这个 skill 在任何机器上都不出现,而且没有任何报错。
@@ -321,7 +321,7 @@ loader 消费、**不会进入注册给 OpenCode 的定义**),由 `src/skill/loa
 ## 前置条件
 
 - JetBrains IDE 已开启 MCP 服务 (IDE 设置里的 MCP Server / AI Assistant MCP),版本需 **2026.2+**(提供 Streamable HTTP 端点
-  `/stream`);若关闭,`/open-in-idea` 会立即提示如何重新开启。
+  `/stream`);若关闭,`/open-in-ide` 会立即提示如何重新开启。
 - IDE 侧需开启 **Brave Mode**(否则需要确认的 MCP 工具调用会停下来等用户确认);MCP 未就绪时通知会同时提醒开启它。
 - 插件注册给 OpenCode 的 MCP 配置(**只支持 Streamable HTTP**):
 
@@ -385,7 +385,7 @@ opencode plugin list
 ```
 
 配置保存后 V2 会监听并自动重载 (日志里能看到它开始 watch `index.js` / `src/*.js`),无需重启。改插件源码也会触发重载 (此时需重跑
-`/open-in-idea`)。
+`/open-in-ide`)。
 
 另一种零配置方式:在 `~/.config/opencode/plugins/` 放一个转发文件 (自动发现,但不能传 options):
 
@@ -432,9 +432,9 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
 ## 行为
 
 - **已配置的 root**:启动读回配置后挂上 shell 环境钩子 (环境值待接入后填充)、按 IDE 实际提供的工具同步 skill
-  (IDE 还没应答时依赖配套工具的 skill 不注册);全部 IDE MCP 由 `/open-in-idea` 注册。
+  (IDE 还没应答时依赖配套工具的 skill 不注册);全部 IDE MCP 由 `/open-in-ide` 注册。
 - **未配置的 root**:不改环境、不注册、不注入任何 IDE 提示 (每请求零开销;setup 时只做一次配置读取)。
-- **手动接入 + 就绪即返回**:`/open-in-idea` 会按**每个项目自己的 IDE** 分别 `open -a` 拉起并**等 IDE MCP 就绪**(冷启动数十秒,
+- **手动接入 + 就绪即返回**:`/open-in-ide` 会按**每个项目自己的 IDE** 分别 `open -a` 拉起并**等 IDE MCP 就绪**(冷启动数十秒,
   上限 60s);就绪后 **先注销全部旧注册 → 再按项目各注册一个 server**(远程 Streamable HTTP),等 IDE 工具就绪,最后才通知。
   **每次执行都重建**。命令返回即可用;`/delete-in-ide` 注销全部注册 + 删配置 + 清环境。
 - **`context` 钩子是请求的纯函数**:按「每次模型调用」触发 (含工具续跑),只看本次请求自带的工具快照 —— 有任一项目前缀的工具就
@@ -449,7 +449,7 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
   - **`execute.after` 钩子**:见下一条。
     恢复是**每个 Location(项目)各一份**;没有任何定时器,插件在不使用时完全静止。
 - **失败触发的自动接入(仅已配置的 root)**:`tool.execute.after` 钩子监听 IDE 工具报错并**分类**:
-  - IDE MCP 不可用(掉了)→ 重跑 `/open-in-idea` 的接入流程;
+  - IDE MCP 不可用(掉了)→ 重跑 `/open-in-ide` 的接入流程;
   - IDE 在、但项目没打开(`Unable to determine the target project` / `doesn't correspond to any open project`)→ 让**这个工具
     所属项目**的 IDE 重新打开它(**不会**去动别的项目);
   - 普通业务错误(`File not found` 等)→ **不动作**。判定只认**传输层专有标记**(`MCP server "<名>" is not available` /
@@ -457,7 +457,7 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
     (例如 SQL 工具报的 `Connection refused`) —— MCP 工具错误的 message 就是工具自己的输出,认通用串会把正常业务失败误判成掉线并重建。
     触发成功会把该工具错误改写为"已重连 / 已重新打开,请重试",模型在同一回合内重试;失败则保持原错误。非 IDE 工具、未配置
     的 root 都不受影响。启动保护 (`launchCooldownMs` / `launchMaxAttempts`) 限制重复拉起 IDE,**按项目各自计**。
-- **`/open-in-idea`**:手动接入 root 与全部子项目;**等每个项目的 IDE 就绪 → 先注销全部旧注册 → 再按项目各注册一个 server →
+- **`/open-in-ide`**:手动接入 root 与全部子项目;**等每个项目的 IDE 就绪 → 先注销全部旧注册 → 再按项目各注册一个 server →
   等 IDE 工具就绪**才返回。**`/delete-in-ide`**:注销全部 IDE MCP + 删整个配置 + 清空注入的环境。
 
 ## 限制
@@ -467,7 +467,7 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
 - IDE MCP 注册需要 IDE **2026.2+** 的 Streamable HTTP 端点 `/stream`;更早版本只有 `/sse`,OpenCode V2 无法连接。
 - skill 定义的字段名**以 schema 为准**,不要照官方文档:`Skill.Info` 需要 `path` (AbsolutePath),文档里写的 `location`
   不存在 —— 用错会让 `ctx.skill.transform` 抛 `SchemaError`,而**任何 transform 失败都会禁用整个插件**(0.0.6 就是这样丢了
-  `/open-in-idea`)。同理,`Skill.Info` 的完整字段是 `id` / `name` / `description?` / `autoinvoke?` / `path` / `content`。
+  `/open-in-ide`)。同理,`Skill.Info` 的完整字段是 `id` / `name` / `description?` / `autoinvoke?` / `path` / `content`。
 - 需要项目环境的命令走 `ide_execute_run_configuration`(run configuration 要先在 IDEA 里配好),不用原生 shell。
 - 一批用不到的 IDE MCP 工具被硬编码隐藏 (`src/plugin.js` 的 `HIDDEN_IDE_TOOL_SUFFIXES`,**共 48 个后缀**):
   VCS (`git_status` / `get_repositories`,版本控制走原生 `git`)、Router 派发工具 (`execute_tool`,未启用 router-only 时冗余)、
@@ -499,11 +499,11 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
   `ideProjectPath()` 把它转成正斜杠,**注册与探测走同一个函数**,两者必须一致,否则会用一种写法注册、又用另一种
   写法去问,永远匹配不上。macOS 上是原样透传。
 - IDE **2026.2+** 提供 Streamable HTTP 端点 `/stream`,这是插件**唯一**使用的传输(`type: "remote"`)。注册本身不启动任何子进程,
-  所以没有"桥进程被 IDE 拖死后变成僵尸"这一类问题。`/open-in-idea` 仍要求 IDE MCP 已在监听(冷启动约数十秒),因此会先等就绪再注册。
+  所以没有"桥进程被 IDE 拖死后变成僵尸"这一类问题。`/open-in-ide` 仍要求 IDE MCP 已在监听(冷启动约数十秒),因此会先等就绪再注册。
 - **空闲驱逐(已实测)**:OpenCode 把一个 Location 的服务缓存在 `LayerMap` 里,`idleTimeToLive` = **60 分钟**;空闲到期即整体驱逐,
   插件实例连同**全部** IDE MCP 注册一起消失。**两种传输都躲不过**,所以对策不是换传输,而是请求驱动的恢复(见「行为」):
   - 新实例上第一条用户消息的 `prompt` 钩子会把连接接回来 —— 常态下**不需要用户手动做什么**;
-  - 手动重建仍可用:执行 `/open-in-idea`(先注销全部旧注册、再重新注册);
+  - 手动重建仍可用:执行 `/open-in-ide`(先注销全部旧注册、再重新注册);
   - 插件给每个 server 配 `executionTimeoutMs`(默认 **10 分钟**)作为硬上限:兜住端点卡住时的单次调用,不再沿用 OpenCode 默认的 12 小时;
   - "IDE 被关掉"这一类会被下一次 IDE 工具调用暴露(HTTP 直接报错),由 `execute.after` 钩子分类后自愈;不产生 error 的场景(例如
     IDE 进程还在但项目没打开)由「IDE 在、项目没打开」分支处理。
@@ -514,13 +514,13 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
 - **目录名就是工具前缀,不合规一律拒绝**:必须匹配 `^[a-z0-9][a-z0-9_-]*$`(小写字母或数字开头,只含小写字母、数字、`-`、`_`)、
   不与已登记项目重名、不占用保留名 `ide`。插件**绝不**自动改名或自动消歧 —— 静默改一个名字,等于用户的目录和模型看到的工具名
   对不上,而且没人会发现。
-- 插件**完全不再检查 `.idea` 目录**:是不是 IDE 项目只由配置(`/open-in-idea` 设置、`/delete-in-ide` 清除)决定。
-  (`/open-in-idea` 会让对应 IDE 打开并导入该项目,`.idea` 由 IDE 自己生成,插件无需也不应据此判断。)
+- 插件**完全不再检查 `.idea` 目录**:是不是 IDE 项目只由配置(`/open-in-ide` 设置、`/delete-in-ide` 清除)决定。
+  (`/open-in-ide` 会让对应 IDE 打开并导入该项目,`.idea` 由 IDE 自己生成,插件无需也不应据此判断。)
 - **自动拉起 IDE 仅实现 macOS** (`open -a`)。其他平台(包括 Windows)没有对应的启动命令,**请手动打开 IDE 和项目**,再执行
-  `/open-in-idea` —— 端口在监听、项目被认得就会正常接入,其余能力(注册、探测、自愈、工具暴露)与 macOS 完全一致。
+  `/open-in-ide` —— 端口在监听、项目被认得就会正常接入,其余能力(注册、探测、自愈、工具暴露)与 macOS 完全一致。
   IDE 里打开 MCP 服务(2026.2+)并启用 Brave Mode;首次打开若弹 Trust 对话框,需确认后重试。
 - IDE MCP 没有「打开项目」工具,因此打开动作走 OS/CLI,而非 MCP。
-- 插件热重载会断开 IDE 连接,需重跑 `/open-in-idea`。
+- 插件热重载会断开 IDE 连接,需重跑 `/open-in-ide`。
 - 插件不修改任何**它不接管**的工具定义或描述;IDE 工具以 `<项目前缀>_*` 直接暴露给模型 (`codemode: false`),不用 `execute` 包裹。
   唯一的例外是 `rebuild` 参数(见「工具参数」),它对每个项目前缀各处理一遍。
 

@@ -267,7 +267,7 @@ describe('plugin setup', () => {
     const notOpened = ideFeedback({ status: 'mcp-unavailable', opened: false });
     expect(opened).toContain('Settings → MCP Server');
     expect(opened).toContain('Brave Mode');
-    expect(opened).toContain('/open-in-idea');
+    expect(opened).toContain('/open-in-ide');
     expect(notOpened).toContain('开启 MCP 服务');
     expect(notOpened).toContain('Brave Mode');
   });
@@ -276,9 +276,9 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx();
     const cleanup = await plugin.setup(ctx);
 
-    // Unmarked project: no IDE connection until `/open-in-idea` runs.
+    // Unmarked project: no IDE connection until `/open-in-ide` runs.
     expect(state.mcp).toBe(0);
-    expect(state.commands.has('open-in-idea')).toBe(true);
+    expect(state.commands.has('open-in-ide')).toBe(true);
     expect(state.commands.has('delete-in-ide')).toBe(true);
 
     await cleanup();
@@ -311,13 +311,13 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('connects the IDE and loads capabilities when /open-in-idea runs', async () => {
+  it('connects the IDE and loads capabilities when /open-in-ide runs', async () => {
     const fake = await startFakeIdeForProject();
     running = fake.server;
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolsReadyAfter: 3 });
     const cleanup = await plugin.setup(ctx);
 
-    const command = state.commands.get('open-in-idea');
+    const command = state.commands.get('open-in-ide');
     expect(command).toBeTypeOf('object');
     await command.execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
@@ -346,7 +346,7 @@ describe('plugin setup', () => {
     const cleanup = await plugin.setup(ctx);
 
     openCalls.length = 0;
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     // The fake IDE answers `get_project_modules` with a real result, which means
     // the project WAS resolved — so it must NOT be opened again. This is the
@@ -369,7 +369,7 @@ describe('plugin setup', () => {
     const cleanup = await plugin.setup(ctx);
 
     openCalls.length = 0;
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     // The IDE reports "cannot determine the target project", so the command must
     // ask the running instance to open THIS project.
@@ -387,7 +387,7 @@ describe('plugin setup', () => {
     const cleanup = await plugin.setup(ctx);
 
     openCalls.length = 0;
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     // `openInIde: false` still connects to an already-running endpoint, but must
     // never ask the OS to open the project.
@@ -406,7 +406,7 @@ describe('plugin setup', () => {
     });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     // Nothing to launch and nothing to connect to. The notice must point at the
     // manual path, and nothing may claim the IDE was opened.
@@ -424,7 +424,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [port], mcpProbeTimeoutMs: 200, toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     // The whole point of the manual flow: a hand-opened IDE connects exactly as
     // it does on macOS, and the plugin never tries to open it itself.
@@ -440,7 +440,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolsReadyAfter: 3 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     expect(state.mcpConfig.name).toBe('ide');
     expect(state.mcpConfig.config.type).toBe('remote');
@@ -460,19 +460,19 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolsReadyAfter: 3, executionTimeoutMs: 45000 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     expect(state.mcpConfig.config.timeout).toEqual({ execution: 45000 });
 
     await cleanup();
   });
 
-  it('rebuilds the server when /open-in-idea is run again', async () => {
+  it('rebuilds the server when /open-in-ide is run again', async () => {
     const fake = await startFakeIdeForProject();
     running = fake.server;
     const { ctx, state } = fakeCtx({ ports: [fake.port] });
     const cleanup = await plugin.setup(ctx);
-    const command = state.commands.get('open-in-idea');
+    const command = state.commands.get('open-in-ide');
 
     await command.execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     const transformsAfterFirst = state.mcp;
@@ -482,7 +482,7 @@ describe('plugin setup', () => {
 
     // The second run tears the old registration down (which is what kills the
     // bridge child) and registers a fresh one, so a zombie can never survive a
-    // re-run of /open-in-idea.
+    // re-run of /open-in-ide.
     expect(state.mcp).toBe(transformsAfterFirst + 1);
     expect(state.mcpDisposed).toBeGreaterThan(disposedAfterFirst);
     expect(state.mcpReload).toBe(2);
@@ -500,7 +500,7 @@ describe('plugin setup', () => {
     const cleanup = await plugin.setup(ctx);
     delete ctx.tool.list;
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     expect(state.prompts).toHaveLength(1);
     expect(state.prompts[0].metadata.displayText).toContain('尚未完成注册');
@@ -513,7 +513,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [1], mcpProbeTimeoutMs: 10, mcpStartTimeoutMs: 50 });
     const cleanup = await plugin.setup(ctx);
     const started = Date.now();
-    const execution = state.commands.get('open-in-idea').execute({
+    const execution = state.commands.get('open-in-ide').execute({
       sessionID: 's1',
       prompt: { text: 'idea' },
       delivery: 'steer',
@@ -538,12 +538,12 @@ describe('plugin setup', () => {
 
     expect(state.sessionHook).toBeTypeOf('function');
 
-    // Unmarked project: no IDEA prompt at all. Guidance waits for /open-in-idea.
+    // Unmarked project: no IDEA prompt at all. Guidance waits for /open-in-ide.
     const before = [];
     await state.sessionHook({ system: before });
     expect(before).toHaveLength(0);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     const request = {
       system: [],
@@ -571,7 +571,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port] });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     const request = {
       system: [],
@@ -657,7 +657,7 @@ describe('plugin setup', () => {
     await cleanupDisabled();
   });
 
-  it('activates IDE guidance after /open-in-idea when the IDE opens later', async () => {
+  it('activates IDE guidance after /open-in-ide when the IDE opens later', async () => {
     const port = await freePort();
     const { ctx, state } = fakeCtx({ ports: [port] });
     const cleanup = await plugin.setup(ctx);
@@ -672,7 +672,7 @@ describe('plugin setup', () => {
     running = fake.server;
 
     // The manual command loads capabilities and activates the guidance.
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     const after = { system: [], tools: { ide_read_file: {} } };
     await state.sessionHook(after);
@@ -687,13 +687,13 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [port], mcpStartTimeoutMs: 2000, mcpProbeTimeoutMs: 50 });
     const cleanup = await plugin.setup(ctx);
 
-    const execution = state.commands.get('open-in-idea').execute({
+    const execution = state.commands.get('open-in-ide').execute({
       sessionID: 's1',
       prompt: { text: 'idea' },
       delivery: 'steer',
     });
 
-    // The endpoint appears only after `/open-in-idea` has already launched the
+    // The endpoint appears only after `/open-in-ide` has already launched the
     // IDE, matching a cold IntelliJ start.
     await new Promise((resolve) => setTimeout(resolve, 50));
     const fake = await startFakeIdeForProject(port);
@@ -712,7 +712,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     expect(state.mcpReload).toBe(1);
 
     // Requests never touch the endpoint. The `context` hook fires for every
@@ -744,7 +744,7 @@ describe('plugin setup', () => {
     expect(state.mcpReload).toBe(1);
 
     // The latch is what makes the next message reconnect. Missing it is exactly
-    // what left the session dead until the user ran `/open-in-idea` by hand.
+    // what left the session dead until the user ran `/open-in-ide` by hand.
     await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: '继续' } });
     expect(state.mcpReload).toBe(2);
 
@@ -757,7 +757,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     // A stock IDE: the bundled MCP server only. The companion plugin
     // `idea-mcp-enhance` is not installed, so its tools are absent and the
@@ -877,7 +877,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     expect(state.toolHook).toBeTypeOf('function');
     const mcpAfterCommand = state.mcp;
 
@@ -904,7 +904,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     const afterOpen = state.mcp;
 
     // Measured against OpenCode 2.0.19 with the IDE process killed. None of the
@@ -941,7 +941,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     const mcpAfterCommand = state.mcp;
 
     // The server still reports connected, so a failed call is a business error
@@ -966,7 +966,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     const mcpAfterCommand = state.mcp;
 
     // The message of an MCP tool error is the tool's own content, so a query
@@ -991,7 +991,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolsReadyAfter: 3, openInIde: false });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     // `openInIde: false` disables auto-launch; it must not change how the IDE
     // MCP server is registered.
@@ -1017,7 +1017,7 @@ describe('plugin setup', () => {
     expect(unmarked.error.message).toBe('boom');
 
     // Marked project, but the failed tool is not an IDEA tool.
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     const mcpAfterCommand = state.mcp;
     state.mcpServers = [];
     const foreign = { tool: 'edit', sessionID: 's1', status: 'error', error: { message: 'boom' } };
@@ -1032,7 +1032,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [1], mcpProbeTimeoutMs: 10, mcpStartTimeoutMs: 50, openInIde: false });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     state.mcpServers = [];
     state.tools = [];
 
@@ -1050,14 +1050,14 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('keeps a dropped IDE down on later requests until /open-in-idea re-registers it', async () => {
+  it('keeps a dropped IDE down on later requests until /open-in-ide re-registers it', async () => {
     const port = await freePort();
     const fake = await startFakeIdeForProject(port);
     running = fake.server;
     const { ctx, state } = fakeCtx({ ports: [port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     expect(state.mcp).toBe(1);
 
     // The connection drops: OpenCode's registry drops the IDEA tools. The
@@ -1072,7 +1072,7 @@ describe('plugin setup', () => {
     // Only the manual command brings it back. The registry says the server is
     // gone, so the command replaces the registration instead of just refreshing
     // it — an unchanged config is never reconnected by OpenCode.
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     expect(state.mcp).toBe(2);
     expect(state.mcpReload).toBe(2);
     const request = { system: [], tools: { read: {}, ide_read_file: {} } };
@@ -1090,7 +1090,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     // The IDE reports "project not open" in two shapes; both must reopen it.
     // Real text captured from IDEA 2026.2.3 (see the B-scenario probe).
@@ -1117,7 +1117,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [running.address().port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     expect(state.mcp).toBe(1);
 
     openCalls.length = 0;
@@ -1153,7 +1153,7 @@ describe('plugin setup', () => {
     expect(unmarked.error.message).toBe('MCP server "idea" is not available');
 
     // Marked project, but the failed tool is not an IDEA tool.
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     const mcpAfterCommand = state.mcp;
     const foreign = {
       tool: 'edit',
@@ -1172,7 +1172,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [1], mcpProbeTimeoutMs: 10, mcpStartTimeoutMs: 50, openInIde: false });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     const event = {
       tool: 'ide_read_file',
@@ -1192,7 +1192,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [1], mcpProbeTimeoutMs: 10, mcpStartTimeoutMs: 50, openInIde: false });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     // The mark means "this is an IDEA project", so it is set as soon as the
     // user asks, whether or not the IDE was reachable this time.
@@ -1211,10 +1211,10 @@ describe('plugin setup', () => {
     const cleanup = await plugin.setup(ctx);
 
     // setup reads the mark (for skills) but does not connect by itself; the MCP
-    // is registered by `/open-in-idea` (or on a classified tool failure).
+    // is registered by `/open-in-ide` (or on a classified tool failure).
     expect(state.mcp).toBe(0);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     expect(state.mcp).toBe(1);
 
     await cleanup();
@@ -1227,7 +1227,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     expect(state.storage.get(`project/${projectPath}`)).toMatchObject(ideConfig(projectPath));
     const disposedBefore = state.mcpDisposed;
 
@@ -1276,7 +1276,7 @@ describe('plugin setup', () => {
     expect(state.storageGets).toBe(1);
 
     // The command writes through: the next failed call still needs no storage read.
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     const err = { tool: 'ide_read_file', sessionID: 's1', status: 'error', error: { message: 'File not found' } };
     await state.toolHook(err);
     expect(state.storageGets).toBe(1);
@@ -1288,7 +1288,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ openInIde: false });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     expect(state.prompts).toHaveLength(1);
     expect(state.prompts[0].metadata.displayText).toContain('已通过 openInIde: false 关闭');
@@ -1300,7 +1300,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ openInIde: false, feedback: false });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     expect(state.prompts).toHaveLength(0);
 
@@ -1317,7 +1317,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     // The IDE answered and its tools are in the catalog — so the skill is absent
     // because of the gate, not because the command did nothing.
@@ -1337,7 +1337,7 @@ describe('plugin setup', () => {
     });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     expect(state.skills.has('idea-standalone')).toBe(true);
     expect(state.skills.get('idea-standalone').content).toContain('<!-- idea-standalone:begin -->');
@@ -1364,7 +1364,7 @@ describe('plugin setup', () => {
     const cleanup = await plugin.setup(ctx);
     expect(state.skills.has('idea-standalone')).toBe(false);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     expect(state.skills.has('idea-standalone')).toBe(true);
 
     await cleanup();
@@ -1383,7 +1383,7 @@ describe('plugin setup', () => {
     });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     expect(state.skills.has('idea-standalone')).toBe(true);
 
     // The IDE drops the tool; the next request still has the bundled ones.
@@ -1409,7 +1409,7 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('registers the standalone-mode skill when /open-in-idea marks the project', async () => {
+  it('registers the standalone-mode skill when /open-in-ide marks the project', async () => {
     const fake = await startFakeIdeForProject();
     running = fake.server;
     const { ctx, state } = fakeCtx({
@@ -1421,7 +1421,7 @@ describe('plugin setup', () => {
     const cleanup = await plugin.setup(ctx);
     expect(state.skills.size).toBe(0);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     expect(state.skills.get('idea-standalone')).toBeTruthy();
 
@@ -1439,7 +1439,7 @@ describe('plugin setup', () => {
     });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     expect(state.skills.has('idea-standalone')).toBe(true);
 
     await state.commands.get('delete-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
@@ -1520,7 +1520,7 @@ describe('plugin setup', () => {
     // Exposed Tools page. Readiness follows the `ide_` prefix, so whatever the
     // catalog actually exposes is what counts. With a fixed pair of names this
     // command ended in `tools-loading` ("工具列表尚未完成注册,请稍后再次执行
-    // /open-in-idea") on every run, and re-running never helped.
+    // /open-in-ide") on every run, and re-running never helped.
     const { ctx, state } = fakeCtx({
       ports: [fake.port],
       toolRefreshTimeoutMs: 100,
@@ -1528,7 +1528,7 @@ describe('plugin setup', () => {
     });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     const feedback = state.prompts.map((entry) => entry?.text ?? '').join('\n');
     expect(feedback).toContain('IDE MCP 已连接');
@@ -1562,7 +1562,7 @@ describe('plugin setup', () => {
     state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     // The session is serving — remember it the way a real request would.
     await state.sessionHooks.context({ system: [], tools: { read: {}, ide_read_file: {} } });
 
@@ -1582,7 +1582,7 @@ describe('plugin setup', () => {
 
     // A request now arrives with no ide_* tools at all. This is the state that
     // used to do nothing: the next message was a no-op, and the session stayed
-    // dead until `/open-in-idea` was run by hand.
+    // dead until `/open-in-ide` was run by hand.
     await state.sessionHooks.context({ system: [], tools: { read: {} } });
     // Guard the setup itself: the session really was serving before the drop.
     expect(afterFailure).toBeGreaterThan(0);
@@ -1602,7 +1602,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port], mcpProbeTimeoutMs: 200, toolRefreshTimeoutMs: 200 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     // The session is serving...
     await state.sessionHooks.context({ system: [], tools: { read: {}, ide_read_file: {} } });
     const served = state.mcp;
@@ -1631,7 +1631,7 @@ describe('plugin setup', () => {
     });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     // A request that carried the tools marks this session as serving.
     await state.sessionHooks.context({ system: [], tools: { read: {}, ide_read_file: {} } });
     const afterOpen = state.mcp;
@@ -1668,11 +1668,11 @@ describe('多项目接入（root + 子项目，各自用不同 IDE）', () => {
     children: [{ path: childPath, app: 'pycharm' }],
   });
 
-  it('首次 /open-in-idea 不猜 IDE，而是让模型去问用户', async () => {
+  it('首次 /open-in-ide 不猜 IDE，而是让模型去问用户', async () => {
     const { ctx, state } = fakeCtx();
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({
+    await state.commands.get('open-in-ide').execute({
       sessionID: 's1',
       prompt: { text: '' },
       delivery: 'steer',
@@ -1696,7 +1696,7 @@ describe('多项目接入（root + 子项目，各自用不同 IDE）', () => {
     const { ctx, state } = fakeCtx();
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({
+    await state.commands.get('open-in-ide').execute({
       sessionID: 's1',
       prompt: { text: '' },
       delivery: 'steer',
@@ -1717,7 +1717,7 @@ describe('多项目接入（root + 子项目，各自用不同 IDE）', () => {
     const { ctx, state } = fakeCtx();
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({
+    await state.commands.get('open-in-ide').execute({
       sessionID: 's1',
       prompt: { text: '' },
       delivery: 'steer',
@@ -1764,7 +1764,7 @@ describe('多项目接入（root + 子项目，各自用不同 IDE）', () => {
     await cleanup();
   });
 
-  it('add-sub-module-in-ide 在没有配置时直接报错，并要求先 /open-in-idea', async () => {
+  it('add-sub-module-in-ide 在没有配置时直接报错，并要求先 /open-in-ide', async () => {
     const { ctx, state } = fakeCtx();
     const cleanup = await plugin.setup(ctx);
 
@@ -1776,7 +1776,7 @@ describe('多项目接入（root + 子项目，各自用不同 IDE）', () => {
 
     expect(state.storage.has(`project/${projectPath}`)).toBe(false);
     expect(state.mcp).toBe(0);
-    expect(state.prompts.at(-1).metadata.displayText).toContain('请先执行 /open-in-idea');
+    expect(state.prompts.at(-1).metadata.displayText).toContain('请先执行 /open-in-ide');
 
     await cleanup();
   });
@@ -1874,7 +1874,7 @@ describe('多项目接入（root + 子项目，各自用不同 IDE）', () => {
     state.storage.set(`project/${projectPath}`, twoProjects());
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({
+    await state.commands.get('open-in-ide').execute({
       sessionID: 's1',
       prompt: { text: 'idea' },
       delivery: 'steer',
@@ -1908,7 +1908,7 @@ describe('多项目接入（root + 子项目，各自用不同 IDE）', () => {
     state.storage.set(`project/${projectPath}`, twoProjects());
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({
+    await state.commands.get('open-in-ide').execute({
       sessionID: 's1',
       prompt: { text: 'idea' },
       delivery: 'steer',
@@ -1963,7 +1963,7 @@ describe('多项目接入（root + 子项目，各自用不同 IDE）', () => {
     state.storage.set(`project/${projectPath}`, twoProjects());
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-idea').execute({
+    await state.commands.get('open-in-ide').execute({
       sessionID: 's1',
       prompt: { text: 'idea' },
       delivery: 'steer',
