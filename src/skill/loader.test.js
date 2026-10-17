@@ -199,6 +199,7 @@ describe('shipped skills', () => {
       '## run configuration 一览',
       '### macOS / Linux',
       '### Windows',
+      '## 用户手动触发(线下,AI 不跑)',
     ]);
     expect(template).toContain('按操作系统分成两节');
     expect(template).toContain('判断不了就问用户');
@@ -210,7 +211,7 @@ describe('shipped skills', () => {
     const entry = '- {配置名}(项目 {前缀})';
     expect(template).toContain(entry);
     expect(template).not.toContain('| 项目 |');
-    expect(template.split(entry)).toHaveLength(3);
+    expect(template.split(entry)).toHaveLength(4);
     // The four items, in the order the block fixes them.
     for (const item of ['怎么跑', '何时跑', '跑前做', '说明']) {
       expect(template).toContain(`  - ${item}:`);
@@ -220,15 +221,27 @@ describe('shipped skills', () => {
     // usually not a configuration of their own, so those items are the only place
     // they can be written down.
     expect(template).toContain('**何时跑**');
-    // 何时跑 answers WHO may start it, and there are exactly two answers: a flow that
-    // only the user may ask for must not be launched by the model on its own; one the
-    // model may launch itself has to name the exact scenario.
-    expect(template).toContain('只由用户触发');
-    expect(template).toContain('AI 可自动触发');
-    expect(template).toContain('{只由用户触发 / AI 可自动触发}');
+    // 何时跑 names WHO may start it, and that question has three answers. Only two
+    // live in the list: a manually-started configuration is never run by the model,
+    // so it gets its own section with nothing but names.
+    for (const mode of ['用户手动触发', '用户授权触发', 'AI 自己触发']) {
+      expect(template).toContain(mode);
+    }
+    expect(template).toContain('{用户授权触发 / AI 自己触发}');
     expect(template).toContain('必须把场景写具体');
+    // The product text explains the three modes instead of listing the four items:
+    // the reader has to know when it may act, and the item names already say what
+    // they hold.
+    expect(template).toContain('谁能起它,只有三种');
+    expect(template).not.toContain('下面四项固定');
     expect(template).toContain('**跑前做**');
     expect(template).toContain('跑之前要先做的事');
+
+    // The manual section is a name list: no items at all, because nothing in it is
+    // ever launched by the model.
+    const manual = template.slice(template.indexOf('## 用户手动触发'));
+    expect(manual).toContain('- {配置名}(项目 {前缀})');
+    expect(manual).not.toContain('  - 怎么跑:');
 
     // Resident / service-like configurations belong to idea-standalone and are
     // filtered out first, so the two blocks never document the same one. The
