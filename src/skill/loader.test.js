@@ -151,6 +151,12 @@ describe('shipped skills', () => {
     expect(template).toContain('<!-- 生成提示:begin -->');
     expect(template).toContain('产物里整块删掉');
     expect(skill.content).toContain('产物里整块删掉');
+    // The split is deliberate: SKILL.md is the flow, and every rule about what to
+    // write where lives in this template's generation guidance. The skill has to
+    // say so, or a later edit will start duplicating the rules back into it.
+    expect(skill.content).toContain('都在那份模板的生成提示里');
+    expect(template).toContain('看里面的命令');
+    expect(template).toContain('它会起出重复实例');
     // The template carries metavariables; it also carries the rule that none of
     // them may survive into the produced block.
     expect(template).toContain('{...}');

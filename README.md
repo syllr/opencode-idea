@@ -330,7 +330,8 @@ loader 读的是 OpenCode 文档里的那个嵌套写法(它自己的读取器�
 1. **建**:把会重复跑的流程固化成 run configuration(判据与"先问用户"在引导文本里,skill 不重复);
 2. **建档**:过滤之后剩下的每个 run configuration 在**项目根 `AGENTS.md`** 的标记块(`<!-- idea-run-config-manager:begin -->` /
    `<!-- idea-run-config-manager:end -->`)里占一行 —— `项目 | run configuration | 干什么 | 怎么跑 | 何时跑 | 说明`。
-   骨架在 `skills/idea-run-config-manager/assets/AGENTS.template.md`,**SKILL.md 只写流程、指向模板**。
+   **SKILL.md 只有一份五步流程**(读 → 枚举 → 建 / 删 / 改 → 同步 → 核对)并指向模板,**每一列写什么、怎么枚举、怎么过滤全在模板的生成提示里**
+   (`skills/idea-run-config-manager/assets/AGENTS.template.md`),骨架与写作规范只有一处可改 —— 和 `idea-standalone` 是同一种分工。
 
 **先过滤,再建档**:**服务化的配置不进这张表** —— 它们已经登记在 `AGENTS.md` 的 `idea-standalone` 块里(端口 / 热重载也写在那里),
 所以建档第一步是读那个块、把它的表里出现过的名字记下来并排除,**剩下的**才是本表内容。两个块因此永远不重叠、不会互相矛盾。
