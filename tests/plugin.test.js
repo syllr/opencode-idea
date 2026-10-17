@@ -57,6 +57,12 @@ function ideConfig(rootPath, { app = 'idea', children = [] } = {}) {
  */
 const DEFAULT_IDE_TOOLS = ['ide_read_file', 'ide_apply_patch', 'ide_create_new_file'];
 
+/**
+ * 部署那节的标题（模板里的字面量）。整节连标题一起受 `{{#if}}` 控制，所以
+ * "这一节在不在"就认它 —— 写在一处，改标题时不会漏。
+ */
+const DEPLOYMENT_HEADING = '### 服务器文件同步';
+
 afterAll(() => rmSync(projectPath, { recursive: true, force: true }));
 
 let running;
@@ -792,6 +798,48 @@ describe('plugin setup', () => {
     // The two variants are different texts, so the second request does not get
     // deduplicated against the first one's guidance.
     expect(enhanced.system[1].text).not.toBe(stock.system[1].text);
+
+    await cleanup();
+  });
+
+  it('names the deployment tools only when the IDE actually serves them', async () => {
+    const fake = await startFakeIdeForProject();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+
+    // A stock IDE — and every Community IDE — has no deployment tools at all:
+    // they need the companion plugin AND `com.jetbrains.plugins.webDeployment`
+    // (Ultimate only). Unlike the run-configuration section, which the bundled
+    // server keeps alive, this one has to disappear along with its heading.
+    const stock = { system: [], tools: { read: {}, ide_read_file: {} } };
+    await state.sessionHook(stock);
+    expect(stock.system[1].text).not.toContain(DEPLOYMENT_HEADING);
+    expect(stock.system[1].text).not.toContain('ide_upload_to_deployment');
+
+    // Ultimate plus the companion plugin: all four tools are in the snapshot, so
+    // the section goes out with them — the rule that keeps transfers off a
+    // hand-rolled `rsync` / `scp` included.
+    const enhanced = {
+      system: [],
+      tools: {
+        read: {},
+        ide_read_file: {},
+        ide_list_deployment_servers: {},
+        ide_upload_to_deployment: {},
+        ide_download_from_deployment: {},
+        ide_get_deployment_task_status: {},
+      },
+    };
+    await state.sessionHook(enhanced);
+    expect(enhanced.system[1].text).toContain(DEPLOYMENT_HEADING);
+    expect(enhanced.system[1].text).toContain('ide_list_deployment_servers');
+    expect(enhanced.system[1].text).toContain('ide_upload_to_deployment');
+    expect(enhanced.system[1].text).toContain('ide_download_from_deployment');
+    expect(enhanced.system[1].text).toContain('ide_get_deployment_task_status');
+    expect(enhanced.system[1].text).toContain('`rsync`');
 
     await cleanup();
   });

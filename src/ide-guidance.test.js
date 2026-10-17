@@ -23,6 +23,14 @@ const CHILD = {
   isRoot: false,
 };
 
+/**
+ * 部署那节的标题 —— 模板里的字面量。
+ *
+ * 只写在这一处:它同时是"这一节在不在"的判据(整节连标题一起受 `{{#if}}` 控制),
+ * 所以断言里每处都用它,改标题时不会漏掉某一条。
+ */
+const DEPLOYMENT_HEADING = '### 服务器文件同步';
+
 /** 两个项目的会话,IDE 只提供内置工具（没装配套插件）。 */
 const stock = () => buildIdeGuidanceText([ROOT, CHILD], { tools: {} });
 
@@ -203,14 +211,18 @@ describe('看依赖实现只有一条路(javap 的坑)', () => {
     const text = stock();
     expect(text).toContain('要读任何类 / 方法 / 字段的源码,就两步');
     // 总则里也点一句,那是每条路由规则都会路过的地方。
-    expect(text).toContain('看某个类 / 方法 / 字段在哪定义、内部怎么实现的,只有一条路');
+    // ("只有一条路"这个定性后来从总则那行去掉了 —— 总则只留动因与两步走法,
+    //  禁止替代手艺的话挪进了「符号」小节,见下面那条。)
+    expect(text).toContain('**要看某个类 / 方法 / 字段在哪定义、内部怎么实现的**');
   });
 
   it('bans the javap / unzip route instead of merely offering the tool', () => {
     const text = stock();
     // 只写"我能搜符号"拦不住 `javap -c -p -cp <自己拼的 jar 路径>` —— 那是模型的默认手艺,
-    // 必须显式说"不要这样",并给出它自己的理由(副本 / 字节码清单)。
-    expect(text).toContain('不要自己拼 jar 路径用 `javap` / `unzip` / 解包去看');
+    // 必须把话说到"替代路走不通",并给出它自己的理由(副本 / 字节码清单)。
+    // 这一句 77cc21f 从总则挪进了「符号」小节,写法也从"不要用 X"换成把 X 收成"唯一的正解":
+    // 反正 javap / unzip / 解包 jar / 按 jar 路径 grep 这几条都被点名成"只有这样一条路"。
+    expect(text).toContain('也是 `javap` / `unzip` / 解包 jar / 按 jar 路径 `grep` 唯一的正解');
     expect(text).toContain('编译时真正用的依赖');
     expect(text).toContain('另一份副本');
     expect(text).toContain('反编译源码');
@@ -313,6 +325,135 @@ describe('run-lifecycle 能力', () => {
     });
     expect(text).toContain('**改完代码重启无热重载的进程**');
     expect(text).toContain('`modelserver_rerun_run_configuration`');
+  });
+});
+
+describe('部署能力', () => {
+  it('leaves the whole section out for a stock IDE', () => {
+    // 这一组整节都只由配套插件提供(run-lifecycle 那节还有内置的 get/execute 撑着),
+    // 所以工具不在时**标题也要消失** —— 留个空壳标题只会让模型去找一个不存在的工具。
+    // 判据锚在 `list_deployment_servers` 上:配套插件装了,这一组就一起出现在工具表里。
+    const text = stock();
+    expect(text).not.toContain(DEPLOYMENT_HEADING);
+    for (const suffix of [
+      'list_deployment_servers',
+      'upload_to_deployment',
+      'download_from_deployment',
+      'get_deployment_task_status',
+    ]) {
+      expect(text).not.toContain(suffix);
+    }
+  });
+
+  it('anchors the whole section on the one tool it names first', () => {
+    // 锚点是一个工具,不是"四个里任一个"的聚合判断:锚点缺席 = 这一组就没装进来,整节
+    // (含标题)不出现。所以缺锚点、只多出别的几个时,整节也不出现 —— 这是刻意的,
+    // 因为这四个由同一道前提注册、同进同出。
+    const text = buildIdeGuidanceText([ROOT], {
+      tools: { 'ide_upload_to_deployment': {}, 'ide_get_deployment_task_status': {} },
+    });
+    expect(text).not.toContain(DEPLOYMENT_HEADING);
+    expect(text).not.toContain('`ide_upload_to_deployment`');
+  });
+
+  it('lists them once the companion plugin serves them, per project prefix', () => {
+    const tools = {
+      'ide_list_deployment_servers': {},
+      'modelserver_list_deployment_servers': {},
+      'ide_upload_to_deployment': {},
+      'ide_download_from_deployment': {},
+      'ide_get_deployment_task_status': {},
+    };
+    const text = buildIdeGuidanceText([ROOT, CHILD], { tools });
+    expect(text).toContain(DEPLOYMENT_HEADING);
+    expect(text).toContain(
+      '根项目 `ide_list_deployment_servers` ｜ modelserver `modelserver_list_deployment_servers`',
+    );
+    expect(text).toContain('`ide_upload_to_deployment`');
+    expect(text).toContain('`ide_download_from_deployment`');
+    expect(text).toContain('`ide_get_deployment_task_status`');
+  });
+
+  it('keeps upload and download off hand-rolled ssh / rsync / scp', () => {
+    // 这条才是这节存在的理由:自己拼一份传输与 IDE 看到、管理的不是同一份
+    // (连接、路径映射、排除规则都在插件后面),而 IDE 的那份正是用户配置出来的。
+    const text = buildIdeGuidanceText([ROOT], {
+      tools: {
+        'ide_list_deployment_servers': {},
+        'ide_upload_to_deployment': {},
+        'ide_download_from_deployment': {},
+      },
+    });
+    expect(text).toContain('**别用 `ssh` / `rsync` / `scp` 自己拼一份**');
+    // mirror 的破坏性必须在文案里明说 —— 它是默认值,而且这里没有确认步骤。
+    expect(text).toContain('`mode` 默认 `mirror`');
+    expect(text).toContain('**会删掉服务器上多出来的文件**');
+    // 下载以远端为准,没有"保留我的版本";不写清楚,模型会以为那是可选项。
+    expect(text).toContain('**以服务器为准**');
+    expect(text).toContain('**没有"保留我的版本"这个选项**');
+  });
+
+  it('teaches that in_progress is normal, and how to follow it up', () => {
+    // 单次调用只等到 waitMs;把它读成失败就会让模型重试 —— 那要么是白等,
+    // 要么是另起一次传输。查进度只有 handle 这一条路。
+    const text = buildIdeGuidanceText([ROOT], {
+      tools: {
+        'ide_list_deployment_servers': {},
+        'ide_get_deployment_task_status': {},
+        'ide_upload_to_deployment': {},
+      },
+    });
+    expect(text).toContain('返回 `in_progress` 是**正常**的,不是失败');
+    expect(text).toContain('**别用重复调上传 / 下载代替**');
+    expect(text).toContain('**它自己不启动任何传输**');
+  });
+
+  it('names each tool only when that tool is in the snapshot', () => {
+    // 锚点在,但其余几个不在(旧版配套插件少给几个):只写真的有的那几条,
+    // 绝不点名一个模型调不到的工具 —— 逐条判断是这个模块对配套插件的一贯态度。
+    const text = buildIdeGuidanceText([ROOT], {
+      tools: { 'ide_list_deployment_servers': {} },
+    });
+    expect(text).toContain(DEPLOYMENT_HEADING);
+    expect(text).toContain('`ide_list_deployment_servers`');
+    expect(text).not.toContain('`ide_upload_to_deployment`');
+    expect(text).not.toContain('`ide_download_from_deployment`');
+    expect(text).not.toContain('`ide_get_deployment_task_status`');
+    // 段落之间不留空行就没了 markdown 结构,所以首条 bullet 无论由哪一行给出都得跟段落隔开。
+    expect(text).toContain('不是 IDE 在管的那一份。\n\n- 根项目 `ide_list_deployment_servers`');
+  });
+
+  it('does not turn a run-lifecycle tool into a deployment section', () => {
+    const text = buildIdeGuidanceText([ROOT], {
+      tools: { 'ide_rerun_run_configuration': {} },
+    });
+    expect(text).not.toContain(DEPLOYMENT_HEADING);
+  });
+
+  it('lists only the projects that actually carry each companion-plugin tool', () => {
+    // 这是这一组最要紧的形状:前置条件**按项目、按 IDE** 不同(装没装配套插件;部署那组还要求 Ultimate),
+    // 所以"根项目在 IDEA Ultimate、子项目在 PyCharm Community"这种组合下,某个工具可能只有一边有。
+    // 列全就会在缺工具的那一边点名一个调不到的命令 —— 而这正是整个模块要防的失败。
+    const text = buildIdeGuidanceText([ROOT, CHILD], {
+      tools: {
+        'modelserver_list_deployment_servers': {},
+        'modelserver_upload_to_deployment': {},
+        'ide_rerun_run_configuration': {},
+      },
+    });
+    expect(text).toContain('- modelserver `modelserver_upload_to_deployment`');
+    expect(text).not.toContain('`ide_upload_to_deployment`');
+    expect(text).toContain('- 根项目 `ide_rerun_run_configuration`');
+    expect(text).not.toContain('`modelserver_rerun_run_configuration`');
+  });
+
+  it('keeps listing every project for the tools the IDE always serves', () => {
+    // 只有配套插件那张表需要逐项目核对:内置工具每个项目都有一份,不能因为快照里没有就漏列
+    // (快照是本次请求的工具表,而内置工具本来就该全在)。
+    const text = buildIdeGuidanceText([ROOT, CHILD], { tools: {} });
+    expect(text).toContain(
+      '根项目 `ide_search_symbol` ｜ modelserver `modelserver_search_symbol`',
+    );
   });
 });
 

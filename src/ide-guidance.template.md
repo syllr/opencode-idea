@@ -129,6 +129,29 @@
 - {{cmd_rerun_run_configuration}}
   **改完代码重启无热重载的进程**:在跑就重启、没在跑就启动;读 `started` 判断新进程是否真的起来了。不要用 `pkill` / `kill` / `shell` 代替。
 {{/if}}
+{{#if canListDeploymentServers}}
+
+### 服务器文件同步
+
+往服务器传文件 / 从服务器取文件,走这一组 —— **别用 `ssh` / `rsync` / `scp` 自己拼一份**:IDE 的连接、路径映射、排除规则都在它们后面,自己拼的不是 IDE 在管的那一份。
+
+- {{cmd_list_deployment_servers}}
+  **本项目能用的部署服务器**:名称(后面几条用它当 `serverName`)、项目级还是应用级、协议、host / port、在本项目里的路径映射,以及**项目级**的部署选项与危险组合告警。**只读 IDE 配置、不联网**;动手前先看 `warnings[]`。
+{{#if canUploadToDeployment}}
+- {{cmd_upload_to_deployment}}
+  **把映射到的本地目录传到服务器**(等同 IDE 的 Upload to …)。`mode` 默认 `mirror` —— **会删掉服务器上多出来的文件**,使两边一致;要留住它们就传 `upload`。**破坏性操作**。
+{{/if}}
+{{#if canDownloadFromDeployment}}
+- {{cmd_download_from_deployment}}
+  **把服务器上映射目录的内容拉回本地**(等同 IDE 的 Download from …),**以服务器为准**:两边都有的文件会被远端覆盖(内容相同则不写)。**没有"保留我的版本"这个选项**。
+{{/if}}
+{{#if canGetDeploymentTaskStatus}}
+- {{cmd_get_deployment_task_status}}
+  **查一次传输的状态**:`handle` 用上传 / 下载返回的那个 —— **它自己不启动任何传输**。
+{{/if}}
+
+上传 / 下载都在 IDE 后台跑,单次调用只等到 `waitMs`(默认 10 秒)为止;返回 `in_progress` 是**正常**的,不是失败 —— 拿 `handle` 去查进度,**别用重复调上传 / 下载代替**(那样拿不到进度)。
+{{/if}}
 
 ## 命令执行(所有项目通用)
 

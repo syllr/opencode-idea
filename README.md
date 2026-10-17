@@ -162,6 +162,8 @@ IDE MCP 可用时,插件通过 **系统提示注入**告诉模型**哪些事该�
      - 重构/格式化 → `ide_rename_refactoring` / `ide_reformat_file`
      - 校验 → `ide_lint_files` / `ide_get_file_problems` / `ide_build_project`
      - 运行配置 → `ide_get_run_configurations` / `ide_execute_run_configuration`(+ 配套插件的启停工具)
+     - 部署(**仅配套插件 + Ultimate**)→ `ide_list_deployment_servers` / `ide_upload_to_deployment` /
+       `ide_download_from_deployment` / `ide_get_deployment_task_status`
    - **读、写、找文本、找文件用原生工具**(`read` / `write` / `edit` / `grep` / `glob`)—— 这几件事走 IDE 只是多一跳,
      所以映射表里**不出现** `ide_search_text` / `ide_search_regex` / `ide_search_file` / `ide_apply_patch` /
      `ide_create_new_file`,也不再禁止它们的原生对应物。
@@ -200,9 +202,18 @@ IDE MCP 可用时,插件通过 **系统提示注入**告诉模型**哪些事该�
 引导只在 **IDE MCP 可用**时生效;MCP 不可用时仅保留 fast-fail 恢复提示。`injectGuidance: false` 可关闭系统提示注入。
 
 **条件注入**:映射表里只有内置 MCP Server 自带的那批工具是「永远写死」的。如果 IDE 里另外装了配套的
-[`idea-mcp-enhance`](https://github.com/syllr/idea-mcp-enhance) 插件,它提供的 run configuration 启停工具也会被加进
-下面的「运行配置」段。判据是**这次请求的工具快照里真的有这些工具** —— 没装的 IDE 上这段一个字都不会出现,模型不会去调
-一个不存在的工具。
+[`idea-mcp-enhance`](https://github.com/syllr/idea-mcp-enhance) 插件,它提供的**两组**工具会各自被加进下面的段落 ——
+run configuration 的启停工具进「运行配置」段,部署工具进「服务器文件同步」段。判据都是**这次请求的工具快照里真的有这些工具**:
+装不上的 IDE 上对应内容一个字都不会出现,模型不会去调一个不存在的工具。
+
+两组的前提不同,所以是两组、两条独立的判据:启停工具只要有配套插件就有;部署工具**还要求
+`com.jetbrains.plugins.webDeployment`(FTP/SFTP/WebDAV Connectivity)—— 它只在 Ultimate 里存在**。
+用一个布尔覆盖两者,部署工具就会替"启停工具在不在"作答。
+
+**逐项目核对到命令名一级**:配套插件的工具是**按项目分别存在**的,所以每条工具后面列出的命令名只包含
+**真的提供它**的那些项目(`src/ide-guidance.js` 的 `ENHANCE_SUFFIXES` + `servesTool`)——
+"根项目在 IDEA Ultimate、子项目在 PyCharm Community"时,部署那几条只会写根项目的命令名,不会顺手把子项目也写上去。
+内置工具不受影响:它们每个项目都有一份,照旧全部列出。
 
 ## 工具参数 (schema 收敛 + `execute.before`)
 
@@ -269,7 +280,8 @@ opencode-idea 对这一组工具做三件事:
      (它的门就是这个工具),所以引导里顺手把这一点说明了,免得以后有人把它当成漏写而"补"上一句调不到的指令。**没装插件时绝不会提到那个工具。**
 3. **工具名清单**写在 `src/mcp/enhance.js`(与原生 IDE 的 `src/mcp/idea.js` 分开放:原生走原生,插件的走插件的),
    与该仓库的 `RunLifecycleSchemas.kt` 保持同步。工具按**存在的子集**逐个点名(而不是「有就全写」),这样旧版本的配套
-   插件少给一两个工具时,引导也不会提到它们。
+   插件少给一两个工具时,引导也不会提到它们。同理,**每条命令名只列真的提供它的项目**(逐项目核对,见「条件注入」)——
+   一个项目装了配套插件、另一个没装是可能的。
 
 > 没装 `idea-mcp-enhance` 的 IDE 一切照旧:工具不存在,引导也不提,模型继续按原来的方式工作。
 
@@ -404,6 +416,44 @@ loader 读的是 OpenCode 文档里的那个嵌套写法(它自己的读取器�
 skill 照常注册,但**不进模型的可选列表**,模型不会自己挑上它,只有用户显式指定(`@idea-run-config-manager`)才会加载。
 理由是它**直接动手改项目文件与项目资产**:`.run/*.run.xml` 与 `AGENTS.md` 都由用户自己按这个 skill 的流程来改,模型不主动挑上它。
 「该不该建」的时机判断仍在引导文本的判据里(那是模型该管的事),**动手权**留给人。
+
+## Deployment 全套 (配套插件 `idea-mcp-enhance`)
+
+IDE 内置的 MCP Server **完全不碰部署** —— 既不报 IDE 里配了哪些 Deployment 服务器,也不能把文件传上去 / 拉下来。
+配套插件 [`idea-mcp-enhance`](https://github.com/syllr/idea-mcp-enhance)(IDEA 2026.2+,另装)补齐这四个:
+
+| 工具 (OpenCode 里叫 `ide_*`)     | 作用                                                                                                                                                       |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ide_list_deployment_servers`    | 本项目可用的服务器(名称 / 项目级还是应用级 / 协议 / host / port / **本项目里的路径映射**),以及**项目级**的部署选项与危险组合告警。**只读 IDE 配置,不联网** |
+| `ide_upload_to_deployment`       | 把映射到的**本地目录**传到服务器(等同 IDE 的 Upload to …)。`mode` 默认 `mirror` —— **会删掉服务器上多出来的文件**;`upload` 则保留远端多余文件。**破坏性**  |
+| `ide_download_from_deployment`   | 把服务器上映射目录的内容拉回本地(等同 IDE 的 Download from …),**以服务器为准**:两边都有的文件被远端覆盖(相同则不写)。**没有"保留我的版本"这个选项**        |
+| `ide_get_deployment_task_status` | 用 `handle` 查一次传输的状态与计数;**永不启动任何传输**                                                                                                    |
+
+opencode-idea 对它做三件事,和上面那组是同一套:
+
+1. **透传** —— 工具目录整体转发(见「按能力选工具」),所以四个工具自动以 `ide_*` 出现在模型的工具表里;
+2. **条件引导** —— 只有这次请求的工具快照里真的有它们,才出现「服务器文件同步」这一节。**这一节整节(含标题)都由配套插件提供**,
+   所以一个工具都没有时它**完全消失** —— 不能像「运行配置」那样留一个空标题(那一节还有内置的 `get_run_configurations` /
+   `execute_run_configuration` 撑着)。整节**锚在一个工具上**(模板里 `{{#if canListDeploymentServers}}` 直接包住标题):
+   这四个由同一道前提注册、同进同出,拿其中一个当判据就够,不需要再造一个"四个里任一个"的聚合标志。触发条件也因此比
+   上面那组更严:部署工具**还要求 `com.jetbrains.plugins.webDeployment`**,而它只在 **Ultimate** 里存在,
+   所以 Community IDE 上这一节永远不出现;
+3. **工具名清单**写在 `src/mcp/enhance.js`(`DEPLOYMENT_SUFFIXES` + `deploymentCapabilities`),与该仓库的
+   `DeploymentSchemas.kt` 保持同步。**四个工具逐个点名**(而不是"有就全写"),而且每条命令名只列**真的提供它**的项目
+   (见「条件注入」的逐项目核对):它们通常同进同出(同一道插件前提),但"通常"不是"总是" —— 点名一个模型调不到的工具
+   就是一次注定失败的调用。
+
+这节存在的理由是**一条路由规则**:往服务器传 / 取文件要走这些工具,**不要自己拼 `ssh` / `rsync` / `scp`** ——
+IDE 的连接、路径映射、排除规则都在它后面,自己拼的那份与 IDE 看到、管理的不是同一份。文案里同时点明两件容易读错的事:
+`mirror` 是**默认值**且**会删远端文件**(而 MCP 路径上没有确认步骤),下载**以远端为准**、没有"保留我的版本"。
+
+还有一个语义必须写明,否则模型会把正常的中间态当失败去重试:上传 / 下载都在 IDE 后台跑,单次调用只等到 `waitMs`
+(默认 10 秒)为止,返回 `state: "in_progress"` 是**正常**的 —— 拿 `handle` 调 `get_deployment_task_status` 接着看,
+**不要用重复调上传 / 下载来代替**(那样拿不到进度)。
+
+> **这一组没有 skill,和 run configuration 不同。** run configuration 要 skill 是因为"某种类型怎么写"是一批得逐类型实测的
+> 模板(`assets/types/`);部署没有这层知识 —— 四个工具的 schema 已经说清 `serverName` / `mode` 怎么填,而"该不该传、传给谁"
+> 是模型当场看 `list_deployment_servers` 的判断。再加一个 skill 只是把同一段话抄第二遍。
 
 ## 项目命令执行 (Run Configuration)
 
@@ -583,6 +633,11 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
   实测数字(拿运行中的 IDE MCP 拉 `tools/list`,单个项目):IDE 暴露 **64** 个 → 隐藏 48 → **模型可见 16 个**,
   而且这 16 个**恰好等于引导里点名的 16 个** —— 没有"能看见但没人告诉它用途"的残留。多项目就是 N × 16:
   暴露面完全由插件决定,不需要 OpenCode 提供任何白名单能力,也不需要惰性注册。
+
+- **部署工具只在 Ultimate 上出现**:`ide_list_deployment_servers` / `ide_upload_to_deployment` /
+  `ide_download_from_deployment` / `ide_get_deployment_task_status` 来自配套插件(`idea-mcp-enhance`),而且额外要求
+  `com.jetbrains.plugins.webDeployment`(**仅 Ultimate 有**)—— 少了任何一个前提,四个工具都不在,引导里的「服务器文件同步」一节
+  也整节消失,模型照旧用原生手段处理文件传输。详见「Deployment 全套」。
 
 - **端口是产品常量,不开放配置**:IDEA 的 MCP 在 **64342**,PyCharm 在 **64462**(`src/ide-projects.js` 的 `IDE_PORTS`),
   跨版本不变。所以"探哪个端口"由项目的 IDE 唯一决定,不需要扫描候选端口,也不需要用户填任何东西。
