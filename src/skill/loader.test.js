@@ -52,11 +52,11 @@ describe('shipped skills', () => {
     expect(manager).toContain('交给用户');
   });
 
-  it('records the manager conclusions as its own marked block', () => {
-    // Same shape as idea-standalone, different subject: this block is the memory
-    // of "which flows are already solidified here", so the next session reuses a
-    // configuration instead of re-asking the same question. It has to state the
-    // ownership of that block too, or an update would trample its neighbours.
+  it('records the project catalog as its own marked block', () => {
+    // Same shape as idea-standalone, different subject: this block is the
+    // catalog — one line per configuration, so the next session finds an existing
+    // one instead of building a duplicate. It has to state the ownership of that
+    // block too, or an update would trample its neighbours.
     const skill = readSkill('idea-run-config-manager');
     expect(skill.content).toContain('项目根 `AGENTS.md`');
     expect(skill.content).toContain('<!-- idea-run-config-manager:begin -->');
@@ -66,7 +66,18 @@ describe('shipped skills', () => {
     expect(skill.content).toContain('assets/AGENTS.template.md');
   });
 
-  it('keeps the manager template to non-resident flows', () => {
+  it('syncs the catalog on every change, whoever made it', () => {
+    // The point of the block is that it matches the project. A configuration
+    // created, removed or edited — by the model or by the user in the IDE — must
+    // land in the table in the same breath, or the table starts lying to whoever
+    // reads it next.
+    const content = readSkill('idea-run-config-manager').content;
+    expect(content).toContain('联动是硬要求');
+    expect(content).toContain('加行 / 删行 / 改行');
+    expect(content).toContain('无论那次改动是谁做的');
+  });
+
+  it('keeps the manager template to one configuration table', () => {
     const skill = readSkill('idea-run-config-manager');
     const template = readFileSync(path.join(path.dirname(skill.path), 'assets/AGENTS.template.md'), 'utf8');
 
@@ -75,16 +86,17 @@ describe('shipped skills', () => {
     expect(template.trimEnd().endsWith('<!-- idea-run-config-manager:end -->')).toBe(true);
 
     const headings = template.split('\n').filter((line) => /^#{1,6} /.test(line));
-    expect(headings).toEqual([
-      '# run configuration 管理纪律',
-      '## 一、已固化的固定流程',
-      '## 二、这些配置怎么跑 / 停 / 重启',
-    ]);
+    expect(headings).toEqual(['# run configuration 档案', '## run configuration 一览']);
 
-    // The app table belongs to idea-standalone: listing resident apps here too
-    // would leave two blocks disagreeing about how the same app starts.
+    // One row answers the only question the catalog is for: what is this
+    // configuration, and how do I run it.
+    expect(template).toContain('| run configuration | 干什么 | 怎么跑 | 何时跑 | 说明 |');
+
+    // The app table (ports, hot reload) belongs to idea-standalone: listing
+    // resident apps here too would leave two blocks disagreeing about how the
+    // same app starts, so this one points at it instead.
     expect(template).not.toContain('| 应用 | run configuration | 目录 | 端口 | 启动前流程 | 说明 |');
-    expect(template).toContain('长驻应用不写在这里');
+    expect(template).toContain('归 `idea-standalone` 的表');
 
     // Per-section guidance lives in the template, and the instructions for the
     // generating step must not survive into the produced block.
@@ -103,7 +115,7 @@ describe('shipped skills', () => {
     // own, or a hand-written `.run/*.run.xml`, for a configuration.
     const content = readSkill('idea-run-config-manager').content;
     expect(content).toContain('直接调用,不传任何参数');
-    expect(content).toContain('唯一来源');
+    expect(content).toContain('枚举以 `<前缀>_get_run_configurations` 为准');
     expect(content).toContain('不要手搓启动命令');
     expect(content).toContain('手写');
   });

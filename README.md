@@ -306,26 +306,22 @@ loader 消费、**不会进入注册给 OpenCode 的定义**),由 `src/skill/loa
 事实一律先查后写:配置名来自 `ide_get_run_configurations`,热重载列来自运行方式,端口读不到就问用户 —— 不猜。
 **只动自己的标记块**:根 `AGENTS.md` 是共享文件(`project-scaffold` 的宪法、项目自己的内容都在里面),标记之外一字不改。
 
-## run configuration 管理 (skill)
+## run configuration 档案 (skill)
 
-"本项目有哪些 run configuration、各自干什么、怎么跑"这份**项目级结论**由 `idea-run-config-manager` skill 固化:同样写进**项目根 `AGENTS.md`**
-的**标记块**(`<!-- idea-run-config-manager:begin -->` / `<!-- idea-run-config-manager:end -->`),骨架在
-`skills/idea-run-config-manager/assets/AGENTS.template.md`,**SKILL.md 只写流程、指向模板**,不重复骨架。两段固定 ——
+`idea-run-config-manager` skill 管的是**配置本身 + 一份配置档案**,两件事:
 
-1. **已固化的固定流程**:一行一个**非长驻**流程(迁移 / 同步 DDL / 生成代码 / 打包 / 装依赖 / 清洗数据),
-   列 `流程 | run configuration | 何时跑 | 怎么跑 | 说明`;配置名必须能在 `ide_get_run_configurations` 里查到,**缺配置就交给用户**;
-   末尾可选一行"明确不固化的",记用户的决定,免得下次又问一遍;
-2. **这些配置怎么跑 / 停 / 重启**:一次性 Job(跑完即退)→ `ide_execute_run_configuration`;长驻进程 → `ide_rerun_run_configuration`
-   (不分辨启动还是重启);**停** → `ide_stop_run_configuration` 停掉全部实例;**不要 `kill` / `pkill`**(外部杀掉的进程 IDE 不知道,
-   Run 窗口仍显示运行中,下次启动就撞端口);停 / 重启前后先用 `ide_list_running_configurations` 看真实状态。
+1. **建**:把会重复跑的流程固化成 run configuration(判据与"先问用户"在引导文本里,skill 不重复);
+2. **建档**:项目里每个 run configuration 在**项目根 `AGENTS.md`** 的标记块(`<!-- idea-run-config-manager:begin -->` /
+   `<!-- idea-run-config-manager:end -->`)里占一行 —— `run configuration | 干什么 | 怎么跑 | 何时跑 | 说明`。
+   骨架在 `skills/idea-run-config-manager/assets/AGENTS.template.md`,**SKILL.md 只写流程、指向模板**。
 
-**它管的不是"某条命令怎么跑",而是"哪些命令值得落盘成配置"** —— 判据只有一条:**这件事以后会不会以同样的形态再发生**。
-**会** → 该固化,而且模型必须**主动**向用户提议(把配置名 / 实际命令 / 工作目录 / 理由摊开),同意才建;
-**不会** → 就用原生 `shell` 就地跑完,不建配置(`shell` 用完不留痕,配置是落盘成 `.run/<name>.run.xml` 供反复用)。
-另一半是**防泛滥**:建前先查已有配置、有同类就复用,不按参数 / 环境 / 文件拆配置(变化的入参走单次覆盖)。
+这张表的用途是**能被下次读到**:要办同类事情时先查它,有现成的就用,不再重复建 —— 所以**联动是硬要求**:配置被**新建 / 删除 / 修改**
+(无论谁做的:工具建的、用户在 IDEA 里建的、用户删掉的)都要在文档里同步**加行 / 删行 / 改行**,否则表就开始骗人。
 
-**两块各管一半,不互相抄**:长驻应用的启动入口 / 端口 / 热重载属于 `idea-standalone` 的块,固定流程与配置的启停方式属于本块 ——
-两边的模板都写明了这条边界,免得同一个应用在两个块里各写一份、彼此矛盾。
+- 枚举以 `ide_get_run_configurations` 为准(含存在 `.idea/` 里的那些,单翻 `.run/` 看不到);要看某个配置真正跑什么命令,读它的落地文件
+  `.run/<name>.run.xml`;
+- **删除 / 修改配置本身没有工具** → 交给用户,AI 只负责把文档同步(手写 / 手改 `.run/*.run.xml` 始终是禁区:写错 `type` IDE 会静默忽略整个文件);
+- 与 `idea-standalone` 的分工:长驻应用的**端口 / 热重载**归那张表,这张表回答"它是干什么的、怎么跑"。
 
 **它比 `idea-standalone` 多一道门**:frontmatter 里 `requires: create_shell_run_configuration` —— 它绕着"新建配置"这件事写,而新建只有
 配套插件 `idea-mcp-enhance` 能做,所以**没装插件的 IDE 看不到它**(`idea-standalone` 只要 `rerun_run_configuration`,门更松)。这是刻意的:
