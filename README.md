@@ -262,16 +262,20 @@ opencode-idea 对这一组工具做三件事:
 
 所以插件的立场是:
 
-- **配置一律不由 AI 动手** —— 不手写 `.run/*.run.xml`,也不手搓启动命令。这条无条件;
-- **Shell 类型**且装了配套插件 → 用 `ide_create_shell_run_configuration`(新建是项目资产:**会重复发生的流程才建**,且**必须先征得用户同意**);
-- **非 Shell 类型、删除、修改** → 工具根本没有。但这些事**不再散着说"让用户自己去 IDE 里搞"**,而是统一指向
-  `idea-run-config-manager` skill:**让用户调那个 skill**(`@idea-run-config-manager`)—— 它是本项目 run configuration 增 / 删 / 改的
-  唯一流程入口,而且**只能由用户触发**。所以别处的措辞是"交给用户 → 让他调那个 skill",skill 里才是最后那步"由你在 IDE 里动手";
-- **没装配套插件** → 那个 skill 也不存在(它的门就是这个工具),此时才直接请用户自己在 IDE 里建。
+- **配置由 AI 动手,但只在一个地方、按模板动手** —— `.run/*.run.xml` 只有 `idea-run-config-manager` skill 会写,而且照
+  `skills/idea-run-config-manager/assets/types/` 里那个类型的模板写;**平时**(引导文本里)仍然禁止随手手写配置、或用一条裸命令代替配置;
+- **Shell 类型**且装了配套插件 → 新建用 `ide_create_shell_run_configuration`(新建是项目资产:**会重复发生的流程才建**,且**必须先征得用户同意**);
+- **有类型模板的其它类型**(Maven / Gradle / npm / Python / Go Build / Node.js)→ 直接写 `.run/<名字>.run.xml`;
+  **改和删**对所有类型都是直接编辑 / 删掉那个文件;
+- **没有模板的类型**(Application、JAR 以及 JUnit / Docker / Spring Boot / Flyway …)→ **交给用户在 IDE 里配**,skill 只负责把档案补上;
+- 无论哪条路,**写完都要用 `get_run_configurations` 复查** —— `type` 写错 IDE 会静默忽略整个文件,这是唯一的判据;
+- 这些事**不再散着说"让用户自己去 IDE 里搞"**,而是统一指向那个 skill:**让用户调它**(`@idea-run-config-manager`)—— 它是本项目 run
+  configuration 增 / 删 / 改的唯一流程入口,**只能由用户触发**(理由见下面的「而且只能用户调」);
+- **没装配套插件** → 那个 skill 也不存在(它的门就是 create 工具),此时才直接请用户自己在 IDE 里建。
 
-> **曾经有一个 `idea-run-config` skill 教模型手写 `.run/*.run.xml`,已经删掉。** 理由:手写那条路很脆 —— `type` 写错 IDE 会
-> **静默忽略整个文件、日志里也不报**,模型的唯一判据只有"`ide_get_run_configurations` 里看不看得到";而它想补的"新建"能力现在
-> 由配套插件提供。要配置但没有工具,就**交给用户**,比让模型猜 option 名可靠。
+> **曾经有一个 `idea-run-config` skill 教模型凭记忆手写 `.run/*.run.xml`,已经删掉。** 理由不是"不许写",而是**不许凭空写**:`type` 写错 IDE 会
+> **静默忽略整个文件、日志里也不报**,凭记忆猜 option 名就是这么错的。现在这件事由 `idea-run-config-manager` 接手 —— 但**每个类型都得有一份实测模板**
+> (`assets/types/`,字段名全部来自真实文件),没模板的类型宁可交给用户。
 
 **skill 的生命周期跟随两道门,缺一不可**:
 
@@ -323,18 +327,40 @@ loader 读的是 OpenCode 文档里的那个嵌套写法(它自己的读取器�
 事实一律先查后写:配置名来自 `ide_get_run_configurations`,热重载列来自运行方式,端口读不到就问用户 —— 不猜。
 **只动自己的标记块**:根 `AGENTS.md` 是共享文件(`project-scaffold` 的宪法、项目自己的内容都在里面),标记之外一字不改。
 
-## run configuration 档案 (skill)
+## run configuration 增删改 + 档案 (skill)
 
-`idea-run-config-manager` skill 管的是**配置本身 + 一份配置档案**,两件事:
+`idea-run-config-manager` skill 做三件事:
 
-1. **建**:把会重复跑的流程固化成 run configuration(判据与"先问用户"在引导文本里,skill 不重复);
+1. **建 / 改 / 删**(直接动手):Shell 类型走 `ide_create_shell_run_configuration`,其余类型直接写 / 改 / 删 `.run/<名字>.run.xml`,
+   **每种类型照自己的模板写**,写完用 `get_run_configurations` 复查;
 2. **建档**:过滤之后剩下的每个 run configuration 在**项目根 `AGENTS.md`** 的标记块(`<!-- idea-run-config-manager:begin -->` /
-   `<!-- idea-run-config-manager:end -->`)里占一行 —— `项目 | run configuration | 干什么 | 怎么跑 | 何时跑 | 说明`。
-   **SKILL.md 只有一份五步流程**(读 → 枚举 → 建 / 删 / 改 → 同步 → 核对)并指向模板,**每一列写什么、怎么枚举、怎么过滤全在模板的生成提示里**
-   (`skills/idea-run-config-manager/assets/AGENTS.template.md`),骨架与写作规范只有一处可改 —— 和 `idea-standalone` 是同一种分工。
+   `<!-- idea-run-config-manager:end -->`)里占一行 —— `项目 | run configuration | 干什么 | 怎么跑 | 何时跑 | 说明`;
+3. **过滤**:服务化(长驻应用)的配置归 `idea-standalone` 的块,这里先读那个块把它排除,**两个块永不重叠**。
+
+**SKILL.md 只有一份五步流程**(读 → 枚举 → 建 / 删 / 改 → 同步 → 核对)并指向两份模板,自己不带规矩:
+
+| 模板                                                       | 装什么                                                                                                                                        |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `skills/idea-run-config-manager/assets/types/`             | **一个类型一份**:`README.md` 是支持矩阵 + 通用契约(落地位置、信封、复查、`type` 写错=静默忽略);`<类型>.md` 是那个类型的实测样本 + 字段表 + 坑 |
+| `skills/idea-run-config-manager/assets/AGENTS.template.md` | 产物(档案)的骨架:表格列、每一列写什么、枚举与过滤的要求,都在它的生成提示里                                                                    |
+
+**支持矩阵(7 份已落、2 份待实物)**:
+
+| 类型                                     | `type` id                                                                                                                               | 验证                                                  |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Shell Script                             | `ShConfigurationType`                                                                                                                   | ✅ 本机 6 例(含 Windows)                              |
+| Maven / Gradle / npm / Python / Go Build | `MavenRunConfiguration` / `GradleRunConfiguration` / `js.build_tools.npm` / `PythonConfigurationType` / `GoApplicationRunConfiguration` | ✅ 实物                                               |
+| Node.js                                  | `NodeJSConfigurationType`                                                                                                               | ⚠️ 三个属性已验证,其余字段未验证                      |
+| Application / JAR                        | `Application` / `JarApplication`                                                                                                        | ⏳ type 已验证,**字段层无实物 → 暂不写模板,交给用户** |
+
+矩阵之外(JUnit / TestNG / Kotlin / Docker / Spring Boot / Tomcat / Flyway / Liquibase / HTTP Request …)一律**没有模板** → 交给用户在 IDE 里配。
+
+**给某个类型补模板的流程**:在 IDE 里建一个最简配置 → 勾 Store as project file → 读生成的 `.run/*.run.xml` 照抄结构 → 标清哪些字段实测 →
+把矩阵里那个类型从 ⏳ 改成 ✅。**每个字段名都来自真实文件,不靠猜** —— `js.build_tools.npm`(属性 + 自定义元素)、`ShConfigurationType`
+(`<option>` 子元素)、`NodeJSConfigurationType`(全属性)三种写法并存,套错就是静默失效。
 
 **先过滤,再建档**:**服务化的配置不进这张表** —— 它们已经登记在 `AGENTS.md` 的 `idea-standalone` 块里(端口 / 热重载也写在那里),
-所以建档第一步是读那个块、把它的表里出现过的名字记下来并排除,**剩下的**才是本表内容。两个块因此永远不重叠、不会互相矛盾。
+所以建档第一步是读那个块、把它的表里出现过的名字记下来并排除,**剩下的**才是本表内容。
 
 这张表**以带前缀的工具为准**,不围绕 IDE 界面说话:各项目各有自己的前缀(root 是 `ide`,子项目是它的目录名),枚举与执行都用**它自己那个前缀**的
 `<前缀>_get_run_configurations` / `<前缀>_execute_run_configuration` …;`项目` 列写的就是这个前缀,一条配置属于谁、该用哪套工具跑由它决定。
@@ -342,13 +368,8 @@ loader 读的是 OpenCode 文档里的那个嵌套写法(它自己的读取器�
 这张表的用途是**能被下次读到**:要办同类事情时先查它,有现成的就用,不再重复建 —— 所以**联动是硬要求**:配置被**新建 / 删除 / 修改**
 (无论谁做的:工具建的、用户自己建的、用户删掉的)都要在文档里同步**加行 / 删行 / 改行**,否则表就开始骗人。
 
-- 枚举以工具为准(含存在 `.idea/` 里的那些,单翻 `.run/` 看不到);要看某个配置真正跑什么命令,读它所在项目的落地文件 `.run/<name>.run.xml`;
-- **删除 / 修改配置本身没有工具** → 这一步**要人来做**:让用户调本 skill 处理(他把要改 / 要删的说清,由他在 IDE 里动手),AI 负责把文档同步
-  (手写 / 手改 `.run/*.run.xml` 始终是禁区:写错 `type` IDE 会静默忽略整个文件);
-
 **别的文档都指向这里**:引导文本与 `idea-standalone` skill 碰到"要建 / 删 / 改一个配置",不再让用户自己去 IDE 里摸,而是让用户调本 skill ——
-增 / 删 / 改的流程入口只有这一个,而它只由用户触发。非 Shell 类型本 skill 也建不了(工具就只支持 Shell),那一步同样落在"由用户动手"上,区别只是
-流程、判据与文档同步仍然走这里,不散落到别处。
+增 / 删 / 改的流程入口只有这一个,而它只由用户触发。
 
 **它比 `idea-standalone` 多一道门**:frontmatter 里 `requires: create_shell_run_configuration` —— 它绕着"新建配置"这件事写,而新建只有
 配套插件 `idea-mcp-enhance` 能做,所以**没装插件的 IDE 看不到它**(`idea-standalone` 只要 `rerun_run_configuration`,门更松)。这是刻意的:
@@ -356,8 +377,8 @@ loader 读的是 OpenCode 文档里的那个嵌套写法(它自己的读取器�
 
 **而且只能用户调**:它的 frontmatter 带 `metadata: opencode/autoinvoke: false`,loader 翻成定义的 `autoinvoke: false` ——
 skill 照常注册,但**不进模型的可选列表**,模型不会自己挑上它,只有用户显式指定(`@idea-run-config-manager`)才会加载。
-它改的是项目文件(`AGENTS.md`)与项目资产(run configuration),这个姓"改"的活儿由人发起才合适 —— 模型主动建配置的时机边界,
-留在引导文本的判据里管。
+理由是它**直接动手改项目文件与项目资产**:`.run/*.run.xml` 与 `AGENTS.md` 都由用户自己按这个 skill 的流程来改,模型不主动挑上它。
+「该不该建」的时机判断仍在引导文本的判据里(那是模型该管的事),**动手权**留给人。
 
 ## 项目命令执行 (Run Configuration)
 

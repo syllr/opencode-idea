@@ -77,19 +77,62 @@ describe('shipped skills', () => {
     expect(() => readAutoinvoke({ 'opencode/autoinvoke': 'no' }, 'x')).toThrow(/true or false/);
   });
 
-  it('manages configurations through tools, never through hand-written XML', () => {
-    // `idea-run-config` was removed deliberately — not because configuration
-    // management is off limits, but because its method was: hand-authoring
-    // `.run/*.run.xml` is the fragile path (a wrong `type` makes the IDE ignore
-    // the whole file, silently). `idea-run-config-manager` takes the subject over
-    // and keeps the rule — the model never writes that file, and anything it
-    // cannot create goes to the user.
+  it('edits configuration files through a per-type template, never from memory', () => {
+    // `idea-run-config` was removed because of its METHOD: hand-authoring
+    // `.run/*.run.xml` from memory is the fragile path — a wrong `type` makes the
+    // IDE ignore the whole file, silently, with nothing in the log.
+    // `idea-run-config-manager` takes the subject over and keeps exactly that
+    // guard rail while doing the work itself: the model DOES edit those files,
+    // because the skill is user-invoked — but only by copying a template whose
+    // every field came from a real file, and only for types that have one. No
+    // template means the configuration goes to the user instead.
     expect(readSkills().map(({ skill }) => skill.id)).not.toContain('idea-run-config');
     expect(() => readSkill('idea-run-config')).toThrow();
 
     const manager = readSkill('idea-run-config-manager').content;
-    expect(manager).toContain('不要写 `.run/*.run.xml`');
+    expect(manager).toContain('直接动手');
+    expect(manager).toContain('`.run/<配置名>.run.xml`');
+    expect(manager).toContain('assets/types/README.md');
+    expect(manager).toContain('assets/types/<类型>.md');
+    // Writing the file is only half of it: an unnoticed file is worse than none,
+    // so the catalog has to prove it was picked up.
+    expect(manager).toContain('写完必须复查');
+    // And a type without a template is not a reason to guess.
     expect(manager).toContain('交给用户');
+  });
+
+  it('ships one template per configuration type it verified', () => {
+    // The whole reason a wrong `type` fails silently is that nobody knows the ids.
+    // So every type the skill writes must be named in the index with its real id,
+    // and every template must carry the envelope and the trailing `<method v="2" />`
+    // that a real file has — a template missing them teaches a file the IDE ignores.
+    const types = path.join(path.dirname(readSkill('idea-run-config-manager').path), 'assets/types');
+    const index = readFileSync(path.join(types, 'README.md'), 'utf8');
+
+    for (const id of [
+      'ShConfigurationType',
+      'MavenRunConfiguration',
+      'GradleRunConfiguration',
+      'js.build_tools.npm',
+      'PythonConfigurationType',
+      'GoApplicationRunConfiguration',
+      'NodeJSConfigurationType',
+    ]) {
+      expect(index, id).toContain(id);
+    }
+    // Types whose fields were never verified against a real file stay unwritten
+    // rather than guessed, and the index says so.
+    expect(index).toContain('Application');
+    expect(index).toContain('JarApplication');
+    expect(index).toContain('⏳');
+
+    for (const file of ['shell.md', 'maven.md', 'gradle.md', 'npm.md', 'python.md', 'go-build.md', 'node.md']) {
+      const template = readFileSync(path.join(types, file), 'utf8');
+      expect(template, file).toContain('ProjectRunConfigurationManager');
+      expect(template, file).toContain('method v="2"');
+      // Its own type id, so a template can never be applied to another type.
+      expect(template, file).toContain(index.split('\n').find((line) => line.includes(`[${file}]`)).split('|')[2].trim());
+    }
   });
 
   it('records the project catalog as its own marked block', () => {
@@ -164,14 +207,14 @@ describe('shipped skills', () => {
   });
 
   it('keeps the manager off hand-rolled start-up commands', () => {
-    // Reading the list of configurations and running them are both tool calls;
-    // the one thing the skill must never do is substitute a command line of its
-    // own, or a hand-written `.run/*.run.xml`, for a configuration.
+    // Editing a configuration file is allowed here; replacing a configuration
+    // with a bare command line is not. A Shell Script config exists precisely so
+    // the run has a home in the IDE, so substituting `pnpm dev` for it would
+    // undo the whole thing. Listing configurations is a tool call too.
     const content = readSkill('idea-run-config-manager').content;
     expect(content).toContain('直接调用,不传参数');
     expect(content).toContain('逐个项目用**它自己那个前缀**');
     expect(content).toContain('不要手搓启动命令');
-    expect(content).toContain('手写');
   });
 
   it('keeps the standalone skill teaching the four-part rule', () => {

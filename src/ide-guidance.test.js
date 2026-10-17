@@ -236,6 +236,10 @@ describe('run-lifecycle 能力', () => {
     });
     expect(text).toContain('`idea-run-config-manager` skill');
     expect(text).toContain('非 Shell 类型与删 / 改');
+    // Writing a configuration file is the skill's job now — but only there, with
+    // a type template. The always-on text keeps the general prohibition so an
+    // ordinary task does not start inventing `.run/*.run.xml` files.
+    expect(text).toContain('写 `.run/*.run.xml` **只走 `idea-run-config-manager` skill**');
   });
 
   it('offers one when only one project serves it', () => {
