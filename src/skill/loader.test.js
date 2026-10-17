@@ -213,15 +213,15 @@ describe('shipped skills', () => {
     expect(template).not.toContain('| 项目 |');
     expect(template.split(entry)).toHaveLength(4);
     // The four items, in the order the block fixes them.
-    for (const item of ['怎么跑', '何时跑', '跑前做', '说明']) {
+    for (const item of ['run', 'when', 'before run', 'after run', 'desc']) {
       expect(template).toContain(`  - ${item}:`);
     }
 
     // The "when" item carries the trigger, the "before it" item the prerequisites —
     // usually not a configuration of their own, so those items are the only place
     // they can be written down.
-    expect(template).toContain('**何时跑**');
-    // 何时跑 names WHO may start it, and that question has three answers. Only two
+    expect(template).toContain('**when**');
+    // when names WHO may start it, and that question has three answers. Only two
     // live in the list: a manually-started configuration is never run by the model,
     // so it gets its own section with nothing but names.
     for (const mode of ['用户手动触发', '用户授权触发', 'AI 自己触发']) {
@@ -229,19 +229,22 @@ describe('shipped skills', () => {
     }
     expect(template).toContain('{用户授权触发 / AI 自己触发}');
     expect(template).toContain('必须把场景写具体');
-    // The product text explains the three modes instead of listing the four items:
-    // the reader has to know when it may act, and the item names already say what
-    // they hold.
+    // The product text explains the three modes instead of listing the items: the
+    // reader has to know when it may act, and the item names already say what they
+    // hold.
     expect(template).toContain('谁能起它,只有三种');
     expect(template).not.toContain('下面四项固定');
-    expect(template).toContain('**跑前做**');
+    expect(template).toContain('**before run**');
     expect(template).toContain('跑之前要先做的事');
+    // `after run` answers the other half of that: what the run leaves behind.
+    expect(template).toContain('**after run**');
+    expect(template).toContain('跑完之后的结果');
 
     // The manual section is a name list: no items at all, because nothing in it is
     // ever launched by the model.
     const manual = template.slice(template.indexOf('## 用户手动触发'));
     expect(manual).toContain('- {配置名}(项目 {前缀})');
-    expect(manual).not.toContain('  - 怎么跑:');
+    expect(manual).not.toContain('  - run:');
 
     // Resident / service-like configurations belong to idea-standalone and are
     // filtered out first, so the two blocks never document the same one. The
@@ -331,58 +334,70 @@ describe('shipped skills', () => {
     // a dependency service up). That something is usually not itself a run
     // configuration, so the only place to say it is prose in this column.
     const template = readTemplate();
-    expect(template).toContain('| 应用 | run configuration | 怎么跑 | 端口 | 跑前做 | 说明 |');
-    expect(template).toContain('**跑前做**列');
+    expect(template).toContain(
+      '| app | run configuration | run | port | before run | after run | desc |',
+    );
+    expect(template).toContain('**before run**');
     // A service is run, not just named: how it is run belongs in the table too,
     // or the reader has to go looking for the rule somewhere else.
-    expect(template).toContain('**怎么跑**');
+    expect(template).toContain('**run**');
     expect(template).toContain('rerun');
     // Usually empty, and ordered steps when not.
     expect(template).toContain('多数应用留空');
     expect(template).toContain('按顺序写清第 1 步、第 2 步、第 3 步');
+    // `after run` carries what the run leaves behind — for a resident app that is
+    // mostly "which port it listens on" (its own column) and nothing else, so the
+    // rule says most rows leave it empty.
+    expect(template).toContain('**after run**');
+    expect(template).toContain('多数留空');
     // No "when" column here: a resident app is started when you want to test a
     // change, so there is no other moment to name. (The archive keeps one — a
     // build or a migration does happen at a particular time.)
-    expect(template).not.toContain('| 何时跑 |');
+    expect(template).not.toContain('| when |');
   });
 
-  it('answers with the same field names in both blocks', () => {
+  it('shares four item names with the app table', () => {
     // Both blocks end up in the same shared `AGENTS.md` and answer the same core
-    // questions, so the names they share are the same, in the same order:
-    // 怎么跑 / 跑前做 / 说明. The SHAPES differ on purpose — the app table stays a
-    // table (short cells, and a service always has a port), the manager block is a
-    // list of entries — so what has to line up is the vocabulary and its order, not
-    // the widths. Each block also keeps what only it has: the app table `端口`, the
-    // archive `何时跑` (a resident app is started when you want to test a change, so
-    // there is no other moment to record; a build or a migration does have one).
+    // questions, so they use the same short keys — `run` / `before run` /
+    // `after run` / `desc`. Each block adds only what it alone has: the app table
+    // `app` / `run configuration` / `port`, the archive `when` (a resident app is
+    // started when you want to test a change, so there is no other moment to name).
+    // The SHAPES still differ on purpose — the app table stays a table, the manager
+    // block is a list of entries — so this is name/order equality, not width.
     const rowOf = (text, startsWith) =>
       text.split('\n').find((line) => line.startsWith(startsWith));
     const cellsOf = (row) => row.split('|').slice(1, -1).map((cell) => cell.trim());
-    /** 条目项的项名（`  - 怎么跑:…` 的那一段）。 */
+    /** 条目项的项名（`  - before run:…` 的那一段）。 */
     const itemNames = (text) =>
       text
         .split('\n')
         .filter((line) => /^ {2}- [^:]+:/.test(line))
         .map((line) => line.slice(4, line.indexOf(':')));
 
-    const standalone = cellsOf(rowOf(readTemplate(), '| 应用 |'));
-    expect(standalone[0]).toBe('应用');
+    const standalone = cellsOf(rowOf(readTemplate(), '| app |'));
+    expect(standalone[0]).toBe('app');
     // A service has a port; a fixed flow is not a service and has no such field.
-    expect(standalone).toContain('端口');
-    expect(standalone).not.toContain('何时跑');
+    expect(standalone).toContain('port');
+    expect(standalone).not.toContain('when');
 
     const manager = managerTemplate();
     const managerFields = [...new Set(itemNames(manager))];
-    expect(managerFields).toEqual(['怎么跑', '何时跑', '跑前做', '说明']);
-    expect(managerFields).not.toContain('端口');
+    expect(managerFields).toEqual(['run', 'when', 'before run', 'after run', 'desc']);
+    expect(managerFields).not.toContain('port');
 
-    // The shared names, in the same relative order — `端口` sits between them in the
-    // app table, which is exactly why only the shared ones have to line up.
-    const shared = managerFields.filter((name) => name !== '何时跑');
-    expect(shared).toEqual(['怎么跑', '跑前做', '说明']);
+    // The four shared names appear in both, in the same relative order — the app
+    // table's own columns may sit between them, which is why only these four line up.
+    const shared = ['run', 'before run', 'after run', 'desc'];
     const positions = shared.map((name) => standalone.indexOf(name));
     expect(positions).not.toContain(-1);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    expect(managerFields.filter((name) => shared.includes(name))).toEqual(shared);
+
+    // Both templates say the same thing about the contract, so neither can drift
+    // into "these blocks are unrelated" unnoticed.
+    for (const text of [manager, readTemplate()]) {
+      expect(text).toContain('同名同序');
+    }
 
     // Widths follow one convention inside that block (a CJK glyph is two wide,
     // ASCII is one), so a separator cell always has exactly as many dashes as its
@@ -397,7 +412,7 @@ describe('shipped skills', () => {
         .map((line, index, lines) => [line, lines[index + 1]])
         .filter(([line]) => line.startsWith(startsWith))
         .map(([line, separator]) => [cellsOf(line), cellsOf(separator)]);
-    const tables = tablesOf(readTemplate(), '| 应用 | run configuration');
+    const tables = tablesOf(readTemplate(), '| app | run configuration');
     expect(tables.length, '应用表的表头后面没有分隔行').toBeGreaterThan(0);
     for (const [header, separator] of tables) {
       expect(separator.map((cell) => cell.length)).toEqual(header.map(displayWidth));
@@ -416,7 +431,7 @@ describe('shipped skills', () => {
     expect(template).toContain('### Windows');
     expect(template).toContain('INTERPRETER_PATH');
     // Exactly two app tables, one per platform.
-    const header = '| 应用 | run configuration | 怎么跑 | 端口 | 跑前做 | 说明 |';
+    const header = '| app | run configuration | run | port | before run | after run | desc |';
     expect(template.split(header)).toHaveLength(3);
 
     // Same split on the other side — sections instead of tables.
