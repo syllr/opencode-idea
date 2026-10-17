@@ -95,7 +95,8 @@
   **跑已有配置**:Shell Script 要 `EXECUTE_IN_TERMINAL: false`;覆盖参数(`programArguments` / `workingDirectory` / `envs`)需配置支持 `supportsDynamicLaunchOverrides`。
 {{#if canCreateRunConfiguration}}
 - {{cmd_create_shell_run_configuration}}
-  **新建项目级 Shell 配置**(`configurationName` + `scriptPath` / `scriptText` / `cloneFrom` 三选一;写 `.run/<name>.run.xml`):只支持 Shell 类型,**其他类型请用户在 IDE 里建**。它是**项目资产**,不是"跑命令"的手段 —— 只是要跑一条命令就用原生 `shell`。判据只有一条:**这件事以后会不会以同样的形态再发生?**
+  **新建项目级 Shell 配置**(`configurationName` + `scriptPath` / `scriptText` / `cloneFrom` 三选一;写 `.run/<name>.run.xml`):只支持 Shell 类型。它是**项目资产**,不是"跑命令"的手段 —— 只是要跑一条命令就用原生 `shell`。判据只有一条:**这件事以后会不会以同样的形态再发生?**
+  - **这里只是"建"的一个入口,不是全部**:非 Shell 类型,以及**删 / 改**,都交给用户 —— 让他调 `idea-run-config-manager` skill(那是本项目 run configuration 增 / 删 / 改的统一入口,由用户触发,不是你自己去挑)。
   - **会 → 该建,而且你要主动提**。典型信号:用户让你做的是**重复性动作**,还会对别的环境 / 别的分支 / 下一次改表再做一遍 —— 例如改完表结构要**同步某个环境的 DDL**、跑数据库迁移或回滚、生成代码、打包、起 dev server、往某个环境部署、按固定步骤清洗数据。这时**别默默每次手搓命令**(下次还得从头猜一遍),也**别自己动手建**:**先问用户**"这个流程以后要反复跑,要不要固化成一个 Shell run configuration?",并把方案摊开:配置名、实际执行的命令(`scriptText`,或它指向的 `scriptPath`)、工作目录、为什么值得留。**同意才建**;用户说这次先这样,就照办,别再追着问。
   - **不会 → 用原生 `shell` 直接跑,别建**。这就是两者的分界线:原生 `shell` 是**就地执行、用完不留痕**(命令只存在于会话里);`create_shell_run_configuration` 是**把命令落盘成 `.run/<name>.run.xml`、往后反复用**(它产出的是项目文件,IDE 的 Run 窗口里也会多一项)。所以一次性的、探索性的、调试性的、参数每次都不一样的操作(查条数据、看个日志、试一条命令、临时换个路径跑一下)一律走 `shell` 跑完算 —— 这类东西建配置只是给项目留垃圾。确需项目环境的解释器时,在 `shell` 命令里显式指定、或在已有配置上单次覆盖参数,也别为这一次性的事新建配置。
   - **建之前先查,防泛滥**:先 `get_run_configurations` 看有没有已在做同一件事的配置 —— 有就**复用**(必要时让用户改它),别新建一个几乎一样的;同一件事**不要按参数 / 按文件 / 按环境拆成一堆配置**,变化的入参用 `programArguments` / `envs` 单次覆盖。一个项目通常就那么**几个**(构建、装依赖、起服务、迁移这类固定流程);配置数量明显长起来就是滥用信号 —— 动手前先问自己:这是项目固定流程,还是我只是想省一条 shell 命令?
@@ -118,8 +119,8 @@
 - 需要项目环境的命令(依赖 IDE 里配好的 JDK / Node / Python 版本等):用该项目前缀的 run configuration 工具,不要用原生 `shell`。
 - **配置一律不由你写**:不要手写 `.run/*.run.xml`,也不要手搓启动命令。
 {{#if canCreateRunConfiguration}}
-- 要固化的固定流程(判据见上:会不会以同样形态重复发生):Shell 类型用上面那个「新建项目级 Shell 配置」建,其他类型讲清楚后请用户在 IDEA 里建。
+- 要固化的固定流程(判据见上:会不会以同样形态重复发生):Shell 类型用上面那个「新建项目级 Shell 配置」建;非 Shell 类型与删 / 改,交给用户调 `idea-run-config-manager` skill。
 {{else}}
-- 要固化的固定流程:把配置名、实际执行的命令、工作目录、为什么值得留讲清楚,**请用户在 IDEA 里建** —— 当前没有能建它的工具,不要手写文件凑。
+- 要固化的固定流程:把配置名、实际执行的命令、工作目录、为什么值得留讲清楚,**请用户在 IDE 里自己建** —— 当前没有能建它的工具(`idea-run-config-manager` skill 的门就是这个工具,所以它这次也不会出现),不要手写文件凑。
 {{/if}}
 - 不需要项目环境的命令:用原生 `shell`。

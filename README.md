@@ -245,15 +245,17 @@ opencode-idea 对这一组工具做三件事:
      **不是随手一条命令就建一个**;判据是**这件事以后会不会以同样形态再发生** —— 会就该建、模型必须**主动**向用户提议(摊开配置名 /
      实际命令 / 工作目录 / 理由),用户同意才动手;不会就裸 `shell` 跑完算(那条里写明了这层区分:`shell` 就地执行不留痕、
      建配置是落盘成 `.run/*.run.xml` 供反复用)。判据只写在这一处,**「命令执行」段不重复**,只留
-     「配置一律不由你写」这条无条件的,以及"该建的用哪条路建"那一条按工具是否存在分流:有工具时指向上面那条,
-     没有时换成「讲清楚配置名 / 命令 / 工作目录 / 理由,请用户在 IDEA 里建」。**没装插件时绝不会提到那个工具。**
+     「配置一律不由你写」这条无条件的,以及"该建的用哪条路建"那一条按工具是否存在分流:有工具时指向上面那条、
+     并说明非 Shell 类型与删 / 改交给用户调 `idea-run-config-manager` skill;
+     没有工具时换成「讲清楚配置名 / 命令 / 工作目录 / 理由,请用户在 IDE 里自己建」—— 那时**连那个 skill 也不会出现**
+     (它的门就是这个工具),所以引导里顺手把这一点说明了,免得以后有人把它当成漏写而"补"上一句调不到的指令。**没装插件时绝不会提到那个工具。**
 3. **工具名清单**写在 `src/mcp/enhance.js`(与原生 IDE 的 `src/mcp/idea.js` 分开放:原生走原生,插件的走插件的),
    与该仓库的 `RunLifecycleSchemas.kt` 保持同步。工具按**存在的子集**逐个点名(而不是「有就全写」),这样旧版本的配套
    插件少给一两个工具时,引导也不会提到它们。
 
 > 没装 `idea-mcp-enhance` 的 IDE 一切照旧:工具不存在,引导也不提,模型继续按原来的方式工作。
 
-## Run Configuration:能建就用工具,不能建就交给用户
+## Run Configuration:增删改的入口只有一个 skill
 
 内置 MCP 只能 **查**(`get_run_configurations`)和 **执行**(`execute_run_configuration`)run configuration;新建靠配套插件的
 `ide_create_shell_run_configuration`(只有 Shell 类型,见上面的「Run Configuration 全套」);**修改和删除永远没有工具**。
@@ -262,7 +264,10 @@ opencode-idea 对这一组工具做三件事:
 
 - **配置一律不由 AI 动手** —— 不手写 `.run/*.run.xml`,也不手搓启动命令。这条无条件;
 - **Shell 类型**且装了配套插件 → 用 `ide_create_shell_run_configuration`(新建是项目资产:**会重复发生的流程才建**,且**必须先征得用户同意**);
-- **其他类型,或没装插件** → **请用户在 IDEA 里建**,AI 只负责说明要建什么、为什么。
+- **非 Shell 类型、删除、修改** → 工具根本没有。但这些事**不再散着说"让用户自己去 IDE 里搞"**,而是统一指向
+  `idea-run-config-manager` skill:**让用户调那个 skill**(`@idea-run-config-manager`)—— 它是本项目 run configuration 增 / 删 / 改的
+  唯一流程入口,而且**只能由用户触发**。所以别处的措辞是"交给用户 → 让他调那个 skill",skill 里才是最后那步"由你在 IDE 里动手";
+- **没装配套插件** → 那个 skill 也不存在(它的门就是这个工具),此时才直接请用户自己在 IDE 里建。
 
 > **曾经有一个 `idea-run-config` skill 教模型手写 `.run/*.run.xml`,已经删掉。** 理由:手写那条路很脆 —— `type` 写错 IDE 会
 > **静默忽略整个文件、日志里也不报**,模型的唯一判据只有"`ide_get_run_configurations` 里看不看得到";而它想补的"新建"能力现在
@@ -284,6 +289,18 @@ opencode-idea 对这一组工具做三件事:
 文档放在 `skills/<id>/SKILL.md`(每个 skill 一个目录,`name` / `description` / `requires` 走 YAML frontmatter,`requires` 由
 loader 消费、**不会进入注册给 OpenCode 的定义**),由 `src/skill/loader.js` 扫描加载 —— **加新 skill 只需加一个目录,不用改代码**。
 
+还可以用 OpenCode 官方的 frontmatter 写法**关掉模型主动调用**:
+
+```yaml
+metadata:
+  opencode/autoinvoke: false
+```
+
+意思是这个 skill 仍会注册、仍能按 ID 加载,但**不进模型的可选列表** —— 只能由用户显式指定(`@<skill-id>`)触发。
+loader 读的是 OpenCode 文档里的那个嵌套写法(它自己的读取器是扁平的,缩进行落地成 `opencode/autoinvoke` 这个带命名空间的键,
+`metadata:` 那行则为空 —— **这一层嵌套是刻意支持的**),再翻译成注册定义的 `autoinvoke`(注册 API 用的名字);
+值只接受 `true` / `false`,写错直接报错 —— 一个拼错的开关若被静默忽略,技能就仍然会被模型自动调用,那正是这个开关要防的事。
+
 ## Standalone 模式纪律 (skill)
 
 本机直跑应用的**项目级纪律**由 `idea-standalone` skill 固化:它把这份纪律写进**项目根 `AGENTS.md`** 里由
@@ -298,7 +315,7 @@ loader 消费、**不会进入注册给 OpenCode 的定义**),由 `src/skill/loa
    **`ide_execute_run_configuration` 不用于这里**(它是给命令 / Job 类型的配置跑的,对常驻进程只会起重复实例);也不绕开 IDEA 用
    `go run` / `pnpm dev` 这类裸命令或 `kill` / `pkill`;**重启不必先问** —— 改完代码要重启就直接 rerun,这条链是无人化的;
 2. **启动哪些应用**:一行一个应用,启动路径**只能是 IDEA run configuration**(配置名必须能在 `ide_get_run_configurations`
-   里查到;**缺配置就交给用户**去 IDEA 里建),端口与被依赖的先后顺序一并写明;
+   里查到;**缺配置就交给用户** —— 让他调 `idea-run-config-manager` skill 去建),端口与被依赖的先后顺序一并写明;
 3. **热重载矩阵**:逐应用标"是 / 否" —— 带 HMR 的 dev server 改动后**不用**提示重启;`go run .` 这类无热重载的进程改动后
    **必须**显式点名「需要重启 <应用>」,不得在未提示的情况下宣称"改完可验证";
 4. **项目补充条款**:文件写入位置、测试纪律、访问归属、dev 模式特有限制等,按用户给的条款逐条续写、保留原意。
@@ -311,21 +328,35 @@ loader 消费、**不会进入注册给 OpenCode 的定义**),由 `src/skill/loa
 `idea-run-config-manager` skill 管的是**配置本身 + 一份配置档案**,两件事:
 
 1. **建**:把会重复跑的流程固化成 run configuration(判据与"先问用户"在引导文本里,skill 不重复);
-2. **建档**:项目里每个 run configuration 在**项目根 `AGENTS.md`** 的标记块(`<!-- idea-run-config-manager:begin -->` /
-   `<!-- idea-run-config-manager:end -->`)里占一行 —— `run configuration | 干什么 | 怎么跑 | 何时跑 | 说明`。
+2. **建档**:过滤之后剩下的每个 run configuration 在**项目根 `AGENTS.md`** 的标记块(`<!-- idea-run-config-manager:begin -->` /
+   `<!-- idea-run-config-manager:end -->`)里占一行 —— `项目 | run configuration | 干什么 | 怎么跑 | 何时跑 | 说明`。
    骨架在 `skills/idea-run-config-manager/assets/AGENTS.template.md`,**SKILL.md 只写流程、指向模板**。
 
-这张表的用途是**能被下次读到**:要办同类事情时先查它,有现成的就用,不再重复建 —— 所以**联动是硬要求**:配置被**新建 / 删除 / 修改**
-(无论谁做的:工具建的、用户在 IDEA 里建的、用户删掉的)都要在文档里同步**加行 / 删行 / 改行**,否则表就开始骗人。
+**先过滤,再建档**:**服务化的配置不进这张表** —— 它们已经登记在 `AGENTS.md` 的 `idea-standalone` 块里(端口 / 热重载也写在那里),
+所以建档第一步是读那个块、把它的表里出现过的名字记下来并排除,**剩下的**才是本表内容。两个块因此永远不重叠、不会互相矛盾。
 
-- 枚举以 `ide_get_run_configurations` 为准(含存在 `.idea/` 里的那些,单翻 `.run/` 看不到);要看某个配置真正跑什么命令,读它的落地文件
-  `.run/<name>.run.xml`;
-- **删除 / 修改配置本身没有工具** → 交给用户,AI 只负责把文档同步(手写 / 手改 `.run/*.run.xml` 始终是禁区:写错 `type` IDE 会静默忽略整个文件);
-- 与 `idea-standalone` 的分工:长驻应用的**端口 / 热重载**归那张表,这张表回答"它是干什么的、怎么跑"。
+这张表**以带前缀的工具为准**,不围绕 IDE 界面说话:各项目各有自己的前缀(root 是 `ide`,子项目是它的目录名),枚举与执行都用**它自己那个前缀**的
+`<前缀>_get_run_configurations` / `<前缀>_execute_run_configuration` …;`项目` 列写的就是这个前缀,一条配置属于谁、该用哪套工具跑由它决定。
+
+这张表的用途是**能被下次读到**:要办同类事情时先查它,有现成的就用,不再重复建 —— 所以**联动是硬要求**:配置被**新建 / 删除 / 修改**
+(无论谁做的:工具建的、用户自己建的、用户删掉的)都要在文档里同步**加行 / 删行 / 改行**,否则表就开始骗人。
+
+- 枚举以工具为准(含存在 `.idea/` 里的那些,单翻 `.run/` 看不到);要看某个配置真正跑什么命令,读它所在项目的落地文件 `.run/<name>.run.xml`;
+- **删除 / 修改配置本身没有工具** → 这一步**要人来做**:让用户调本 skill 处理(他把要改 / 要删的说清,由他在 IDE 里动手),AI 负责把文档同步
+  (手写 / 手改 `.run/*.run.xml` 始终是禁区:写错 `type` IDE 会静默忽略整个文件);
+
+**别的文档都指向这里**:引导文本与 `idea-standalone` skill 碰到"要建 / 删 / 改一个配置",不再让用户自己去 IDE 里摸,而是让用户调本 skill ——
+增 / 删 / 改的流程入口只有这一个,而它只由用户触发。非 Shell 类型本 skill 也建不了(工具就只支持 Shell),那一步同样落在"由用户动手"上,区别只是
+流程、判据与文档同步仍然走这里,不散落到别处。
 
 **它比 `idea-standalone` 多一道门**:frontmatter 里 `requires: create_shell_run_configuration` —— 它绕着"新建配置"这件事写,而新建只有
 配套插件 `idea-mcp-enhance` 能做,所以**没装插件的 IDE 看不到它**(`idea-standalone` 只要 `rerun_run_configuration`,门更松)。这是刻意的:
 一个只教模型"去建配置"、却没给建配置工具的 skill,只会把用户拖进一次注定失败的调用。
+
+**而且只能用户调**:它的 frontmatter 带 `metadata: opencode/autoinvoke: false`,loader 翻成定义的 `autoinvoke: false` ——
+skill 照常注册,但**不进模型的可选列表**,模型不会自己挑上它,只有用户显式指定(`@idea-run-config-manager`)才会加载。
+它改的是项目文件(`AGENTS.md`)与项目资产(run configuration),这个姓"改"的活儿由人发起才合适 —— 模型主动建配置的时机边界,
+留在引导文本的判据里管。
 
 ## 项目命令执行 (Run Configuration)
 

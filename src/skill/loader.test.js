@@ -1,13 +1,22 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { parseSkillFrontmatter, readSkill, readSkills, SKILL_FILE_NAME } from './loader.js';
+import { parseSkillFrontmatter, readAutoinvoke, readSkill, readSkills, SKILL_FILE_NAME } from './loader.js';
 import { HIDDEN_IDE_TOOL_SUFFIXES } from '../plugin.js';
 
 const TEMPLATE = path.join(path.dirname(readSkill('idea-standalone').path), 'assets/AGENTS.template.md');
 
 /** Read the skeleton the skill must consult before writing anything. */
 const readTemplate = () => readFileSync(TEMPLATE, 'utf8');
+
+/**
+ * A skill file as written. The frontmatter is metadata: it decides how the skill
+ * is registered but is never part of the registered definition, so proving what
+ * the author wrote means reading the raw file.
+ *
+ * @param {string} file Absolute path to a `SKILL.md`.
+ */
+const rawFrontmatter = (file) => readFileSync(file, 'utf8');
 
 describe('shipped skills', () => {
   it('loads every skill directory into a Skill.Info-shaped definition', () => {
@@ -35,6 +44,37 @@ describe('shipped skills', () => {
     // The frontmatter is metadata: it must never leak into the model prompt.
     expect(skill.content.startsWith('# ')).toBe(true);
     expect(skill.content.startsWith('---')).toBe(false);
+  });
+
+  it('makes the manager user-invoked only, through the portable frontmatter', () => {
+    // `opencode/autoinvoke: false` is OpenCode's own switch: the skill stays
+    // registered and loadable by ID, but is left out of the model's available
+    // list — so only the user can bring it in (`@idea-run-config-manager`).
+    // Frontmatter is not registered, so the loader has to translate it onto the
+    // definition under the name the registration API uses.
+    const skill = readSkill('idea-run-config-manager');
+    expect(skill.autoinvoke).toBe(false);
+    // Same exact key set as `Skill.Info` allows — no stray field rides along.
+    expect(Object.keys(skill).sort()).toEqual(['autoinvoke', 'content', 'description', 'id', 'name', 'path']);
+    expect(rawFrontmatter(skill.path)).toContain('metadata:\n  opencode/autoinvoke: false');
+
+    // The standalone skill says nothing, so it keeps the plain shape and stays
+    // model-invocable.
+    expect(readSkill('idea-standalone').autoinvoke).toBeUndefined();
+  });
+
+  it('flattens the nested autoinvoke block and rejects other values', () => {
+    // One nesting level is supported on purpose: the reader is flat, so the
+    // indented line has to land under the namespaced key by itself, and the bare
+    // `metadata:` line comes out empty. This is the shape OpenCode documents.
+    expect(
+      parseSkillFrontmatter('---\nname: x\nmetadata:\n  opencode/autoinvoke: false\n---\nbody', 'x'),
+    ).toEqual({ name: 'x', metadata: '', 'opencode/autoinvoke': 'false' });
+    expect(readAutoinvoke({}, 'x')).toBeUndefined();
+    expect(readAutoinvoke({ 'opencode/autoinvoke': 'true' }, 'x')).toBe(true);
+    // A typo must not quietly leave a skill model-invocable — that is exactly the
+    // failure the switch exists to prevent.
+    expect(() => readAutoinvoke({ 'opencode/autoinvoke': 'no' }, 'x')).toThrow(/true or false/);
   });
 
   it('manages configurations through tools, never through hand-written XML', () => {
@@ -89,14 +129,22 @@ describe('shipped skills', () => {
     expect(headings).toEqual(['# run configuration 档案', '## run configuration 一览']);
 
     // One row answers the only question the catalog is for: what is this
-    // configuration, and how do I run it.
-    expect(template).toContain('| run configuration | 干什么 | 怎么跑 | 何时跑 | 说明 |');
+    // configuration, which project's tools address it, and how do I run it.
+    expect(template).toContain('| 项目 | run configuration | 干什么 | 怎么跑 | 何时跑 | 说明 |');
 
-    // The app table (ports, hot reload) belongs to idea-standalone: listing
-    // resident apps here too would leave two blocks disagreeing about how the
-    // same app starts, so this one points at it instead.
+    // Resident / service-like configurations belong to idea-standalone and are
+    // filtered out first, so the two blocks never document the same one. The
+    // filter reads that block rather than guessing which name looks resident.
+    expect(template).toContain('先过滤');
+    expect(template).toContain('这些一律不进本表');
+    expect(template).toContain('`idea-standalone` 的标记块');
+    // The app table (ports, hot reload) stays over there.
     expect(template).not.toContain('| 应用 | run configuration | 目录 | 端口 | 启动前流程 | 说明 |');
-    expect(template).toContain('归 `idea-standalone` 的表');
+
+    // Configurations are addressed through the prefixed MCP tools, so the block
+    // names no IDE application: the prefix is what says whose configuration it is.
+    expect(template).not.toContain('IDEA');
+    expect(template).toContain('子项目是它的目录名');
 
     // Per-section guidance lives in the template, and the instructions for the
     // generating step must not survive into the produced block.
@@ -114,8 +162,8 @@ describe('shipped skills', () => {
     // the one thing the skill must never do is substitute a command line of its
     // own, or a hand-written `.run/*.run.xml`, for a configuration.
     const content = readSkill('idea-run-config-manager').content;
-    expect(content).toContain('直接调用,不传任何参数');
-    expect(content).toContain('枚举以 `<前缀>_get_run_configurations` 为准');
+    expect(content).toContain('直接调用,不传参数');
+    expect(content).toContain('逐个项目用**它自己那个前缀**');
     expect(content).toContain('不要手搓启动命令');
     expect(content).toContain('手写');
   });
@@ -215,11 +263,18 @@ describe('shipped skills', () => {
     expect(content).not.toContain('alwaysApply');
   });
 
-  it('sends a missing run configuration to the user instead of authoring XML', () => {
+  it('sends a missing configuration to the manager skill, never to hand-written XML', () => {
+    // The missing configuration is not the model's to author, and the handoff is
+    // not a bare "ask the user" either: it names the one skill that owns
+    // create/delete/edit for run configurations, which the user invokes.
     const content = readSkill('idea-standalone').content;
-    expect(content).not.toContain('idea-run-config');
     expect(content).toContain('**交给用户**');
+    expect(content).toContain('`idea-run-config-manager` skill');
     expect(content).toContain('不要自己写 `.run/*.run.xml`');
+
+    // The block written into a project's AGENTS.md routes the same way, so the
+    // rule survives into the file an AI reads on its own next time.
+    expect(readTemplate()).toContain('`idea-run-config-manager` skill');
   });
 
   it('ships the skeleton as a template the skill must read first', () => {

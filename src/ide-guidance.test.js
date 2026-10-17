@@ -227,6 +227,17 @@ describe('run-lifecycle 能力', () => {
     expect(text.match(/\*\*改完代码重启无热重载的进程\*\*/g)).toHaveLength(1);
   });
 
+  it('routes the work it cannot do to the run-configuration manager skill', () => {
+    // Non-Shell types, and delete and edit, have no tool at all. The handoff is
+    // not a bare "ask the user": it names the one skill that owns those flows —
+    // and that skill is user-invoked, so the model never picks it up by itself.
+    const text = buildIdeGuidanceText([ROOT, CHILD], {
+      tools: { 'ide_create_shell_run_configuration': {} },
+    });
+    expect(text).toContain('`idea-run-config-manager` skill');
+    expect(text).toContain('非 Shell 类型与删 / 改');
+  });
+
   it('offers one when only one project serves it', () => {
     // 提示词只有一份,所以"这套能力在本次会话里存不存在"由任一项目决定。
     const text = buildIdeGuidanceText([ROOT, CHILD], {

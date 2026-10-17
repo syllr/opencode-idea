@@ -1372,6 +1372,10 @@ describe('plugin setup', () => {
     // out rather than being offered on a partial plugin.
     expect(state.skills.has('idea-standalone')).toBe(false);
 
+    // User-invoked only: OpenCode keeps it registered but leaves it out of the
+    // model's available list.
+    expect(state.skills.get('idea-run-config-manager').autoinvoke).toBe(false);
+
     await cleanup();
   });
 

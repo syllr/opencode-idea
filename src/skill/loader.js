@@ -27,6 +27,13 @@
 // and deliberately kept OUT of the registered definition — the caller filters on
 // it instead (see `readSkills`), because a skill whose tools are absent must not
 // be registered at all.
+//
+// The other key is OpenCode's own, written in the portable frontmatter spelling
+// OpenCode documents: a nested `metadata:` block holding
+// `opencode/autoinvoke: false`. It is translated to the definition's
+// `autoinvoke` — the name the registration API uses — which is what makes a
+// skill user-invoked only: OpenCode keeps it registered and loadable on request,
+// but leaves it out of the model's available list.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -88,10 +95,36 @@ function splitList(value) {
 }
 
 /**
+ * Read `opencode/autoinvoke` out of the frontmatter, or `undefined` when absent.
+ *
+ * The spelling is OpenCode's portable one — a nested `metadata:` block holding
+ * `opencode/autoinvoke: false`. That shape is exactly what the flat reader above
+ * already produces: the indented line trims to `opencode/autoinvoke: false` and
+ * lands under that namespaced key, while the bare `metadata:` line comes out
+ * empty and is ignored. One nesting level is therefore supported on purpose, not
+ * by accident.
+ *
+ * The value must be `true` or `false`. Anything else throws: a typo that
+ * silently left the skill model-invocable is the failure this whole mechanism
+ * exists to prevent, so it must not pass quietly.
+ *
+ * @param {Record<string, string>} fields
+ * @param {string} source Used in error messages.
+ * @returns {boolean | undefined}
+ */
+export function readAutoinvoke(fields, source) {
+  const raw = fields['opencode/autoinvoke'];
+  if (raw === undefined) return undefined;
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  throw new Error(`${source}: "opencode/autoinvoke" must be true or false, got "${raw}"`);
+}
+
+/**
  * Load one skill directory into a `Skill.Info`-shaped definition.
  *
  * @param {string} id Directory name, used as the skill id.
- * @returns {{ id: string, name: string, description: string, path: string, content: string }}
+ * @returns {{ id: string, name: string, description: string, autoinvoke?: boolean, path: string, content: string }}
  */
 export function readSkill(id) {
   return readSkillPackage(id).skill;
@@ -104,8 +137,13 @@ export function readSkill(id) {
  * while `requires` is this package's own metadata and must NOT be registered —
  * it is what the caller filters on.
  *
+ * `autoinvoke` is OpenCode's, so it goes the other way: it ships in the
+ * frontmatter as `opencode/autoinvoke` and is translated onto the definition,
+ * where it picks user-invoked-only over model-invocable. It is only set when the
+ * frontmatter asks for it, so a skill that says nothing keeps the plain shape.
+ *
  * @param {string} id Directory name, used as the skill id.
- * @returns {{ skill: { id: string, name: string, description: string, path: string, content: string }, requires: string[] }}
+ * @returns {{ skill: { id: string, name: string, description: string, autoinvoke?: boolean, path: string, content: string }, requires: string[] }}
  */
 export function readSkillPackage(id) {
   const file = new URL(`${id}/${SKILL_FILE_NAME}`, SKILLS_DIR);
@@ -116,11 +154,13 @@ export function readSkillPackage(id) {
   if (!description) {
     throw new Error(`${source}: frontmatter needs a "description", otherwise the skill is never offered`);
   }
+  const autoinvoke = readAutoinvoke(fields, source);
   return {
     skill: {
       id,
       name: fields.name || id,
       description,
+      ...(autoinvoke === undefined ? {} : { autoinvoke }),
       path: fileURLToPath(file),
       content: text.replace(FRONTMATTER, '').replace(/^\s+/, '').trimEnd(),
     },
@@ -131,7 +171,7 @@ export function readSkillPackage(id) {
 /**
  * Every shipped skill, sorted by id, each with the tools it requires.
  *
- * @returns {Array<{ skill: { id: string, name: string, description: string, path: string, content: string }, requires: string[] }>}
+ * @returns {Array<{ skill: { id: string, name: string, description: string, autoinvoke?: boolean, path: string, content: string }, requires: string[] }>}
  */
 export function readSkills() {
   return readdirSync(SKILLS_DIR, { withFileTypes: true })
