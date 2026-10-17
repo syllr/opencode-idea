@@ -10,6 +10,18 @@ const TEMPLATE = path.join(path.dirname(readSkill('idea-standalone').path), 'ass
 const readTemplate = () => readFileSync(TEMPLATE, 'utf8');
 
 /**
+ * Read the catalog skeleton the manager skill writes its table into. It shares
+ * one `AGENTS.md` with the standalone block, so the two are read together.
+ *
+ * @returns {string}
+ */
+const managerTemplate = () =>
+  readFileSync(
+    path.join(path.dirname(readSkill('idea-run-config-manager').path), 'assets/AGENTS.template.md'),
+    'utf8',
+  );
+
+/**
  * A skill file as written. The frontmatter is metadata: it decides how the skill
  * is registered but is never part of the registered definition, so proving what
  * the author wrote means reading the raw file.
@@ -170,7 +182,7 @@ describe('shipped skills', () => {
     expect(content).toContain('无论那次改动是谁做的');
   });
 
-  it('keeps the manager template to one configuration table', () => {
+  it('keeps the manager template to one table per platform', () => {
     const skill = readSkill('idea-run-config-manager');
     const template = readFileSync(path.join(path.dirname(skill.path), 'assets/AGENTS.template.md'), 'utf8');
 
@@ -178,12 +190,32 @@ describe('shipped skills', () => {
     expect(template.startsWith('<!-- idea-run-config-manager:begin -->')).toBe(true);
     expect(template.trimEnd().endsWith('<!-- idea-run-config-manager:end -->')).toBe(true);
 
+    // Two tables, one per platform — the same split idea-standalone uses. A flow is
+    // often not the same command on both, so "which platform" is a property of the
+    // row rather than something a reader has to infer from the command.
     const headings = template.split('\n').filter((line) => /^#{1,6} /.test(line));
-    expect(headings).toEqual(['# run configuration 档案', '## run configuration 一览']);
+    expect(headings).toEqual([
+      '# run configuration 档案',
+      '## run configuration 一览',
+      '### macOS / Linux',
+      '### Windows',
+    ]);
+    expect(template).toContain('按操作系统分成两张表');
+    expect(template).toContain('判断不了就问用户');
 
     // One row answers the only question the catalog is for: what is this
     // configuration, which project's tools address it, and how do I run it.
-    expect(template).toContain('| 项目 | run configuration | 干什么 | 怎么跑 | 何时跑 | 说明 |');
+    expect(template).toContain('| 项目 | run configuration | 怎么跑 | 何时跑 | 跑前做 | 说明 |');
+    // Exactly two of them, both the same columns.
+    const header = '| 项目 | run configuration | 怎么跑 | 何时跑 | 跑前做 | 说明 |';
+    expect(template.split(header)).toHaveLength(3);
+
+    // The "when" cell carries the trigger, the "before it" cell the prerequisites —
+    // usually not a configuration of their own, so those cells are the only place
+    // they can be written down.
+    expect(template).toContain('**何时跑**');
+    expect(template).toContain('**跑前做**');
+    expect(template).toContain('跑之前要先做的事');
 
     // Resident / service-like configurations belong to idea-standalone and are
     // filtered out first, so the two blocks never document the same one. The
@@ -192,7 +224,7 @@ describe('shipped skills', () => {
     expect(template).toContain('这些一律不进本表');
     expect(template).toContain('`idea-standalone` 的标记块');
     // The app table (ports, hot reload) stays over there.
-    expect(template).not.toContain('| 应用 | run configuration | 目录 | 端口 | 启动前流程 | 说明 |');
+    expect(template).not.toContain('| 应用 | run configuration | 怎么跑 | 端口 |');
 
     // Configurations are addressed through the prefixed MCP tools, so the block
     // names no IDE application: the prefix is what says whose configuration it is.
@@ -208,7 +240,7 @@ describe('shipped skills', () => {
     // write where lives in this template's generation guidance. The skill has to
     // say so, or a later edit will start duplicating the rules back into it.
     expect(skill.content).toContain('都在那份模板的生成提示里');
-    expect(template).toContain('看里面的命令');
+    expect(template).toContain('看里面的内容');
     expect(template).toContain('它会起出重复实例');
     // The template carries metavariables; it also carries the rule that none of
     // them may survive into the produced block.
@@ -268,31 +300,100 @@ describe('shipped skills', () => {
     }
   });
 
-  it('gives the app table a pre-start flow column', () => {
+  it('gives every config table both a when and a before-it column', () => {
     // Some configurations assume something was done first (deps installed, built,
     // a dependency service up). That something is usually not itself a run
     // configuration, so the only place to say it is prose in this column.
     const template = readTemplate();
-    expect(template).toContain('| 应用 | run configuration | 目录 | 端口 | 启动前流程 | 说明 |');
-    expect(template).toContain('**启动前流程**列');
+    expect(template).toContain(
+      '| 应用 | run configuration | 怎么跑 | 端口 | 何时跑 | 跑前做 | 说明 |',
+    );
+    expect(template).toContain('**何时跑**列');
+    expect(template).toContain('**跑前做**列');
+    // A service is run, not just named: how it is run belongs in the table too,
+    // or the reader has to go looking for the rule somewhere else.
+    expect(template).toContain('**怎么跑**');
+    expect(template).toContain('rerun');
     // Usually empty, and ordered steps when not.
     expect(template).toContain('多数应用留空');
     expect(template).toContain('按顺序写清第 1 步、第 2 步、第 3 步');
   });
 
-  it('splits the app table by operating system', () => {
+  it('lines the shared columns of the two project tables up', () => {
+    // Both blocks end up in the same shared `AGENTS.md` and answer the same core
+    // questions, so the columns they share sit in the same order at the same
+    // widths: 谁 / run configuration / 怎么跑 / 何时跑 / 跑前做 / 说明. What they
+    // do NOT share stays where it belongs to its own block — the app table keeps
+    // `端口`, because a service always has one and a flow does not. So the rule is
+    // alignment of the shared columns, not two identical tables.
+    const rowOf = (text, startsWith) =>
+      text.split('\n').find((line) => line.startsWith(startsWith));
+    const cellsOf = (row) => row.split('|').slice(1, -1).map((cell) => cell.trim());
+
+    const standalone = cellsOf(rowOf(readTemplate(), '| 应用 |'));
+    const manager = cellsOf(rowOf(managerTemplate(), '| 项目 |'));
+
+    // Only the first cell differs: it says whose configuration this is.
+    expect(standalone[0]).toBe('应用');
+    expect(manager[0]).toBe('项目');
+
+    // A service has a port; a fixed flow is not a service and has no such column.
+    expect(standalone).toContain('端口');
+    expect(manager).not.toContain('端口');
+
+    // The shared columns appear in both, in the same relative order.
+    const shared = ['run configuration', '怎么跑', '何时跑', '跑前做', '说明'];
+    const positionsOf = (columns) => shared.map((name) => columns.indexOf(name));
+    expect(positionsOf(standalone)).not.toContain(-1);
+    expect(positionsOf(manager)).not.toContain(-1);
+    // Inserting a column may shift an index, but it must not reorder them.
+    expect(positionsOf(standalone)).toEqual([...positionsOf(standalone)].sort((a, b) => a - b));
+    expect(positionsOf(manager)).toEqual([...positionsOf(manager)].sort((a, b) => a - b));
+
+    // Widths follow one convention (a CJK glyph is two wide, ASCII is one), so a
+    // separator cell always has exactly as many dashes as its header is wide. That
+    // is what keeps the two tables looking like one family without padding, and it
+    // is why an editor that normalises spaces cannot break the alignment.
+    const displayWidth = (text) =>
+      [...text].reduce((width, ch) => width + (/[⺀-￯]/.test(ch) ? 2 : 1), 0);
+    const tablesOf = (text, startsWith) =>
+      text
+        .split('\n')
+        .map((line, index, lines) => [line, lines[index + 1]])
+        .filter(([line]) => line.startsWith(startsWith))
+        .map(([line, separator]) => [cellsOf(line), cellsOf(separator)]);
+    for (const [text, startsWith] of [
+      [readTemplate(), '| 应用 | run configuration'],
+      [managerTemplate(), '| 项目 | run configuration'],
+    ]) {
+      const tables = tablesOf(text, startsWith);
+      expect(tables.length, `${startsWith} 的表头后面没有分隔行`).toBeGreaterThan(0);
+      for (const [header, separator] of tables) {
+        expect(separator.map((cell) => cell.length)).toEqual(header.map(displayWidth));
+      }
+    }
+  });
+
+  it('splits both blocks by operating system', () => {
     // The same project starts differently per platform — an interpreter path is
     // enough to make a configuration usable on one OS and dead on another (a
     // Windows PowerShell INTERPRETER_PATH cannot run on macOS). One table would
-    // have to mix them, and the model would reach for the wrong one.
+    // have to mix them, and the model would reach for the wrong one. Both blocks
+    // answer to this: the app tables here, the flow tables in the manager block.
     const template = readTemplate();
     expect(template).toContain('按操作系统分成两张表');
     expect(template).toContain('### macOS / Linux');
     expect(template).toContain('### Windows');
     expect(template).toContain('INTERPRETER_PATH');
     // Exactly two app tables, one per platform.
-    const header = '| 应用 | run configuration | 目录 | 端口 | 启动前流程 | 说明 |';
+    const header = '| 应用 | run configuration | 怎么跑 | 端口 | 何时跑 | 跑前做 | 说明 |';
     expect(template.split(header)).toHaveLength(3);
+
+    // Same split on the other side, with its own columns.
+    const manager = managerTemplate();
+    expect(manager).toContain('按操作系统分成两张表');
+    expect(manager).toContain('### macOS / Linux');
+    expect(manager).toContain('### Windows');
   });
 
   it('restarts without asking, so the loop stays unattended', () => {

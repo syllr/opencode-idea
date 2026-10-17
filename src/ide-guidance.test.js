@@ -68,7 +68,7 @@ describe('工具清单(按功能,不按项目重复)', () => {
       '根项目 `ide_search_symbol` ｜ modelserver `modelserver_search_symbol`',
     );
     // 功能说明只出现一次:没有"按项目各抄一遍"的第二段。
-    expect(text.match(/按名字找符号的声明位置/g)).toHaveLength(1);
+    expect(text.match(/本插件最不可替代的能力/g)).toHaveLength(1);
     expect(text.match(/### 符号/g)).toHaveLength(1);
   });
 
@@ -192,6 +192,36 @@ describe('工具清单(按功能,不按项目重复)', () => {
       expect(line.match(/`ide_/g)?.length).toBe(1);
       expect(line.match(/`modelserver_/g)?.length).toBe(1);
     }
+  });
+});
+
+describe('看依赖实现只有一条路(javap 的坑)', () => {
+  it('front-loads the two-step route as the first thing under the heading', () => {
+    // 实测失效(idea-mcp-enhance 会话):整个会话 398 次 shell,reasoning 里 javap 出现 175 次,
+    // search_symbol 只在用户开口之后才出现 —— 老文案把这条写成了"找声明位置的技巧",模型当时的
+    // 问题是"这个平台方法到底怎么实现的",两边根本对不上。所以先把"要看实现"这个动因写在最前。
+    const text = stock();
+    expect(text).toContain('要读任何类 / 方法 / 字段的源码,就两步');
+    // 总则里也点一句,那是每条路由规则都会路过的地方。
+    expect(text).toContain('看某个类 / 方法 / 字段在哪定义、内部怎么实现的,只有一条路');
+  });
+
+  it('bans the javap / unzip route instead of merely offering the tool', () => {
+    const text = stock();
+    // 只写"我能搜符号"拦不住 `javap -c -p -cp <自己拼的 jar 路径>` —— 那是模型的默认手艺,
+    // 必须显式说"不要这样",并给出它自己的理由(副本 / 字节码清单)。
+    expect(text).toContain('不要自己拼 jar 路径用 `javap` / `unzip` / 解包去看');
+    expect(text).toContain('编译时真正用的依赖');
+    expect(text).toContain('另一份副本');
+    expect(text).toContain('反编译源码');
+    // 依赖库正是这套的主要用场,不是"顺带也能搜到"。
+    expect(text).toContain('正是它最该用的场合');
+  });
+
+  it('puts the instruction first in the search_symbol bullet', () => {
+    const text = stock();
+    // 参数与固定值必须在最前面,机制解释随后 —— 模型是扫读的。
+    expect(text).toContain('**`q` 传查询文本,固定带上 `include_external: true`。**');
   });
 });
 

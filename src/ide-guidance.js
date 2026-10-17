@@ -14,14 +14,24 @@
 //   2. Only IDE-only capability is routed here; reading, writing and searching
 //      stay on the native tools.
 //
-// 校验 (lint / build) is the one place that also carries a *when*, because the
-// tools are not there to be offered — they are there to be used unprompted, and
-// the model simply skips them (observed: it went and compiled by hand in `shell`
+// 校验 (lint / build) is one place that also carries a *when*, because the tools
+// are not there to be offered — they are there to be used unprompted, and the
+// model simply skips them (observed: it went and compiled by hand in `shell`
 // instead, then reported success). The rule is a decision, not a mandate: batch
 // edits → one `build_project` at the end, single-file fiddling → `lint_files`
 // once when the round is over, never one check per keystroke and never zero
 // checks. Spelling out both failure modes is the point — "always check" is as
 // wrong as "never check", and only the model knows which round it is in.
+//
+// 符号 carries the same kind of *when*, for the same reason. In the observed
+// session (a JetBrains plugin job on the IntelliJ Platform API) the model ran 398
+// shells and mentioned `javap` 175 times in its own reasoning while mentioning
+// `search_symbol` three times, two of which were after the user insisted. So the
+// text now names the *situation* first ("you want to know how this class or
+// method is implemented"), then bans the route it actually takes (`javap`,
+// `unzip` on a hand-assembled jar path) with the reason that wins that argument:
+// the IDE index holds the copy the project compiles against, and it hands back
+// decompiled source instead of a bytecode listing.
 //
 // ## 一个会话,多个项目,多套前缀
 //
