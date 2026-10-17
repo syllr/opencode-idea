@@ -213,7 +213,7 @@ describe('shipped skills', () => {
     expect(template).not.toContain('| 项目 |');
     expect(template.split(entry)).toHaveLength(4);
     // The four items, in the order the block fixes them.
-    for (const item of ['run', 'when', 'before run', 'after run', 'desc']) {
+    for (const item of ['when', 'before run', 'run', 'after run', 'desc']) {
       expect(template).toContain(`  - ${item}:`);
     }
 
@@ -335,7 +335,7 @@ describe('shipped skills', () => {
     // configuration, so the only place to say it is prose in this column.
     const template = readTemplate();
     expect(template).toContain(
-      '| app | run configuration | run | port | before run | after run | desc |',
+      '| app | run configuration | before run | run | port | after run | desc |',
     );
     expect(template).toContain('**before run**');
     // A service is run, not just named: how it is run belongs in the table too,
@@ -343,13 +343,13 @@ describe('shipped skills', () => {
     expect(template).toContain('**run**');
     expect(template).toContain('rerun');
     // Usually empty, and ordered steps when not.
-    expect(template).toContain('多数应用留空');
+    expect(template).toContain('多数应用写 `无`');
     expect(template).toContain('按顺序写清第 1 步、第 2 步、第 3 步');
     // `after run` carries what the run leaves behind — for a resident app that is
     // mostly "which port it listens on" (its own column) and nothing else, so the
     // rule says most rows leave it empty.
     expect(template).toContain('**after run**');
-    expect(template).toContain('多数留空');
+    expect(template).toContain('多数写 `无`');
     // No "when" column here: a resident app is started when you want to test a
     // change, so there is no other moment to name. (The archive keeps one — a
     // build or a migration does happen at a particular time.)
@@ -382,12 +382,12 @@ describe('shipped skills', () => {
 
     const manager = managerTemplate();
     const managerFields = [...new Set(itemNames(manager))];
-    expect(managerFields).toEqual(['run', 'when', 'before run', 'after run', 'desc']);
+    expect(managerFields).toEqual(['when', 'before run', 'run', 'after run', 'desc']);
     expect(managerFields).not.toContain('port');
 
     // The four shared names appear in both, in the same relative order — the app
     // table's own columns may sit between them, which is why only these four line up.
-    const shared = ['run', 'before run', 'after run', 'desc'];
+    const shared = ['before run', 'run', 'after run', 'desc'];
     const positions = shared.map((name) => standalone.indexOf(name));
     expect(positions).not.toContain(-1);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
@@ -431,7 +431,7 @@ describe('shipped skills', () => {
     expect(template).toContain('### Windows');
     expect(template).toContain('INTERPRETER_PATH');
     // Exactly two app tables, one per platform.
-    const header = '| app | run configuration | run | port | before run | after run | desc |';
+    const header = '| app | run configuration | before run | run | port | after run | desc |';
     expect(template.split(header)).toHaveLength(3);
 
     // Same split on the other side — sections instead of tables.
