@@ -92,8 +92,9 @@ describe('shipped skills', () => {
     const manager = readSkill('idea-run-config-manager').content;
     expect(manager).toContain('直接动手');
     expect(manager).toContain('`.run/<配置名>.run.xml`');
-    expect(manager).toContain('assets/types/README.md');
-    expect(manager).toContain('assets/types/<类型>.md');
+    expect(manager).toContain('支持矩阵');
+    expect(manager).toContain('assets/types/');
+    expect(manager).toContain('按类型找模板');
     // Writing the file is only half of it: an unnoticed file is worse than none,
     // so the catalog has to prove it was picked up.
     expect(manager).toContain('写完必须复查');
@@ -103,11 +104,12 @@ describe('shipped skills', () => {
 
   it('ships one template per configuration type it verified', () => {
     // The whole reason a wrong `type` fails silently is that nobody knows the ids.
-    // So every type the skill writes must be named in the index with its real id,
+    // So every type the skill writes must be named in the matrix with its real id,
     // and every template must carry the envelope and the trailing `<method v="2" />`
     // that a real file has — a template missing them teaches a file the IDE ignores.
-    const types = path.join(path.dirname(readSkill('idea-run-config-manager').path), 'assets/types');
-    const index = readFileSync(path.join(types, 'README.md'), 'utf8');
+    const skill = readSkill('idea-run-config-manager');
+    const manager = skill.content;
+    const types = path.join(path.dirname(skill.path), 'assets/types');
 
     for (const id of [
       'ShConfigurationType',
@@ -118,20 +120,28 @@ describe('shipped skills', () => {
       'GoApplicationRunConfiguration',
       'NodeJSConfigurationType',
     ]) {
-      expect(index, id).toContain(id);
+      expect(manager, id).toContain(id);
     }
     // Types whose fields were never verified against a real file stay unwritten
-    // rather than guessed, and the index says so.
-    expect(index).toContain('Application');
-    expect(index).toContain('JarApplication');
-    expect(index).toContain('⏳');
+    // rather than guessed, and the matrix says so.
+    expect(manager).toContain('Application');
+    expect(manager).toContain('JarApplication');
+    expect(manager).toContain('⏳');
+    // The matrix and the contract live in the skill itself: what may be written
+    // is one thing to read, not a pointer chasing another document.
+    expect(manager).toContain('## 硬性契约(所有类型都一样)');
+    // Templates are added by us, not invented on the spot: teaching the model
+    // how to author one is how a guessed field name gets into a template.
+    expect(manager).not.toContain('Store as project file');
 
     for (const file of ['shell.md', 'maven.md', 'gradle.md', 'npm.md', 'python.md', 'go-build.md', 'node.md']) {
       const template = readFileSync(path.join(types, file), 'utf8');
       expect(template, file).toContain('ProjectRunConfigurationManager');
       expect(template, file).toContain('method v="2"');
       // Its own type id, so a template can never be applied to another type.
-      expect(template, file).toContain(index.split('\n').find((line) => line.includes(`[${file}]`)).split('|')[2].trim());
+      const row = manager.split('\n').find((line) => line.includes(`](assets/types/${file})`));
+      expect(row, `矩阵里没有 ${file}`).toBeTruthy();
+      expect(template, file).toContain(row.split('|')[2].trim());
     }
   });
 

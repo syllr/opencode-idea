@@ -14,6 +14,15 @@
 //   2. Only IDE-only capability is routed here; reading, writing and searching
 //      stay on the native tools.
 //
+// 校验 (lint / build) is the one place that also carries a *when*, because the
+// tools are not there to be offered — they are there to be used unprompted, and
+// the model simply skips them (observed: it went and compiled by hand in `shell`
+// instead, then reported success). The rule is a decision, not a mandate: batch
+// edits → one `build_project` at the end, single-file fiddling → `lint_files`
+// once when the round is over, never one check per keystroke and never zero
+// checks. Spelling out both failure modes is the point — "always check" is as
+// wrong as "never check", and only the model knows which round it is in.
+//
 // ## 一个会话,多个项目,多套前缀
 //
 // 每个接入的项目都用**自己的** MCP server 注册（root = `ide`，子项目 = 目录名），

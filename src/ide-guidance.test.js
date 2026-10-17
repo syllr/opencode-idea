@@ -195,6 +195,40 @@ describe('工具清单(按功能,不按项目重复)', () => {
   });
 });
 
+describe('校验(改完代码自己先查一遍)', () => {
+  it('makes the model verify on its own instead of only being offered the tools', () => {
+    // 实测过的失效:工具清单里写着 lint/build,模型却当没看见,自己去 shell 里编一遍就宣布完成。
+    // 所以这一节必须先给出"要查"这件事,再讲怎么挑 —— 只列工具等于没提醒。
+    const text = stock();
+    expect(text).toContain('改完代码自己先查一遍');
+    // 判断权留给模型:不是每步都查,也不是不查。
+    expect(text).toContain('这不是流程要求,是你自己的判断');
+    // 两个失效方向都点名:查太勤和压根不查。
+    expect(text).toContain('中途不查');
+    expect(text).toContain('别把校验整段省掉');
+  });
+
+  it('gives one rule per editing shape, keyed to what the model knows', () => {
+    const text = stock();
+    // 判据必须是模型自己掌握的信息(这轮改了什么、还打算改多少),不是外部信号。
+    expect(text).toContain('这次要改一大片');
+    expect(text).toContain('全部改完再 `build_project` 一次');
+    expect(text).toContain('这次只改一处,或在同一个文件上反复微调');
+    expect(text).toContain('把这轮改过的文件一次 `lint_files` 掉');
+    // 跨文件影响面决定用哪个工具。
+    expect(text).toContain('签名 / 接口 / import / 依赖');
+    expect(text).toContain('lint 就够');
+  });
+
+  it('asks for the reported problems to be handled, and keeps IDE tools primary', () => {
+    const text = stock();
+    // 只查不处理等于把噪音原样交给用户。
+    expect(text).toContain('改掉,或说清为什么不改');
+    // 观察到的绕路:自己去 shell 里临时编译 → 必须写明那不是等价物。
+    expect(text).toContain('不要改用 `shell` 里临时自己编一遍代替');
+  });
+});
+
 describe('run-lifecycle 能力', () => {
   it('says nothing about them for stock IDEes', () => {
     const text = stock();
