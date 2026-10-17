@@ -12,10 +12,14 @@ const readTemplate = () => readFileSync(TEMPLATE, 'utf8');
 describe('shipped skills', () => {
   it('loads every skill directory into a Skill.Info-shaped definition', () => {
     const skills = readSkills();
-    expect(skills.map(({ skill }) => skill.id)).toEqual(['idea-standalone']);
+    // Sorted by id, so the order is stable across runs.
+    expect(skills.map(({ skill }) => skill.id)).toEqual(['idea-run-config-manager', 'idea-standalone']);
     // The tools a skill drives belong to the skill, not to the plugin: the
     // requirement ships in the frontmatter, so adding a skill stays a directory.
-    expect(readSkills().map(({ requires }) => requires)).toEqual([['rerun_run_configuration']]);
+    expect(readSkills().map(({ requires }) => requires)).toEqual([
+      ['create_shell_run_configuration'],
+      ['rerun_run_configuration'],
+    ]);
 
     const skill = readSkill('idea-standalone');
     // `Skill.Info` requires exactly these keys (see @opencode/schema/skill):
@@ -33,14 +37,75 @@ describe('shipped skills', () => {
     expect(skill.content.startsWith('---')).toBe(false);
   });
 
-  it('ships no skill about authoring run configurations', () => {
-    // `idea-run-config` was removed deliberately: the IDE plugin owns Shell
-    // creation, editing and deleting were always tool-less, and teaching the
-    // model to hand-write `.run/*.run.xml` was the fragile half (a wrong `type`
-    // makes the IDE ignore the whole file, silently). Anything that needs a
-    // configuration the agent cannot create now goes to the user.
+  it('manages configurations through tools, never through hand-written XML', () => {
+    // `idea-run-config` was removed deliberately — not because configuration
+    // management is off limits, but because its method was: hand-authoring
+    // `.run/*.run.xml` is the fragile path (a wrong `type` makes the IDE ignore
+    // the whole file, silently). `idea-run-config-manager` takes the subject over
+    // and keeps the rule — the model never writes that file, and anything it
+    // cannot create goes to the user.
     expect(readSkills().map(({ skill }) => skill.id)).not.toContain('idea-run-config');
     expect(() => readSkill('idea-run-config')).toThrow();
+
+    const manager = readSkill('idea-run-config-manager').content;
+    expect(manager).toContain('不要写 `.run/*.run.xml`');
+    expect(manager).toContain('交给用户');
+  });
+
+  it('records the manager conclusions as its own marked block', () => {
+    // Same shape as idea-standalone, different subject: this block is the memory
+    // of "which flows are already solidified here", so the next session reuses a
+    // configuration instead of re-asking the same question. It has to state the
+    // ownership of that block too, or an update would trample its neighbours.
+    const skill = readSkill('idea-run-config-manager');
+    expect(skill.content).toContain('项目根 `AGENTS.md`');
+    expect(skill.content).toContain('<!-- idea-run-config-manager:begin -->');
+    expect(skill.content).toContain('<!-- idea-run-config-manager:end -->');
+    expect(skill.content).toContain('不要触碰');
+    // The skeleton lives in the template, so the skill's job is to point at it.
+    expect(skill.content).toContain('assets/AGENTS.template.md');
+  });
+
+  it('keeps the manager template to non-resident flows', () => {
+    const skill = readSkill('idea-run-config-manager');
+    const template = readFileSync(path.join(path.dirname(skill.path), 'assets/AGENTS.template.md'), 'utf8');
+
+    // Same wrapper the produced block uses, so a diff of the two is meaningful.
+    expect(template.startsWith('<!-- idea-run-config-manager:begin -->')).toBe(true);
+    expect(template.trimEnd().endsWith('<!-- idea-run-config-manager:end -->')).toBe(true);
+
+    const headings = template.split('\n').filter((line) => /^#{1,6} /.test(line));
+    expect(headings).toEqual([
+      '# run configuration 管理纪律',
+      '## 一、已固化的固定流程',
+      '## 二、这些配置怎么跑 / 停 / 重启',
+    ]);
+
+    // The app table belongs to idea-standalone: listing resident apps here too
+    // would leave two blocks disagreeing about how the same app starts.
+    expect(template).not.toContain('| 应用 | run configuration | 目录 | 端口 | 启动前流程 | 说明 |');
+    expect(template).toContain('长驻应用不写在这里');
+
+    // Per-section guidance lives in the template, and the instructions for the
+    // generating step must not survive into the produced block.
+    expect(template).toContain('<!-- 生成提示:begin -->');
+    expect(template).toContain('产物里整块删掉');
+    expect(skill.content).toContain('产物里整块删掉');
+    // The template carries metavariables; it also carries the rule that none of
+    // them may survive into the produced block.
+    expect(template).toContain('{...}');
+    expect(template).toContain('不留进产物');
+  });
+
+  it('keeps the manager off hand-rolled start-up commands', () => {
+    // Reading the list of configurations and running them are both tool calls;
+    // the one thing the skill must never do is substitute a command line of its
+    // own, or a hand-written `.run/*.run.xml`, for a configuration.
+    const content = readSkill('idea-run-config-manager').content;
+    expect(content).toContain('直接调用,不传任何参数');
+    expect(content).toContain('唯一来源');
+    expect(content).toContain('不要手搓启动命令');
+    expect(content).toContain('手写');
   });
 
   it('keeps the standalone skill teaching the four-part rule', () => {

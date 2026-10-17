@@ -18,7 +18,7 @@ OpenCode 插件,面向 JetBrains 项目 (IntelliJ IDEA / PyCharm / WebStorm 等)
 
 | 命令                            | 作用                                                                            |
 | ------------------------------- | ------------------------------------------------------------------------------- |
-| `/open-in-ide [ide]`           | 接入 root 及其全部已登记子项目;第一次**没有配置**时由 AI 问用户 root 用哪个 IDE |
+| `/open-in-ide [ide]`            | 接入 root 及其全部已登记子项目;第一次**没有配置**时由 AI 问用户 root 用哪个 IDE |
 | `/add-sub-module-in-ide <路径>` | 登记一个子项目(相对 root 的路径);随后由 AI 问用户它用哪个 IDE                   |
 | `/delete-in-ide`                | 删掉**整个**配置(root + 全部子项目)并注销全部 IDE MCP                           |
 
@@ -225,12 +225,12 @@ IDE 内置的 MCP Server 只能 **启动已有**的 run configuration(`execute_r
 也查不到运行状态**。配套的 IDEA 插件 [`idea-mcp-enhance`](https://github.com/syllr/idea-mcp-enhance)(IDEA 2026.2+,另装)
 补齐这四件事 —— 正好是「建 → 看 → 停 → 重启」一条链:
 
-| 工具 (OpenCode 里叫 `ide_*`)         | 作用                                                                                                                     |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `ide_create_shell_run_configuration` | 新建**项目级** Shell 配置(写 `.run/<name>.run.xml`);只支持 Shell 类型。**重操作 —— 只给固定流程建,且必须先取得用户同意** |
-| `ide_list_running_configurations`    | **当前真正在跑**的配置:几个实例 / 各自 pid / 退出码。`>1` 个实例就是端口漂移的信号                                       |
-| `ide_stop_run_configuration`         | 停掉该配置的**全部**实例并等它们退出;没在跑也返回成功(幂等)                                                              |
-| `ide_rerun_run_configuration`        | 等同 IDE 的 **Rerun** 按钮:在跑就重启、没在跑就启动,读 `started` 判断是否真起来了                                        |
+| 工具 (OpenCode 里叫 `ide_*`)         | 作用                                                                                                                               |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `ide_create_shell_run_configuration` | 新建**项目级** Shell 配置(写 `.run/<name>.run.xml`);只支持 Shell 类型。**项目资产 —— 只给会重复发生的流程建,且必须先征得用户同意** |
+| `ide_list_running_configurations`    | **当前真正在跑**的配置:几个实例 / 各自 pid / 退出码。`>1` 个实例就是端口漂移的信号                                                 |
+| `ide_stop_run_configuration`         | 停掉该配置的**全部**实例并等它们退出;没在跑也返回成功(幂等)                                                                        |
+| `ide_rerun_run_configuration`        | 等同 IDE 的 **Rerun** 按钮:在跑就重启、没在跑就启动,读 `started` 判断是否真起来了                                                  |
 
 opencode-idea 对这一组工具做三件事:
 
@@ -241,10 +241,12 @@ opencode-idea 对这一组工具做三件事:
    两个地方会跟着变:
    - 「运行配置」段写明**改完代码要重启无热重载的进程就用 `ide_rerun_run_configuration`,不要用 `pkill` / `kill` / shell**
      —— 这正是它要解决的问题:外部杀掉的进程 IDE 并不知道,Run 窗口仍显示运行中,下次启动就会撞端口;
-   - 「命令执行」段把**新建 run configuration 定性成重操作**:一个项目通常只建几个(固定要跑的构建 / 装依赖 / dev server),
-     **不是随手一条命令就建一个**,而且要**先告诉用户建什么、为什么,取得同意再动手**。只有最后"用哪条路建"才按工具是否
-     分成两条**无条件 + 有条件**:「配置一律不由你写」永远在;只有「Shell 例外,用 `ide_create_shell_run_configuration`」那一行
-     按工具是否存在分流,没有就换成「缺配置请用户在 IDEA 里建」。**没装插件时绝不会提到那个工具。**
+   - 「运行配置」段的**新建那条**把 run configuration 定性成**项目资产**:一个项目通常只建几个(固定要跑的构建 / 装依赖 / dev server / 迁移),
+     **不是随手一条命令就建一个**;判据是**这件事以后会不会以同样形态再发生** —— 会就该建、模型必须**主动**向用户提议(摊开配置名 /
+     实际命令 / 工作目录 / 理由),用户同意才动手;不会就裸 `shell` 跑完算(那条里写明了这层区分:`shell` 就地执行不留痕、
+     建配置是落盘成 `.run/*.run.xml` 供反复用)。判据只写在这一处,**「命令执行」段不重复**,只留
+     「配置一律不由你写」这条无条件的,以及"该建的用哪条路建"那一条按工具是否存在分流:有工具时指向上面那条,
+     没有时换成「讲清楚配置名 / 命令 / 工作目录 / 理由,请用户在 IDEA 里建」。**没装插件时绝不会提到那个工具。**
 3. **工具名清单**写在 `src/mcp/enhance.js`(与原生 IDE 的 `src/mcp/idea.js` 分开放:原生走原生,插件的走插件的),
    与该仓库的 `RunLifecycleSchemas.kt` 保持同步。工具按**存在的子集**逐个点名(而不是「有就全写」),这样旧版本的配套
    插件少给一两个工具时,引导也不会提到它们。
@@ -259,7 +261,7 @@ opencode-idea 对这一组工具做三件事:
 所以插件的立场是:
 
 - **配置一律不由 AI 动手** —— 不手写 `.run/*.run.xml`,也不手搓启动命令。这条无条件;
-- **Shell 类型**且装了配套插件 → 用 `ide_create_shell_run_configuration`(新建是重操作,**必须先取得用户同意**);
+- **Shell 类型**且装了配套插件 → 用 `ide_create_shell_run_configuration`(新建是项目资产:**会重复发生的流程才建**,且**必须先征得用户同意**);
 - **其他类型,或没装插件** → **请用户在 IDEA 里建**,AI 只负责说明要建什么、为什么。
 
 > **曾经有一个 `idea-run-config` skill 教模型手写 `.run/*.run.xml`,已经删掉。** 理由:手写那条路很脆 —— `type` 写错 IDE 会
@@ -271,7 +273,8 @@ opencode-idea 对这一组工具做三件事:
 1. **项目配置** —— `/open-in-ide` 写入配置时注册、`/delete-in-ide` 删配置时注销;以前配置过的 root 在 `setup` 时(读回配置)
    也会走这一步。未配置的 root 不受影响。
 2. **IDE 真的在提供这个 skill 依赖的工具** —— skill 在自己的 frontmatter 里用 `requires:` 声明它绕着哪个工具写,而且写的是**后缀**
-   (例如 `idea-standalone` 声明 `rerun_run_configuration`,真实工具名是 `<项目前缀>rerun_run_configuration`)。**没这个工具就不注册这个 skill**:
+   (例如 `idea-standalone` 声明 `rerun_run_configuration`、`idea-run-config-manager` 声明 `create_shell_run_configuration`,真实工具名是
+   `<项目前缀>rerun_run_configuration` / `<项目前缀>create_shell_run_configuration`)。**没这个工具就不注册这个 skill**:
    一个教模型去调"它根本看不到的工具"的 skill,不是知识,是一次注定的失败调用。工具的可见性是双向跟随的 —— `setup` 时还没
    连过 IDE、目录未知,所以那时**不注册**;等 IDE 应答(`/open-in-ide` 或重连)后目录才算已知,该出现的才出现;反过来,某个
    请求里工具没了,skill 也跟着撤(不需要等重连)。
@@ -302,6 +305,31 @@ loader 消费、**不会进入注册给 OpenCode 的定义**),由 `src/skill/loa
 
 事实一律先查后写:配置名来自 `ide_get_run_configurations`,热重载列来自运行方式,端口读不到就问用户 —— 不猜。
 **只动自己的标记块**:根 `AGENTS.md` 是共享文件(`project-scaffold` 的宪法、项目自己的内容都在里面),标记之外一字不改。
+
+## run configuration 管理 (skill)
+
+"本项目有哪些 run configuration、各自干什么、怎么跑"这份**项目级结论**由 `idea-run-config-manager` skill 固化:同样写进**项目根 `AGENTS.md`**
+的**标记块**(`<!-- idea-run-config-manager:begin -->` / `<!-- idea-run-config-manager:end -->`),骨架在
+`skills/idea-run-config-manager/assets/AGENTS.template.md`,**SKILL.md 只写流程、指向模板**,不重复骨架。两段固定 ——
+
+1. **已固化的固定流程**:一行一个**非长驻**流程(迁移 / 同步 DDL / 生成代码 / 打包 / 装依赖 / 清洗数据),
+   列 `流程 | run configuration | 何时跑 | 怎么跑 | 说明`;配置名必须能在 `ide_get_run_configurations` 里查到,**缺配置就交给用户**;
+   末尾可选一行"明确不固化的",记用户的决定,免得下次又问一遍;
+2. **这些配置怎么跑 / 停 / 重启**:一次性 Job(跑完即退)→ `ide_execute_run_configuration`;长驻进程 → `ide_rerun_run_configuration`
+   (不分辨启动还是重启);**停** → `ide_stop_run_configuration` 停掉全部实例;**不要 `kill` / `pkill`**(外部杀掉的进程 IDE 不知道,
+   Run 窗口仍显示运行中,下次启动就撞端口);停 / 重启前后先用 `ide_list_running_configurations` 看真实状态。
+
+**它管的不是"某条命令怎么跑",而是"哪些命令值得落盘成配置"** —— 判据只有一条:**这件事以后会不会以同样的形态再发生**。
+**会** → 该固化,而且模型必须**主动**向用户提议(把配置名 / 实际命令 / 工作目录 / 理由摊开),同意才建;
+**不会** → 就用原生 `shell` 就地跑完,不建配置(`shell` 用完不留痕,配置是落盘成 `.run/<name>.run.xml` 供反复用)。
+另一半是**防泛滥**:建前先查已有配置、有同类就复用,不按参数 / 环境 / 文件拆配置(变化的入参走单次覆盖)。
+
+**两块各管一半,不互相抄**:长驻应用的启动入口 / 端口 / 热重载属于 `idea-standalone` 的块,固定流程与配置的启停方式属于本块 ——
+两边的模板都写明了这条边界,免得同一个应用在两个块里各写一份、彼此矛盾。
+
+**它比 `idea-standalone` 多一道门**:frontmatter 里 `requires: create_shell_run_configuration` —— 它绕着"新建配置"这件事写,而新建只有
+配套插件 `idea-mcp-enhance` 能做,所以**没装插件的 IDE 看不到它**(`idea-standalone` 只要 `rerun_run_configuration`,门更松)。这是刻意的:
+一个只教模型"去建配置"、却没给建配置工具的 skill,只会把用户拖进一次注定失败的调用。
 
 ## 项目命令执行 (Run Configuration)
 

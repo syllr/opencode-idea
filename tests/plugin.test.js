@@ -1348,6 +1348,51 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
+  it('registers the run-configuration manager skill when the create tool is served', async () => {
+    // `idea-run-config-manager` drives configuration creation, which only the
+    // companion plugin `idea-mcp-enhance` can do. The rerun tool alone is not
+    // enough, so each skill keeps its own `requires` gate.
+    const fake = await startFakeIdeForProject();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({
+      ports: [fake.port],
+      toolRefreshTimeoutMs: 100,
+      ideaTools: [...DEFAULT_IDE_TOOLS, 'ide_create_shell_run_configuration'],
+    });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+
+    expect(state.skills.has('idea-run-config-manager')).toBe(true);
+    expect(state.skills.get('idea-run-config-manager').content).toContain('<!-- idea-run-config-manager:begin -->');
+    // The gate is this package's own metadata: it must not ride along into the
+    // definition OpenCode validates and the model reads.
+    expect(state.skills.get('idea-run-config-manager').requires).toBeUndefined();
+    // A different tool set is a different skill set — the rerun-only skill stays
+    // out rather than being offered on a partial plugin.
+    expect(state.skills.has('idea-standalone')).toBe(false);
+
+    await cleanup();
+  });
+
+  it('withholds the run-configuration manager skill from a rerun-only catalog', async () => {
+    const fake = await startFakeIdeForProject();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({
+      ports: [fake.port],
+      toolRefreshTimeoutMs: 100,
+      ideaTools: [...DEFAULT_IDE_TOOLS, 'ide_rerun_run_configuration'],
+    });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+
+    expect(state.skills.has('idea-run-config-manager')).toBe(false);
+    expect(state.skills.has('idea-standalone')).toBe(true);
+
+    await cleanup();
+  });
+
   it('withholds the standalone-mode skill for a marked project until the IDE answers', async () => {
     // Setup reads the mark from storage offline — nothing has connected yet — so
     // the catalog is unknown and the gated skill simply does not exist. It
@@ -1396,10 +1441,11 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('ships no run-configuration skill at all', async () => {
-    // Removed deliberately: the IDE plugin owns Shell creation, edit/delete were
-    // always tool-less, and hand-authored `.run/*.run.xml` is the fragile path.
-    // Anything the agent cannot create now goes to the user.
+  it('does not resurrect the removed hand-written-XML skill', async () => {
+    // The old `idea-run-config` taught hand-writing `.run/*.run.xml` — the fragile
+    // path (a wrong `type` makes the IDE ignore the whole file, silently).
+    // Management now lives in `idea-run-config-manager`, which goes through the
+    // tools and hands anything it cannot do to the user.
     const { ctx, state } = fakeCtx();
     state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
     const cleanup = await plugin.setup(ctx);

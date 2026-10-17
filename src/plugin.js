@@ -18,7 +18,8 @@
 //      (删掉整个配置) and `/add-sub-module-in-ide <路径>` (登记一个子项目),
 //      plus the `configure_ide_project` tool the MODEL calls to write the IDE a
 //      user picked into the config;
-//   3. registers the `idea-standalone` skill (marked projects only).
+//   3. registers the shipped skills (`skills/<id>/SKILL.md`) — marked projects
+//      only, and each one also gated on the IDE tools it drives.
 //
 // A root that was never configured is left untouched. Everything is manual:
 // setup does NOT probe or connect any IDE. The commands probe, open the IDE, and
@@ -1065,20 +1066,21 @@ export default {
     const isSameSkillSet = (skills, ids) =>
       skills.length === ids.length && skills.every((skill, index) => skill.id === ids[index]);
 
-    // The shipped skills are static knowledge (`skills/<id>/SKILL.md`), e.g. the
-    // standalone-mode discipline (every app starts from an IDEA run
-    // configuration, and starting one is the user's call, so the skill has to be
-    // there to write the project's own rules). They pass two independent gates,
+    // The shipped skills are static knowledge (`skills/<id>/SKILL.md`) that write
+    // a project's own rules into its `AGENTS.md`: `idea-standalone` fixes how
+    // resident apps are started, `idea-run-config-manager` fixes which repeated
+    // flows are solidified into configurations. They pass two independent gates,
     // because a skill can be wrong twice over:
     //
     //   * the project config — an unrelated project never sees an IDE skill;
     //   * the tools the IDE actually serves — a skill that teaches a call the
     //     model cannot make is not knowledge, it is a failed call waiting to
-    //     happen. `idea-standalone` drives `rerun_run_configuration`, which only
-    //     the companion plugin `idea-mcp-enhance` serves, so a stock IDE must not
-    //     see it at all. Each skill declares its own dependency in its frontmatter
-    //     (`requires:`), as a SUFFIX — tool names carry a per-project prefix, so
-    //     a hard-coded `idea_...` could only ever match one project.
+    //     happen. Both skills drive tools that only the companion plugin
+    //     `idea-mcp-enhance` serves (rerun for standalone, create for the
+    //     manager), so a stock IDE must not see them at all. Each skill declares
+    //     its own dependency in its frontmatter (`requires:`), as a SUFFIX — tool
+    //     names carry a per-project prefix, so a hard-coded `idea_...` could only
+    //     ever match one project.
     //
     // The catalog is unknown at setup: the config is read from storage offline,
     // before anything has connected to the IDE. So this is a reconcile rather
