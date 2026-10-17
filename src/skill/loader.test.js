@@ -306,15 +306,12 @@ describe('shipped skills', () => {
     }
   });
 
-  it('gives every config table both a when and a before-it column', () => {
+  it('gives every config table a how-to-run and a before-it column', () => {
     // Some configurations assume something was done first (deps installed, built,
     // a dependency service up). That something is usually not itself a run
     // configuration, so the only place to say it is prose in this column.
     const template = readTemplate();
-    expect(template).toContain(
-      '| 应用 | run configuration | 怎么跑 | 端口 | 何时跑 | 跑前做 | 说明 |',
-    );
-    expect(template).toContain('**何时跑**列');
+    expect(template).toContain('| 应用 | run configuration | 怎么跑 | 端口 | 跑前做 | 说明 |');
     expect(template).toContain('**跑前做**列');
     // A service is run, not just named: how it is run belongs in the table too,
     // or the reader has to go looking for the rule somewhere else.
@@ -323,16 +320,21 @@ describe('shipped skills', () => {
     // Usually empty, and ordered steps when not.
     expect(template).toContain('多数应用留空');
     expect(template).toContain('按顺序写清第 1 步、第 2 步、第 3 步');
+    // No "when" column here: a resident app is started when you want to test a
+    // change, so there is no other moment to name. (The archive keeps one — a
+    // build or a migration does happen at a particular time.)
+    expect(template).not.toContain('| 何时跑 |');
   });
 
   it('answers with the same field names in both blocks', () => {
     // Both blocks end up in the same shared `AGENTS.md` and answer the same core
     // questions, so the names they share are the same, in the same order:
-    // 怎么跑 / 何时跑 / 跑前做 / 说明. The SHAPES differ on purpose — the app table
-    // stays a table (short cells, and a service always has a port), the manager
-    // block is a list of entries — so what has to line up is the vocabulary and its
-    // order, not the widths. What they do NOT share stays where it belongs: the app
-    // table keeps `端口`.
+    // 怎么跑 / 跑前做 / 说明. The SHAPES differ on purpose — the app table stays a
+    // table (short cells, and a service always has a port), the manager block is a
+    // list of entries — so what has to line up is the vocabulary and its order, not
+    // the widths. Each block also keeps what only it has: the app table `端口`, the
+    // archive `何时跑` (a resident app is started when you want to test a change, so
+    // there is no other moment to record; a build or a migration does have one).
     const rowOf = (text, startsWith) =>
       text.split('\n').find((line) => line.startsWith(startsWith));
     const cellsOf = (row) => row.split('|').slice(1, -1).map((cell) => cell.trim());
@@ -347,15 +349,18 @@ describe('shipped skills', () => {
     expect(standalone[0]).toBe('应用');
     // A service has a port; a fixed flow is not a service and has no such field.
     expect(standalone).toContain('端口');
+    expect(standalone).not.toContain('何时跑');
 
     const manager = managerTemplate();
     const managerFields = [...new Set(itemNames(manager))];
     expect(managerFields).toEqual(['怎么跑', '何时跑', '跑前做', '说明']);
     expect(managerFields).not.toContain('端口');
 
-    // The same names, in the same relative order — `端口` may sit between them in
-    // the app table, which is exactly why only the shared ones have to line up.
-    const positions = managerFields.map((name) => standalone.indexOf(name));
+    // The shared names, in the same relative order — `端口` sits between them in the
+    // app table, which is exactly why only the shared ones have to line up.
+    const shared = managerFields.filter((name) => name !== '何时跑');
+    expect(shared).toEqual(['怎么跑', '跑前做', '说明']);
+    const positions = shared.map((name) => standalone.indexOf(name));
     expect(positions).not.toContain(-1);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
 
@@ -391,7 +396,7 @@ describe('shipped skills', () => {
     expect(template).toContain('### Windows');
     expect(template).toContain('INTERPRETER_PATH');
     // Exactly two app tables, one per platform.
-    const header = '| 应用 | run configuration | 怎么跑 | 端口 | 何时跑 | 跑前做 | 说明 |';
+    const header = '| 应用 | run configuration | 怎么跑 | 端口 | 跑前做 | 说明 |';
     expect(template.split(header)).toHaveLength(3);
 
     // Same split on the other side — sections instead of tables.
