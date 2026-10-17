@@ -220,6 +220,13 @@ describe('shipped skills', () => {
     // usually not a configuration of their own, so those items are the only place
     // they can be written down.
     expect(template).toContain('**何时跑**');
+    // 何时跑 answers WHO may start it, and there are exactly two answers: a flow that
+    // only the user may ask for must not be launched by the model on its own; one the
+    // model may launch itself has to name the exact scenario.
+    expect(template).toContain('只由用户触发');
+    expect(template).toContain('AI 可自动触发');
+    expect(template).toContain('{只由用户触发 / AI 可自动触发}');
+    expect(template).toContain('必须把场景写具体');
     expect(template).toContain('**跑前做**');
     expect(template).toContain('跑之前要先做的事');
 
