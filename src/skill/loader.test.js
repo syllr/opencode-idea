@@ -254,6 +254,25 @@ describe('shipped skills', () => {
     }
     expect(template).toContain('{用户授权触发 / AI 自己触发}');
     expect(template).toContain('必须把场景写具体');
+    // 默认形态是"一条一行":简单条目不该被拆成一堆子项。
+    for (const line of [
+      '  - when:{用户授权触发 / AI 自己触发} —— {什么场景}',
+      '  - before run:{第 1 步 / 第 2 步 / 无}',
+      '  - run:{<前缀>_execute_run_configuration}',
+      '  - after run:{产物落在哪 / 接下来要做什么 / 无}',
+      '  - desc:{它是什么 + 有什么坑}',
+    ]) {
+      expect(template).toContain(line);
+    }
+    // 两种形态并存,而且是**逐项**判断:同一条可以一部分行内、一部分子列表。
+    // 这条判据必须写在模板里,否则复杂条目会被压成一行、简单条目又会被拆散。
+    expect(template).toContain('每一项都有两种写法,逐项判断');
+    expect(template).toContain('混着两种写法是常态');
+    expect(template).toContain('全子列表');
+    expect(template).toContain('全行内');
+    // 两种形态各给一份可照抄的例子,否则"什么时候拆"仍然只能靠猜。
+    expect(template).toContain('- `connector-build`(项目 ide)');
+    expect(template).toContain('- `db-migrate`(项目 ide)');
     // The product text explains the three modes instead of listing the items: the
     // reader has to know when it may act, and the item names already say what they
     // hold.
@@ -464,7 +483,10 @@ describe('shipped skills', () => {
     expect(manager).toContain('按操作系统分成两节');
     expect(manager).toContain('### macOS / Linux');
     expect(manager).toContain('### Windows');
-    expect(manager).not.toContain('| ---');
+    // 产物区(生成提示删掉之后要留下的那部分)是条目式,不是表格;
+    // 生成提示里允许出现说明用的表格,它不会进产物。
+    const product = manager.slice(manager.indexOf('### macOS / Linux'), manager.indexOf('## 用户手动触发'));
+    expect(product).not.toContain('|');
   });
 
   it('restarts without asking, so the loop stays unattended', () => {
