@@ -1,6 +1,5 @@
 ---
 name: idea-run-config-manager
-requires: create_shell_run_configuration
 description: "管理本项目的 run configuration:直接增 / 删 / 改(新建走工具,改和删直接编辑 `.run/<配置名>.run.xml` —— 都照 `assets/types/` 里**逐类型实测模板**写,没有模板的类型交给用户在 IDE 里配),并把配置档案同步进**项目根 `AGENTS.md`** 里由 `<!-- idea-run-config-manager:begin -->` 与 `<!-- idea-run-config-manager:end -->` 包裹的标记块 —— 每个 run configuration 一个条目,写清它干什么、怎么跑、什么时候跑;服务化的那些不在这里,它们归 `idea-standalone` 的块。当用户要建 / 删 / 改 run configuration,或要一份「这个项目有哪些配置、各自干什么」的说明时使用。"
 metadata:
   opencode/autoinvoke: false
@@ -9,6 +8,8 @@ metadata:
 # idea-run-config-manager — 增删改 run configuration + 维护配置档案
 
 **联动是硬要求**:配置被**新建 / 删除 / 修改**,文档就跟着**加条目 / 删条目 / 改条目** —— 无论那次改动是谁做的(你做的、用户自己做的、用户删掉的,都算)。改了配置却忘了同步这个档案块,等于它在骗下一个读者。
+
+**工具不在时**:先看工具表里有没有 `<前缀>_get_run_configurations` / `<前缀>_create_shell_run_configuration`。没有,就是项目还没接入 IDE(或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-ide`,接入之前**不要手写 `.run/*.run.xml` 假装做完**(IDE 不认,复查也过不了)。
 
 ## 流程
 

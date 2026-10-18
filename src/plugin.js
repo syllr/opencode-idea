@@ -564,8 +564,6 @@ export default {
     let commandRegistration;
     /** @type {{ dispose: () => Promise<void> | void } | undefined} */
     let skillRegistration;
-    /** Ids of the skills currently registered, so a sync can tell "unchanged". */
-    let registeredSkillIds = [];
     let disposed = false;
 
     // Latches when a request showed the IDE tools are gone. It is cleared
@@ -622,8 +620,6 @@ export default {
         // best effort
       }
       config = next;
-      // skill 生命周期跟随配置：配置在就注册 IDEA skill，删掉配置就移除。
-      await syncSkills();
     };
 
     /** 当前接入的全部项目（root 在前），每个带工具前缀与展示标签。 */
@@ -707,11 +703,7 @@ export default {
       // Without this, a session that already captured a snapshot keeps the old
       // tool list until the session is reopened.
       if (typeof ctx.tool?.reload === 'function') await ctx.tool.reload();
-      const ready = await waitForIdeTools();
-      // The catalog decides which of the shipped skills may be offered, so this
-      // is the first moment that question has an answer; see `syncSkills`.
-      await syncSkills();
-      return ready;
+      return await waitForIdeTools();
     };
 
     /**
@@ -1042,105 +1034,40 @@ export default {
       }
     };
 
-    /**
-     * The IDEA tools this project's IDE is serving right now.
-     *
-     * Empty is the honest answer for "does the IDE serve X?" before anything has
-     * connected — and it fails that way on error too, because the alternative
-     * (assuming a tool exists) is the one mistake that cannot be walked back
-     * after the model has seen it.
-     *
-     * @returns {Promise<Set<string>>}
-     */
-    const servedIdeaToolNames = async () => {
-      if (typeof ctx.tool?.list !== 'function') return new Set();
-      try {
-        return new Set(toolIds(await ctx.tool.list()));
-      } catch {
-        return new Set();
-      }
-    };
-
-    /** Same ids in the same order — `readSkills()` sorts, so the order is stable. */
-    const isSameSkillSet = (skills, ids) =>
-      skills.length === ids.length && skills.every((skill, index) => skill.id === ids[index]);
-
     // The shipped skills are static knowledge (`skills/<id>/SKILL.md`) that write
     // a project's own rules into its `AGENTS.md`: `idea-standalone` fixes how
     // resident apps are started, `idea-run-config-manager` fixes which repeated
-    // flows are solidified into configurations. They pass two independent gates,
-    // because a skill can be wrong twice over:
+    // flows are solidified into configurations.
     //
-    //   * the project config — an unrelated project never sees an IDE skill;
-    //   * the tools the IDE actually serves — a skill that teaches a call the
-    //     model cannot make is not knowledge, it is a failed call waiting to
-    //     happen. Both skills drive tools that only the companion plugin
-    //     `idea-mcp-enhance` serves (rerun for standalone, create for the
-    //     manager), so a stock IDE must not see them at all. Each skill declares
-    //     its own dependency in its frontmatter (`requires:`), as a SUFFIX — tool
-    //     names carry a per-project prefix, so a hard-coded `idea_...` could only
-    //     ever match one project.
+    // They are registered **once, when the plugin loads** — with no condition on
+    // the project config and none on the IDE's tool catalog. That is a deliberate
+    // reversal of the earlier design, which offered a skill only after the tools
+    // it drives were actually served. The gate looked right in isolation and was
+    // wrong in use: the client snapshots the skill list when the session starts,
+    // so anything registered later (by `/open-in-ide` finishing, or by a catalog
+    // refresh) stays invisible until the page is reloaded — the user reads that
+    // as "the skill is missing" while the registry already has it.
     //
-    // The catalog is unknown at setup: the config is read from storage offline,
-    // before anything has connected to the IDE. So this is a reconcile rather
-    // than a one-shot — every catalog refresh re-runs it, and it offers exactly
-    // what is justified right now. Until the IDE has answered, the gated skills
-    // simply do not exist.
+    // What the old gate protected against is handled where it belongs: the skill
+    // text itself says what to do when a tool is absent ("hand it back to the
+    // user", "run /open-in-ide"). A missing tool is a fact the model can read and
+    // act on; an invisible skill is not.
+    //
+    // The frontmatter `requires:` key is gone with the gate. It was this
+    // package's own metadata, never read by OpenCode, and keeping it after the
+    // gate disappeared would look like it still decided something.
     //
     // Deliberately NOT wrapped in a catch: these are core features of the plugin,
     // so a rejected definition must fail loudly. Swallowing it would ship a
     // silently incomplete plugin — which is exactly how 0.0.6 lost
     // `/open-in-ide` without anyone noticing until the command was gone.
-    const syncSkillsOnce = async () => {
+    const registerSkills = async () => {
       if (typeof ctx.skill?.transform !== 'function') return;
-
-      const served = await servedIdeaToolNames();
-      const wanted = (config ? readSkills() : [])
-        .filter(({ requires }) =>
-          requires.every((suffix) => prefixes().some((prefix) => served.has(`${prefix}${suffix}`))),
-        )
-        .map(({ skill }) => skill);
-      if (isSameSkillSet(wanted, registeredSkillIds)) return;
-
-      // Tear down and register again, the same way the MCP server is
-      // re-registered: a transform that only ever adds would leave a stale skill
-      // behind, and one that only removes could never bring it back.
-      registeredSkillIds = [];
-      const previous = skillRegistration;
-      skillRegistration = undefined;
-      if (previous) {
-        try {
-          await previous.dispose();
-        } catch {
-          // best effort
-        }
-      }
-      if (wanted.length === 0) return;
       skillRegistration = await ctx.skill.transform((editor) => {
-        for (const skill of wanted) editor.add(skill);
+        for (const { skill } of readSkills()) editor.add(skill);
       });
-      registeredSkillIds = wanted.map((skill) => skill.id);
     };
-
-    // Serialized like the reconciler, and for the same reason: one call disposes
-    // a registration before it makes the next, so two overlapping calls would
-    // leak one of them. That overlap is easy to reach — `/delete-in-ide` can land
-    // while a reconnect is still in flight. With the chain in place, callers may
-    // fire this without awaiting.
-    let skillSyncChain = Promise.resolve();
-    const syncSkills = () => {
-      const run = () => syncSkillsOnce();
-      const next = skillSyncChain.then(run, run);
-      skillSyncChain = next.then(
-        () => {},
-        () => {},
-      );
-      return next;
-    };
-    // A project configured in an earlier run gets its skills as soon as the IDE
-    // has answered; a project configured for the first time gets them when
-    // `/open-in-ide` runs (both paths go through `writeConfig` / this setup hook).
-    await syncSkills();
+    await registerSkills();
 
     /**
      * 问用户"这个项目用哪个 IDE"，由模型转达并回写。
@@ -1407,15 +1334,6 @@ export default {
         if (config || serving) {
           appendIdeRecoveryGuidance(event?.system, { marked: Boolean(config), serving });
         }
-        // A skill follows its tools in both directions, and this is the one place
-        // that sees the answer change WITHOUT a reconnect: a request that has
-        // lost the enhance tools must not keep the skill that drives them. Fired,
-        // not awaited — the hook is synchronous, and the chain in `syncSkills`
-        // makes that safe. `refreshIdeTools` covers the other direction.
-        //
-        // Skipped when there is nothing it could change, so a project that never
-        // touched the IDE does not pay a catalog read on every request.
-        if (config || registeredSkillIds.length > 0) void syncSkills();
         if (!injectGuidance) return;
         // Guidance promises tools the model can call, so it only goes out when
         // they are actually in this request.

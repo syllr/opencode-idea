@@ -1,6 +1,5 @@
 ---
 name: idea-standalone
-requires: rerun_run_configuration
 description: "为项目生成/维护 standalone(启动收口只有 IDEA run configuration)模式的纪律,写进**项目根 `AGENTS.md`** 里由 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 包裹的标记块。当用户要做 standalone 规范、要固化「本机跑哪几个应用」「哪些应用热重载、哪些改了必须重启」「启停走哪个工具」这类项目级纪律时使用。产物固定三段:standalone 是什么、经 IDEA run configuration 启动哪些应用、逐应用的热重载与重启提示纪律。"
 ---
 

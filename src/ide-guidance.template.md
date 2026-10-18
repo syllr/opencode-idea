@@ -160,6 +160,6 @@
 {{#if canCreateRunConfiguration}}
 - 要固化的固定流程(判据见上:会不会以同样形态重复发生):Shell 类型用上面那个「新建项目级 Shell 配置」建;非 Shell 类型与删 / 改,交给用户调 `idea-run-config-manager` skill。
 {{else}}
-- 要固化的固定流程:把配置名、实际执行的命令、工作目录、为什么值得留讲清楚,**请用户在 IDE 里自己建** —— 当前没有能建它的工具(`idea-run-config-manager` skill 的门就是这个工具,所以它这次也不会出现),不要手写文件凑。
+- 要固化的固定流程:把配置名、实际执行的命令、工作目录、为什么值得留讲清楚,**请用户在 IDE 里自己建** —— 当前没有能建它的工具(`idea-run-config-manager` skill 仍可加载,但缺这件工具时它也做不了新建),不要手写文件凑。
 {{/if}}
 - 不需要项目环境的命令:用原生 `shell`。

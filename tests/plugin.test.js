@@ -1355,143 +1355,49 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('withholds the standalone-mode skill when the IDE serves only the bundled tools', async () => {
-    // The skill is written around `ide_rerun_run_configuration`, which the
-    // companion plugin `idea-mcp-enhance` provides. A stock IDE does not serve
-    // it, so it must not see the skill either: a skill that teaches a call the
-    // model cannot make is not knowledge, it is a failed call waiting to happen.
-    const fake = await startFakeIdeForProject();
-    running = fake.server;
-    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
+  it('registers both shipped skills as soon as the plugin loads', async () => {
+    // No project config, no IDE, no tool catalog. The skills are static knowledge
+    // and are registered at setup — gating them on the live catalog meant they
+    // only landed AFTER `/open-in-ide` finished, by which point the client had
+    // already snapshotted the skill list: the user then had to reload the page to
+    // see them at all.
+    const { ctx, state } = fakeCtx();
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
-
-    // The IDE answered and its tools are in the catalog — so the skill is absent
-    // because of the gate, not because the command did nothing.
-    expect(state.tools.length).toBeGreaterThan(0);
-    expect(state.skills.has('idea-standalone')).toBe(false);
-
-    await cleanup();
-  });
-
-  it('registers the standalone-mode skill once the IDE serves the tool it drives', async () => {
-    const fake = await startFakeIdeForProject();
-    running = fake.server;
-    const { ctx, state } = fakeCtx({
-      ports: [fake.port],
-      toolRefreshTimeoutMs: 100,
-      ideaTools: [...DEFAULT_IDE_TOOLS, 'ide_rerun_run_configuration'],
-    });
-    const cleanup = await plugin.setup(ctx);
-
-    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
-
-    expect(state.skills.has('idea-standalone')).toBe(true);
+    expect([...state.skills.keys()].sort()).toEqual(['idea-run-config-manager', 'idea-standalone']);
     expect(state.skills.get('idea-standalone').content).toContain('<!-- idea-standalone:begin -->');
-    // The gate is this package's own metadata: it must not ride along into the
-    // definition OpenCode validates and the model reads.
-    expect(state.skills.get('idea-standalone').requires).toBeUndefined();
-
-    await cleanup();
-  });
-
-  it('registers the run-configuration manager skill when the create tool is served', async () => {
-    // `idea-run-config-manager` drives configuration creation, which only the
-    // companion plugin `idea-mcp-enhance` can do. The rerun tool alone is not
-    // enough, so each skill keeps its own `requires` gate.
-    const fake = await startFakeIdeForProject();
-    running = fake.server;
-    const { ctx, state } = fakeCtx({
-      ports: [fake.port],
-      toolRefreshTimeoutMs: 100,
-      ideaTools: [...DEFAULT_IDE_TOOLS, 'ide_create_shell_run_configuration'],
-    });
-    const cleanup = await plugin.setup(ctx);
-
-    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
-
-    expect(state.skills.has('idea-run-config-manager')).toBe(true);
     expect(state.skills.get('idea-run-config-manager').content).toContain('<!-- idea-run-config-manager:begin -->');
-    // The gate is this package's own metadata: it must not ride along into the
-    // definition OpenCode validates and the model reads.
-    expect(state.skills.get('idea-run-config-manager').requires).toBeUndefined();
-    // A different tool set is a different skill set — the rerun-only skill stays
-    // out rather than being offered on a partial plugin.
-    expect(state.skills.has('idea-standalone')).toBe(false);
-
-    // User-invoked only: OpenCode keeps it registered but leaves it out of the
-    // model's available list.
+    // `requires` is this package's own metadata: it documents which tools a skill
+    // is written around and must not ride along into the definition OpenCode
+    // validates or the model reads.
+    for (const skill of state.skills.values()) expect(skill.requires).toBeUndefined();
+    // User-invoked only: registered, but left out of the model's available list.
     expect(state.skills.get('idea-run-config-manager').autoinvoke).toBe(false);
 
     await cleanup();
   });
 
-  it('withholds the run-configuration manager skill from a rerun-only catalog', async () => {
+  it('keeps the skills through /open-in-ide and /delete-in-ide', async () => {
+    // Their lifecycle follows the plugin instance, not the project mark: neither
+    // connecting nor disconnecting may add or remove them. Registering on connect
+    // is what made them invisible until a page reload; unregistering on delete
+    // would be the same bug in the other direction.
     const fake = await startFakeIdeForProject();
     running = fake.server;
-    const { ctx, state } = fakeCtx({
-      ports: [fake.port],
-      toolRefreshTimeoutMs: 100,
-      ideaTools: [...DEFAULT_IDE_TOOLS, 'ide_rerun_run_configuration'],
-    });
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
+    const registered = [...state.skills.keys()].sort();
+    expect(registered).toEqual(['idea-run-config-manager', 'idea-standalone']);
 
     await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    expect([...state.skills.keys()].sort()).toEqual(registered);
 
-    expect(state.skills.has('idea-run-config-manager')).toBe(false);
-    expect(state.skills.has('idea-standalone')).toBe(true);
+    await state.commands.get('delete-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    expect([...state.skills.keys()].sort()).toEqual(registered);
 
     await cleanup();
   });
 
-  it('withholds the standalone-mode skill for a marked project until the IDE answers', async () => {
-    // Setup reads the mark from storage offline — nothing has connected yet — so
-    // the catalog is unknown and the gated skill simply does not exist. It
-    // appears in the same breath as the tools it needs.
-    const fake = await startFakeIdeForProject();
-    running = fake.server;
-    const { ctx, state } = fakeCtx({
-      ports: [fake.port],
-      toolRefreshTimeoutMs: 100,
-      ideaTools: [...DEFAULT_IDE_TOOLS, 'ide_rerun_run_configuration'],
-    });
-    state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
-
-    const cleanup = await plugin.setup(ctx);
-    expect(state.skills.has('idea-standalone')).toBe(false);
-
-    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
-    expect(state.skills.has('idea-standalone')).toBe(true);
-
-    await cleanup();
-  });
-
-  it('removes the standalone-mode skill when the IDE stops serving the tool it drives', async () => {
-    // The other direction, and the one no reconnect announces: one request
-    // carries the enhance tools, the next does not. The skill has to leave with
-    // them — it is only ever a description of calls the model can make.
-    const fake = await startFakeIdeForProject();
-    running = fake.server;
-    const { ctx, state } = fakeCtx({
-      ports: [fake.port],
-      toolRefreshTimeoutMs: 100,
-      ideaTools: [...DEFAULT_IDE_TOOLS, 'ide_rerun_run_configuration'],
-    });
-    const cleanup = await plugin.setup(ctx);
-
-    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
-    expect(state.skills.has('idea-standalone')).toBe(true);
-
-    // The IDE drops the tool; the next request still has the bundled ones.
-    state.tools = state.tools.filter((tool) => tool.id !== 'ide_rerun_run_configuration');
-    await state.sessionHook({ system: [], tools: { read: {}, ide_read_file: {} } });
-
-    // The hook fires the sync without awaiting it, so wait for the chain.
-    await vi.waitFor(() => expect(state.skills.has('idea-standalone')).toBe(false));
-
-    await cleanup();
-  });
 
   it('does not resurrect the removed hand-written-XML skill', async () => {
     // The old `idea-run-config` taught hand-writing `.run/*.run.xml` — the fragile
@@ -1505,56 +1411,6 @@ describe('plugin setup', () => {
     expect(state.skills.has('idea-run-config')).toBe(false);
 
     await cleanup();
-  });
-
-  it('registers the standalone-mode skill when /open-in-ide marks the project', async () => {
-    const fake = await startFakeIdeForProject();
-    running = fake.server;
-    const { ctx, state } = fakeCtx({
-      ports: [fake.port],
-      openInIde: false,
-      toolRefreshTimeoutMs: 100,
-      ideaTools: [...DEFAULT_IDE_TOOLS, 'ide_rerun_run_configuration'],
-    });
-    const cleanup = await plugin.setup(ctx);
-    expect(state.skills.size).toBe(0);
-
-    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
-
-    expect(state.skills.get('idea-standalone')).toBeTruthy();
-
-    await cleanup();
-  });
-
-  it('removes the skills when /delete-in-ide clears the mark', async () => {
-    const fake = await startFakeIdeForProject();
-    running = fake.server;
-    const { ctx, state } = fakeCtx({
-      ports: [fake.port],
-      openInIde: false,
-      toolRefreshTimeoutMs: 100,
-      ideaTools: [...DEFAULT_IDE_TOOLS, 'ide_rerun_run_configuration'],
-    });
-    const cleanup = await plugin.setup(ctx);
-
-    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
-    expect(state.skills.has('idea-standalone')).toBe(true);
-
-    await state.commands.get('delete-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
-    expect(state.skills.has('idea-standalone')).toBe(false);
-
-    await cleanup();
-  });
-
-  it('skips the skills for an unmarked project', async () => {
-    const bare = mkdtempSync(path.join(tmpdir(), 'ojbm-bare-'));
-    const { ctx, state } = fakeCtx({ directory: bare });
-    const cleanup = await plugin.setup(ctx);
-
-    expect(state.skills.size).toBe(0);
-
-    await cleanup();
-    rmSync(bare, { recursive: true, force: true });
   });
 
   it('schedules no background timer', async () => {

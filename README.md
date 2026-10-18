@@ -276,8 +276,9 @@ opencode-idea 对这一组工具做三件事:
      建配置是落盘成 `.run/*.run.xml` 供反复用)。判据只写在这一处,**「命令执行」段不重复**,只留
      「配置一律不由你写」这条无条件的,以及"该建的用哪条路建"那一条按工具是否存在分流:有工具时指向上面那条、
      并说明非 Shell 类型与删 / 改交给用户调 `idea-run-config-manager` skill;
-     没有工具时换成「讲清楚配置名 / 命令 / 工作目录 / 理由,请用户在 IDE 里自己建」—— 那时**连那个 skill 也不会出现**
-     (它的门就是这个工具),所以引导里顺手把这一点说明了,免得以后有人把它当成漏写而"补"上一句调不到的指令。**没装插件时绝不会提到那个工具。**
+     没有工具时换成「讲清楚配置名 / 命令 / 工作目录 / 理由,请用户在 IDE 里自己建」—— 那时 skill 本身仍在(它不按工具门禁),
+     但缺 create 工具时它也只能把流程交回用户,所以引导里顺手把这一点说明了,免得以后有人把它当成漏写而"补"上一句调不到的指令。
+     **没装插件时绝不会提到那个工具。**
 3. **工具名清单**写在 `src/mcp/enhance.js`(与原生 IDE 的 `src/mcp/idea.js` 分开放:原生走原生,插件的走插件的),
    与该仓库的 `RunLifecycleSchemas.kt` 保持同步。工具按**存在的子集**逐个点名(而不是「有就全写」),这样旧版本的配套
    插件少给一两个工具时,引导也不会提到它们。同理,**每条命令名只列真的提供它的项目**(逐项目核对,见「条件注入」)——
@@ -301,27 +302,26 @@ opencode-idea 对这一组工具做三件事:
 - 无论哪条路,**写完都要用 `get_run_configurations` 复查** —— `type` 写错 IDE 会静默忽略整个文件,这是唯一的判据;
 - 这些事**不再散着说"让用户自己去 IDE 里搞"**,而是统一指向那个 skill:**让用户调它**(`@idea-run-config-manager`)—— 它是本项目 run
   configuration 增 / 删 / 改的唯一流程入口,**只能由用户触发**(理由见下面的「而且只能用户调」);
-- **没装配套插件** → 那个 skill 也不存在(它的门就是 create 工具),此时才直接请用户自己在 IDE 里建。
+- **没装配套插件** → skill 仍然在(它现在不按工具门禁),只是缺 create 工具时它也只能把流程交回用户,请你在 IDE 里建。
 
 > **曾经有一个 `idea-run-config` skill 教模型凭记忆手写 `.run/*.run.xml`,已经删掉。** 理由不是"不许写",而是**不许凭空写**:`type` 写错 IDE 会
 > **静默忽略整个文件、日志里也不报**,凭记忆猜 option 名就是这么错的。现在这件事由 `idea-run-config-manager` 接手 —— 但**每个类型都得有一份实测模板**
 > (`assets/types/`,字段名全部来自真实文件),没模板的类型宁可交给用户。
 
-**skill 的生命周期跟随两道门,缺一不可**:
+**skill 在插件加载时一次性注册,不跟随工具目录**:
 
-1. **项目配置** —— `/open-in-ide` 写入配置时注册、`/delete-in-ide` 删配置时注销;以前配置过的 root 在 `setup` 时(读回配置)
-   也会走这一步。未配置的 root 不受影响。
-2. **IDE 真的在提供这个 skill 依赖的工具** —— skill 在自己的 frontmatter 里用 `requires:` 声明它绕着哪个工具写,而且写的是**后缀**
-   (例如 `idea-standalone` 声明 `rerun_run_configuration`、`idea-run-config-manager` 声明 `create_shell_run_configuration`,真实工具名是
-   `<项目前缀>rerun_run_configuration` / `<项目前缀>create_shell_run_configuration`)。**没这个工具就不注册这个 skill**:
-   一个教模型去调"它根本看不到的工具"的 skill,不是知识,是一次注定的失败调用。工具的可见性是双向跟随的 —— `setup` 时还没
-   连过 IDE、目录未知,所以那时**不注册**;等 IDE 应答(`/open-in-ide` 或重连)后目录才算已知,该出现的才出现;反过来,某个
-   请求里工具没了,skill 也跟着撤(不需要等重连)。
-   `requires` 必须写 **OpenCode 侧的名字**(IDE 工具带 `ide_` 服务器前缀),因为门就是拿它跟 `ctx.tool.list()` 比;
-   写成 IDE 的原始名(`rerun_run_configuration`)会让这个 skill 在任何机器上都不出现,而且没有任何报错。
+- **判据只有"插件加载了"** —— 不看项目有没有 `/open-in-ide`、也不看 IDE 此刻serve 了哪些工具。
+- **为什么不再按工具门禁**:早先的做法是"IDE 真的提供了这个 skill 绕着的工具才注册"(frontmatter 的 `requires:` + `ctx.tool.list()`)。
+  门本身是对的,但**注册时机错了**:它发生在 `/open-in-ide` 完成之后,而客户端在这之前就已经把 skill 列表快照给当前会话了 ——
+  结果是"服务端注册了、`@` 补全里看不到",**必须刷新页面才出现**。注册提前到 `setup`,就落在快照之前。
+- **工具缺失的代价放回正文** —— skill 里本来就写了"工具列表里没有 `<前缀>_rerun_run_configuration` 时交回用户"这类话;
+  一个缺席的工具是模型能读到并处理的事实,一个看不见的 skill 不是。
+- **`requires:` 这个键已彻底删除** —— 它曾是本插件自己的门禁元数据,OpenCode 不认,注册走 `ctx.skill.transform` 时也不会带上它;
+  门禁取消后它就成了"看起来在设门、实际没人读"的死字段,留着只会误导下一个改代码的人。skill 绕着哪几件工具写,由正文自己说明。
 
-文档放在 `skills/<id>/SKILL.md`(每个 skill 一个目录,`name` / `description` / `requires` 走 YAML frontmatter,`requires` 由
-loader 消费、**不会进入注册给 OpenCode 的定义**),由 `src/skill/loader.js` 扫描加载 —— **加新 skill 只需加一个目录,不用改代码**。
+文档放在 `skills/<id>/SKILL.md`(每个 skill 一个目录,`name` / `description` 走 YAML frontmatter,需要"只由用户调"时再加
+`metadata: opencode/autoinvoke: false`),由 `src/skill/loader.js` 扫描加载 —— **加新 skill 只需加一个目录,不用改代码**。
+
 
 还可以用 OpenCode 官方的 frontmatter 写法**关掉模型主动调用**:
 
@@ -419,8 +419,8 @@ loader 读的是 OpenCode 文档里的那个嵌套写法(它自己的读取器�
 **别的文档都指向这里**:引导文本与 `idea-standalone` skill 碰到"要建 / 删 / 改一个配置",不再让用户自己去 IDE 里摸,而是让用户调本 skill ——
 增 / 删 / 改的流程入口只有这一个,而它只由用户触发。
 
-**它比 `idea-standalone` 多一道门**:frontmatter 里 `requires: create_shell_run_configuration` —— 它绕着"新建配置"这件事写,而新建只有
-配套插件 `idea-mcp-enhance` 能做,所以**没装插件的 IDE 看不到它**(`idea-standalone` 只要 `rerun_run_configuration`,门更松)。这是刻意的:
+**它绕着"新建配置"这件事写**(新建只有配套插件 `idea-mcp-enhance` 能做),但**这不影响它出不出现** —— 两个 skill 都在插件加载时注册,
+不缺任何工具也照样在列表里;缺工具时由正文把流程交回用户(`idea-standalone` 只要 `rerun_run_configuration`,门更松)。这是刻意的:
 一个只教模型"去建配置"、却没给建配置工具的 skill,只会把用户拖进一次注定失败的调用。
 
 **而且只能用户调**:它的 frontmatter 带 `metadata: opencode/autoinvoke: false`,loader 翻成定义的 `autoinvoke: false` ——

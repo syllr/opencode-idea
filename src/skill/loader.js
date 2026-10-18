@@ -22,11 +22,14 @@
 // The frontmatter reader below handles only the flat `key: value` form this
 // package writes. It is not a YAML engine and must not grow into one.
 //
-// One frontmatter key is the loader's own rather than OpenCode's: `requires`, a
-// comma-separated list of the tools the skill is written around. It is read here
-// and deliberately kept OUT of the registered definition — the caller filters on
-// it instead (see `readSkills`), because a skill whose tools are absent must not
-// be registered at all.
+// The skills used to carry a `requires:` key (the tools each one is written
+// around), and the plugin registered a skill only when those tools were being
+// served. That gate is gone, together with the key: skills are registered once,
+// when the plugin loads (see `plugin.js`), and a missing tool is handled inside
+// the skill text. Registering only after the tools appeared made the skill
+// invisible until the client reloaded the page. A key left behind would look
+// like it still decided something — it does not: OpenCode never reads it, and
+// nothing in this package does either.
 //
 // The other key is OpenCode's own, written in the portable frontmatter spelling
 // OpenCode documents: a nested `metadata:` block holding
@@ -81,20 +84,6 @@ export function parseSkillFrontmatter(text, source) {
 }
 
 /**
- * Split a frontmatter list value: `a, b` -> `['a', 'b']`.
- *
- * @param {string | undefined} value
- * @returns {string[]}
- */
-function splitList(value) {
-  if (!value) return [];
-  return value
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter((entry) => entry !== '');
-}
-
-/**
  * Read `opencode/autoinvoke` out of the frontmatter, or `undefined` when absent.
  *
  * The spelling is OpenCode's portable one — a nested `metadata:` block holding
@@ -131,11 +120,10 @@ export function readSkill(id) {
 }
 
 /**
- * A skill plus the tools it needs before it is worth offering.
+ * One skill package.
  *
- * The two are kept apart on purpose: `skill` must satisfy `Skill.Info` exactly,
- * while `requires` is this package's own metadata and must NOT be registered —
- * it is what the caller filters on.
+ * `skill` must satisfy `Skill.Info` exactly — nothing of this package's own
+ * metadata rides along into the definition OpenCode validates.
  *
  * `autoinvoke` is OpenCode's, so it goes the other way: it ships in the
  * frontmatter as `opencode/autoinvoke` and is translated onto the definition,
@@ -143,7 +131,7 @@ export function readSkill(id) {
  * frontmatter asks for it, so a skill that says nothing keeps the plain shape.
  *
  * @param {string} id Directory name, used as the skill id.
- * @returns {{ skill: { id: string, name: string, description: string, autoinvoke?: boolean, path: string, content: string }, requires: string[] }}
+ * @returns {{ skill: { id: string, name: string, description: string, autoinvoke?: boolean, path: string, content: string } }}
  */
 export function readSkillPackage(id) {
   const file = new URL(`${id}/${SKILL_FILE_NAME}`, SKILLS_DIR);
@@ -164,14 +152,13 @@ export function readSkillPackage(id) {
       path: fileURLToPath(file),
       content: text.replace(FRONTMATTER, '').replace(/^\s+/, '').trimEnd(),
     },
-    requires: splitList(fields.requires),
   };
 }
 
 /**
- * Every shipped skill, sorted by id, each with the tools it requires.
+ * Every shipped skill, sorted by id.
  *
- * @returns {Array<{ skill: { id: string, name: string, description: string, autoinvoke?: boolean, path: string, content: string }, requires: string[] }>}
+ * @returns {Array<{ skill: { id: string, name: string, description: string, autoinvoke?: boolean, path: string, content: string } }>}
  */
 export function readSkills() {
   return readdirSync(SKILLS_DIR, { withFileTypes: true })

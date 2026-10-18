@@ -22,6 +22,29 @@ const managerTemplate = () =>
   );
 
 /**
+ * 折叠空白:模板会被 Markdown 格式化工具重排(缩进 2→4、括号前插空格、长行折行),
+ * 所以断言只关心内容,不关心排版 —— 否则每次格式化都会红一片。
+ *
+ * @param {string} text
+ */
+const squash = (text) => text.replace(/\s+/g, ' ').trim();
+
+/** 条目产物区(生成提示删掉之后要留下的那部分)。 */
+const managerProduct = () => {
+  const text = managerTemplate();
+  const start = text.indexOf('### macOS / Linux');
+  const end = text.indexOf('## 用户手动触发');
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  return text.slice(start, end);
+};
+
+/** 产物区里出现过的条目项名(按出现顺序去重,排版无关)。 */
+const managerItemNames = () => [
+  ...new Set([...managerProduct().matchAll(/^[ \t]*- ([^\n:]+):/gm)].map((match) => match[1].trim())),
+];
+
+/**
  * A skill file as written. The frontmatter is metadata: it decides how the skill
  * is registered but is never part of the registered definition, so proving what
  * the author wrote means reading the raw file.
@@ -57,15 +80,22 @@ describe('shipped skills', () => {
   });
 
   it('loads every skill directory into a Skill.Info-shaped definition', () => {
+    /** 每个 skill 注册时带的键 —— 一项不多(没有 requires 之类的自有元数据)。 */
+    const skillKeys = ['content', 'description', 'id', 'name', 'path'];
     const skills = readSkills();
     // Sorted by id, so the order is stable across runs.
     expect(skills.map(({ skill }) => skill.id)).toEqual(['idea-run-config-manager', 'idea-standalone']);
-    // The tools a skill drives belong to the skill, not to the plugin: the
-    // requirement ships in the frontmatter, so adding a skill stays a directory.
-    expect(readSkills().map(({ requires }) => requires)).toEqual([
-      ['create_shell_run_configuration'],
-      ['rerun_run_configuration'],
-    ]);
+    // No gating metadata: the package used to carry a `requires:` key that the
+    // plugin filtered on, which is exactly what delayed registration until after
+    // `/open-in-ide` (and left the skill invisible until a page reload). A skill
+    // is now just a directory with a document in it.
+    for (const { skill } of skills) {
+      expect(Object.keys(skill)).not.toContain('requires');
+      // Only `Skill.Info` keys (`autoinvoke` only where the frontmatter asks).
+      expect(Object.keys(skill).filter((key) => !skillKeys.includes(key))).toEqual(
+        skill.autoinvoke === undefined ? [] : ['autoinvoke'],
+      );
+    }
 
     const skill = readSkill('idea-standalone');
     // `Skill.Info` requires exactly these keys (see @opencode/schema/skill):
@@ -218,13 +248,16 @@ describe('shipped skills', () => {
     // Two sections, one per platform — the same split idea-standalone uses. A flow is
     // often not the same command on both, so "which platform" is a property of the
     // entry rather than something a reader has to infer from the command.
-    const headings = template.split('\n').filter((line) => /^#{1,6} /.test(line));
+    const headings = template
+      .split('\n')
+      .filter((line) => /^#{1,6} /.test(line))
+      .map((line) => line.replace(/\s+/g, ''));
     expect(headings).toEqual([
-      '# run configuration 档案',
-      '## run configuration 一览',
-      '### macOS / Linux',
-      '### Windows',
-      '## 用户手动触发(线下,AI 不跑)',
+      '#runconfiguration档案',
+      '##runconfiguration一览',
+      '###macOS/Linux',
+      '###Windows',
+      '##用户手动触发(线下,AI不跑)',
     ]);
     expect(template).toContain('按操作系统分成两节');
     expect(template).toContain('判断不了就问用户');
@@ -233,14 +266,13 @@ describe('shipped skills', () => {
     // configuration, which project's tools address it, and how do I run it.
     // An entry, NOT a table row: a table's cells have to be padded to stay aligned
     // once they hold prose, and that padding is what an editing tool eats first.
-    const entry = '- {配置名}(项目 {前缀})';
-    expect(template).toContain(entry);
+    // 标题行:配置名 + 项目(排版无关)。两节各一条,末尾手动那节再一条。
+    const titles = managerProduct().match(/^-[ \t]*\{配置名\}/gm) ?? [];
+    expect(titles).toHaveLength(2);
+    expect(squash(template)).toContain('- {配置名} (项目 {前缀})');
     expect(template).not.toContain('| 项目 |');
-    expect(template.split(entry)).toHaveLength(4);
-    // The four items, in the order the block fixes them.
-    for (const item of ['when', 'before run', 'run', 'after run', 'desc']) {
-      expect(template).toContain(`  - ${item}:`);
-    }
+    // 五项按模板固定的顺序出现在产物区。
+    expect(managerItemNames()).toEqual(['when', 'before run', 'run', 'after run', 'desc']);
 
     // The "when" item carries the trigger, the "before it" item the prerequisites —
     // usually not a configuration of their own, so those items are the only place
@@ -287,8 +319,8 @@ describe('shipped skills', () => {
     // The manual section is a name list: no items at all, because nothing in it is
     // ever launched by the model.
     const manual = template.slice(template.indexOf('## 用户手动触发'));
-    expect(manual).toContain('- {配置名}(项目 {前缀})');
-    expect(manual).not.toContain('  - run:');
+    expect(squash(manual)).toContain('- {配置名} (项目 {前缀})');
+    expect(manual).not.toMatch(/^[ \t]*- run:/m);
 
     // Resident / service-like configurations belong to idea-standalone and are
     // filtered out first, so the two blocks never document the same one. The
@@ -425,7 +457,7 @@ describe('shipped skills', () => {
     expect(standalone).not.toContain('when');
 
     const manager = managerTemplate();
-    const managerFields = [...new Set(itemNames(manager))];
+    const managerFields = managerItemNames();
     expect(managerFields).toEqual(['when', 'before run', 'run', 'after run', 'desc']);
     expect(managerFields).not.toContain('port');
 
@@ -586,27 +618,6 @@ describe('shipped skills', () => {
     const content = readSkill('idea-standalone').content;
     for (const suffix of HIDDEN_IDE_TOOL_SUFFIXES) {
       expect(content, `${suffix} 已被隐藏`).not.toContain(suffix);
-    }
-    // Same for the gate itself: a skill requiring a hidden tool could never be
-    // offered, so it would sit in the package teaching nothing to nobody.
-    for (const { requires } of readSkills()) {
-      for (const tool of requires) {
-        expect(HIDDEN_IDE_TOOL_SUFFIXES, `${tool} 已被隐藏,不能作为 requires`).not.toContain(tool);
-      }
-    }
-  });
-
-  it('gates each skill on a bare suffix, not on any one project prefix', () => {
-    // The gate compares `requires` against `ctx.tool.list()`. Tool names are
-    // `<project prefix><suffix>` — the root is `ide_`, each subproject is its
-    // directory name — so a hard-coded prefix could only ever gate the skill on
-    // ONE project, and would look exactly like "the companion plugin is absent"
-    // everywhere else. The plugin composes the real names at check time.
-    for (const { requires } of readSkills()) {
-      for (const tool of requires) {
-        expect(tool.startsWith('idea_'), `${tool} 不该带死的服务器前缀`).toBe(false);
-        expect(tool.startsWith('ide_'), `${tool} 不该带死的服务器前缀`).toBe(false);
-      }
     }
   });
 
