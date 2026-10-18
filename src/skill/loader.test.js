@@ -31,6 +31,31 @@ const managerTemplate = () =>
 const rawFrontmatter = (file) => readFileSync(file, 'utf8');
 
 describe('shipped skills', () => {
+  it('writes frontmatter a real YAML reader can parse', () => {
+    // Our own reader is deliberately flat and lenient — `unquote` just drops the
+    // first and last character. OpenCode has a real YAML parser on the path taken
+    // when a user points `skills` at one of these directories (or copies it into
+    // `.opencode/skills`). A double-quoted scalar containing an unescaped `"` ends
+    // the string early there and the whole file becomes unreadable, which is
+    // exactly how `idea-run-config-manager` broke once. Keep the two gates apart:
+    // the lenient one proves registration, this one proves portability.
+    for (const { skill } of readSkills()) {
+      const frontmatter = rawFrontmatter(skill.path).replace(/\r\n/g, '\n').match(/^---\n([\s\S]*?)\n---/)?.[1];
+      expect(frontmatter, `${skill.id}: no frontmatter`).toBeTruthy();
+      for (const line of frontmatter.split('\n')) {
+        const match = /^([A-Za-z0-9_/-]+):[ \t]*(.*)$/.exec(line.trim());
+        if (!match) continue;
+        const value = match[2].trim();
+        if (value.startsWith('"') || value.endsWith('"')) {
+          // Quoted scalars must be closed on the same line, and nothing unescaped
+          // may follow the closing quote.
+          expect(value.length >= 2 && value.startsWith('"') && value.endsWith('"'), `${skill.id}: ${line}`).toBe(true);
+          expect(value.slice(1, -1), `${skill.id}: unescaped quote inside a double-quoted value`).not.toContain('"');
+        }
+      }
+    }
+  });
+
   it('loads every skill directory into a Skill.Info-shaped definition', () => {
     const skills = readSkills();
     // Sorted by id, so the order is stable across runs.

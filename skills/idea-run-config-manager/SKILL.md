@@ -1,7 +1,7 @@
 ---
 name: idea-run-config-manager
 requires: create_shell_run_configuration
-description: "管理本项目的 run configuration:直接增 / 删 / 改(新建走工具,改和删直接编辑 `.run/<配置名>.run.xml` —— 都照 `assets/types/` 里**逐类型实测模板**写,没有模板的类型交给用户在 IDE 里配),并把配置档案同步进**项目根 `AGENTS.md`** 里由 `<!-- idea-run-config-manager:begin -->` 与 `<!-- idea-run-config-manager:end -->` 包裹的标记块 —— 每个 run configuration 一个条目,写清它干什么、怎么跑、什么时候跑;服务化的那些不在这里,它们归 `idea-standalone` 的块。当用户要建 / 删 / 改 run configuration,或要一份"这个项目有哪些配置、各自干什么"的说明时使用。"
+description: "管理本项目的 run configuration:直接增 / 删 / 改(新建走工具,改和删直接编辑 `.run/<配置名>.run.xml` —— 都照 `assets/types/` 里**逐类型实测模板**写,没有模板的类型交给用户在 IDE 里配),并把配置档案同步进**项目根 `AGENTS.md`** 里由 `<!-- idea-run-config-manager:begin -->` 与 `<!-- idea-run-config-manager:end -->` 包裹的标记块 —— 每个 run configuration 一个条目,写清它干什么、怎么跑、什么时候跑;服务化的那些不在这里,它们归 `idea-standalone` 的块。当用户要建 / 删 / 改 run configuration,或要一份「这个项目有哪些配置、各自干什么」的说明时使用。"
 metadata:
   opencode/autoinvoke: false
 ---
