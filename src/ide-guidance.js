@@ -56,6 +56,7 @@ import { readFileSync } from 'node:fs';
 import { IDE_LABELS } from './ide-projects.js';
 import {
   DEPLOYMENT_SUFFIXES,
+  EDIT_FILE_SUFFIX,
   RUN_LIFECYCLE_SUFFIXES,
   deploymentCapabilities,
   runLifecycleCapabilities,
@@ -78,7 +79,7 @@ const TEMPLATE = readFileSync(TEMPLATE_PATH, 'utf8');
  * "是不是 Ultimate"。把 run-lifecycle 留在表外,等于默认"一个项目装了、别的项目也装了",
  * 而那只是个默认,不是事实。
  */
-const ENHANCE_SUFFIXES = new Set([...RUN_LIFECYCLE_SUFFIXES, ...DEPLOYMENT_SUFFIXES]);
+const ENHANCE_SUFFIXES = new Set([...RUN_LIFECYCLE_SUFFIXES, ...DEPLOYMENT_SUFFIXES, EDIT_FILE_SUFFIX]);
 
 /**
  * 「本会话有哪些项目、各自用哪个 MCP 工具前缀」的清单。
@@ -152,6 +153,9 @@ function mergeRunLifecycle(projects, tools) {
   const all = projects.map((project) => runLifecycleCapabilities(tools, `${project.server}_`));
   return {
     canCreateRunConfiguration: all.some((c) => c.canCreateRunConfiguration),
+    canInspectRunConfiguration: all.some((c) => c.canInspectRunConfiguration),
+    canUpdateRunConfiguration: all.some((c) => c.canUpdateRunConfiguration),
+    canDeleteRunConfiguration: all.some((c) => c.canDeleteRunConfiguration),
     canListRunningConfigurations: all.some((c) => c.canListRunningConfigurations),
     canStopRunConfiguration: all.some((c) => c.canStopRunConfiguration),
     canRerunRunConfiguration: all.some((c) => c.canRerunRunConfiguration),
@@ -185,6 +189,22 @@ function mergeDeployment(projects, tools) {
 }
 
 /**
+ * 这个会话里「走 IDE 写文件」这个能力可不可用。
+ *
+ * 与 run-lifecycle / deployment 同理:逐项目判断,任一项目提供即算存在。
+ * 它是**配套插件**的工具(装了才有),所以必须逐项目过滤 —— 点名一个模型调不到的命令,
+ * 是这个模块唯一要防的失败。
+ *
+ * @param {ReadonlyArray<{ server: string }>} projects
+ * @param {Record<string, unknown> | undefined} tools
+ */
+function mergeFileEdit(projects, tools) {
+  return {
+    canEditFile: projects.some((project) => servesTool(tools, `${project.server}_`, EDIT_FILE_SUFFIX)),
+  };
+}
+
+/**
  * 把本会话接入的全部项目渲染成**一份**引导文本。
  *
  * 只渲染一次,不按项目重复:功能说明与项目无关,只有命令名带项目前缀 —— 所以每条功能后面直接
@@ -201,6 +221,7 @@ export function buildIdeGuidanceText(projects, options = {}) {
     routeTable: routeTableFor(projects),
     ...mergeRunLifecycle(projects, options.tools),
     ...mergeDeployment(projects, options.tools),
+    ...mergeFileEdit(projects, options.tools),
     ...commandVariables(projects, options.tools),
   });
 }

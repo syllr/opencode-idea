@@ -22,7 +22,8 @@
 - 原生工具(当前工具列表里直接列出的那些)**直接调用**;不需要、也不应该用 Code Mode 的 `search` 去找。
 - 下面这些 IDE 工具也是原生工具:直接调用(参数按各工具 schema 传),不要包进 `execute`;它们不在 Code Mode 的工具目录里,`search` 搜不到。
 - **只有 IDE 才有的能力才用它们**:符号级检索、项目模型、检查与构建、重构与格式化、run configuration。
-- **读写与搜索用原生工具**(`read` / `write` / `edit` / `grep` / `glob`):不要为读一个文件、写一个文件、搜一段文本去绕 IDE 工具。
+- **读与搜索用原生工具**(`read` / `grep` / `glob`):不要为读一个文件、搜一段文本去绕 IDE 工具。
+- **写文件优先走 IDE 工具**(`<P>_edit_file`):IDE 对**在编辑器里打开过的文件**持有一份内存副本,从进程外写文件之后,IDE 要等 VFS 刷新才重读 —— 这段时间里 `reformat_file` 会把旧副本格式化后**存回磁盘**,把你刚写的内容整个冲掉,而且不报错。走 IDE 写就没有这个竞态。**没有这个工具时才退回原生 `write` / `edit`**,并记住:写完别立刻调 IDE 侧工具。
 - **改完代码自己先查一遍**(`lint_files` / `build_project`,怎么挑见下面「校验」):什么时候查、查几次由你判断,但**别把校验整段省掉** —— 自己查一次,远比让用户替你发现或留到构建 / 测试炸了才暴露要便宜。
 - **要看某个类 / 方法 / 字段在哪定义、内部怎么实现的**(见下面「符号」):`<P>_search_symbol`(`include_external: true`)找到位置 → `<P>_read_file` 原样读它给的路径。
 - 某条功能下面没有你正要操作的那个项目的命令,就是那个项目没接上:提示用户执行 `/open-in-ide`,不要重试,也不要去别处找。
@@ -69,6 +70,11 @@
 - {{cmd_open_file_in_editor}}
   **把文件在 IDE 里打开并激活**,给用户看。
 
+{{#if canEditFile}}
+- {{cmd_edit_file}}
+  **通过 IDE 写文件**(配套插件提供)。`filePath` + `oldText` + `newText`:`oldText` **逐字**匹配要替换的原文,不是正则、不做空白归一;出现多次就报错(除非 `replaceAll=true`),不会"改了一半"。**新建文件**:`oldText` 传空串、`newText` 给完整内容,父目录一并建;文件已存在时这么写会被拒(不覆盖)。
+  **为什么要用它**:从进程外写文件,IDE 手里那份内存副本不会立刻更新 —— 这期间 `reformat_file` 会把旧副本存回磁盘,把你刚写的内容冲掉。走 IDE 写,改的就是 IDE 那一份,内存与磁盘从此一致。
+{{/if}}
 ### 重构与格式化
 
 - {{cmd_rename_refactoring}}
@@ -110,12 +116,26 @@
 - {{cmd_execute_run_configuration}}
   **跑已有配置**:Shell Script 要 `EXECUTE_IN_TERMINAL: false`;覆盖参数(`programArguments` / `workingDirectory` / `envs`)需配置支持 `supportsDynamicLaunchOverrides`。
 {{#if canCreateRunConfiguration}}
-- {{cmd_create_shell_run_configuration}}
-  **新建项目级 Shell 配置**(`configurationName` + `scriptPath` / `scriptText` / `cloneFrom` 三选一;写 `.run/<name>.run.xml`):只支持 Shell 类型。它是**项目资产**,不是"跑命令"的手段 —— 只是要跑一条命令就用原生 `shell`。判据只有一条:**这件事以后会不会以同样的形态再发生?**
-  - **这里只是"建"的一个入口,不是全部**:非 Shell 类型,以及**删 / 改**,都走 `idea-run-config-manager` skill —— 让用户调它(它有逐类型模板;没有模板的类型,它会让用户在 IDE 里配)。
-  - **会 → 该建,而且你要主动提**。典型信号:用户让你做的是**重复性动作**,还会对别的环境 / 别的分支 / 下一次改表再做一遍 —— 例如改完表结构要**同步某个环境的 DDL**、跑数据库迁移或回滚、生成代码、打包、起 dev server、往某个环境部署、按固定步骤清洗数据。这时**别默默每次手搓命令**(下次还得从头猜一遍),也**别自己动手建**:**先问用户**"这个流程以后要反复跑,要不要固化成一个 Shell run configuration?",并把方案摊开:配置名、实际执行的命令(`scriptText`,或它指向的 `scriptPath`)、工作目录、为什么值得留。**同意才建**;用户说这次先这样,就照办,别再追着问。
-  - **不会 → 用原生 `shell` 直接跑,别建**。这就是两者的分界线:原生 `shell` 是**就地执行、用完不留痕**(命令只存在于会话里);`create_shell_run_configuration` 是**把命令落盘成 `.run/<name>.run.xml`、往后反复用**(它产出的是项目文件,IDE 的 Run 窗口里也会多一项)。所以一次性的、探索性的、调试性的、参数每次都不一样的操作(查条数据、看个日志、试一条命令、临时换个路径跑一下)一律走 `shell` 跑完算 —— 这类东西建配置只是给项目留垃圾。确需项目环境的解释器时,在 `shell` 命令里显式指定、或在已有配置上单次覆盖参数,也别为这一次性的事新建配置。
+- {{cmd_create_run_configuration}}
+  **新建任意类型的项目级配置**(写 `.run/<name>.run.xml`):内容来源三选一 —— `cloneFrom`(复制一个现成的,最稳;字段名不确定时只走它)、`configurationXml`(模板里的 XML 片段)、平台模板 + `options` / `attributes` / `envs` 补丁。它是**项目资产**,不是"跑命令"的手段 —— 只是要跑一条命令就用原生 `shell`。判据只有一条:**这件事以后会不会以同样的形态再发生?**
+  - **改 / 改名 / 删**都走同一组工具(`update_run_configuration` / `delete_run_configuration`),**不要手写或手删 `.run/` 下的文件**。
+  - **会 → 该建,而且你要主动提**。典型信号:用户让你做的是**重复性动作**,还会对别的环境 / 别的分支 / 下一次改表再做一遍 —— 例如改完表结构要**同步某个环境的 DDL**、跑数据库迁移或回滚、生成代码、打包、起 dev server、往某个环境部署、按固定步骤清洗数据。这时**别默默每次手搓命令**(下次还得从头猜一遍),也**别自己动手建**:**先问用户**"这个流程以后要反复跑,要不要固化成一个 run configuration?",并把方案摊开:配置名、类型、实际执行的命令、工作目录、为什么值得留。**同意才建**;用户说这次先这样,就照办,别再追着问。
+  - **不会 → 用原生 `shell` 直接跑,别建**。这就是两者的分界线:原生 `shell` 是**就地执行、用完不留痕**(命令只存在于会话里);`create_run_configuration` 是**把命令落盘成 `.run/<name>.run.xml`、往后反复用**(它产出的是项目文件,IDE 的 Run 窗口里也会多一项)。所以一次性的、探索性的、调试性的、参数每次都不一样的操作(查条数据、看个日志、试一条命令、临时换个路径跑一下)一律走 `shell` 跑完算 —— 这类东西建配置只是给项目留垃圾。确需项目环境的解释器时,在 `shell` 命令里显式指定、或在已有配置上单次覆盖参数,也别为这一次性的事新建配置。
+  - **改完别忘了同步档案**:新增 / 删除 / 改名之后,用 `idea-run-config-manager` skill 更新项目根 `AGENTS.md` 里的配置档案块 —— 档案和项目里的配置对不上,比没有档案更糟。
   - **建之前先查,防泛滥**:先 `get_run_configurations` 看有没有已在做同一件事的配置 —— 有就**复用**(必要时让用户改它),别新建一个几乎一样的;同一件事**不要按参数 / 按文件 / 按环境拆成一堆配置**,变化的入参用 `programArguments` / `envs` 单次覆盖。一个项目通常就那么**几个**(构建、装依赖、起服务、迁移这类固定流程);配置数量明显长起来就是滥用信号 —— 动手前先问自己:这是项目固定流程,还是我只是想省一条 shell 命令?
+{{/if}}
+{{#if canInspectRunConfiguration}}
+- {{cmd_inspect_run_configuration}}
+  **看一个配置的全貌**:定义(options / envs / before-launch)、命名解析(`win` / mac-linux、base、env)、当前活实例、历史运行及各自的日志文件路径。**改之前先用它拿当前值**;服务起没起来想看日志,先用 `list_running_configurations` 的 `logFile`,要翻"上一次为什么挂了"再走这里。
+{{/if}}
+
+{{#if canUpdateRunConfiguration}}
+- {{cmd_update_run_configuration}}
+  **改字段或改名**:`options` / `envs` / `attributes` 是补丁(`null` = 删),`newName` 改名并**连带更新别人对它的引用**、迁移历史日志。改之前先 `inspect` 拿 `configurationXml` 与当前值。
+{{/if}}
+{{#if canDeleteRunConfiguration}}
+- {{cmd_delete_run_configuration}}
+  **删配置**:在跑或被人引用时拒绝;`force = true` 才会连引用一起清掉。
 {{/if}}
 {{#if canListRunningConfigurations}}
 - {{cmd_list_running_configurations}}

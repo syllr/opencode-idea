@@ -29,10 +29,20 @@ const managerTemplate = () =>
  */
 const squash = (text) => text.replace(/\s+/g, ' ').trim();
 
+/**
+ * 去掉**所有**空白再比。
+ *
+ * `squash` 只能折叠空白,吸收不了格式化工具**插入**的空格(它在中文与括号之间会加一个)。
+ * 断言的是"这几段字在不在",排版怎么变都不该让它红,所以这层比 `squash` 更狠。
+ *
+ * @param {string} text
+ */
+const tight = (text) => text.replace(/\s+/g, '');
+
 /** 条目产物区(生成提示删掉之后要留下的那部分)。 */
 const managerProduct = () => {
   const text = managerTemplate();
-  const start = text.indexOf('### macOS / Linux');
+  const start = text.indexOf('### base 登记');
   const end = text.indexOf('## 用户手动触发');
   expect(start).toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
@@ -161,7 +171,7 @@ describe('shipped skills', () => {
     expect(manager).toContain('`.run/<配置名>.run.xml`');
     expect(manager).toContain('支持矩阵');
     expect(manager).toContain('assets/types/');
-    expect(manager).toContain('按类型找模板');
+    expect(manager).toContain('走工具,不要手写');
     // Writing the file is only half of it: an unnoticed file is worse than none,
     // so the catalog has to prove it was picked up.
     expect(manager).toContain('写完必须复查');
@@ -196,7 +206,7 @@ describe('shipped skills', () => {
     expect(manager).toContain('⏳');
     // The matrix and the contract live in the skill itself: what may be written
     // is one thing to read, not a pointer chasing another document.
-    expect(manager).toContain('## 硬性契约(所有类型都一样)');
+    expect(tight(manager)).toContain(tight('## 硬性契约(所有类型都一样)'));
     // Templates are added by us, not invented on the spot: teaching the model
     // how to author one is how a guessed field name gets into a template.
     expect(manager).not.toContain('Store as project file');
@@ -255,12 +265,14 @@ describe('shipped skills', () => {
     expect(headings).toEqual([
       '#runconfiguration档案',
       '##runconfiguration一览',
-      '###macOS/Linux',
-      '###Windows',
+      '###base登记',
       '##用户手动触发(线下,AI不跑)',
     ]);
-    expect(template).toContain('按操作系统分成两节');
-    expect(template).toContain('判断不了就问用户');
+    // 平台与环境由**名字里的段**决定(`[os@]base[@env]`),所以本块只登记 base,
+    // 变体不另起条目 —— 要把"有哪些变体、怎么切环境"写进 base 的 desc。
+    expect(squash(template)).toContain('[os@]base[@env]');
+    expect(squash(template)).toContain('只登记 base');
+    expect(squash(template)).toContain('判断不了就问用户');
 
     // One entry answers the only question the catalog is for: what is this
     // configuration, which project's tools address it, and how do I run it.
@@ -268,7 +280,7 @@ describe('shipped skills', () => {
     // once they hold prose, and that padding is what an editing tool eats first.
     // 标题行:配置名 + 项目(排版无关)。两节各一条,末尾手动那节再一条。
     const titles = managerProduct().match(/^-[ \t]*\{配置名\}/gm) ?? [];
-    expect(titles).toHaveLength(2);
+    expect(titles).toHaveLength(1);
     expect(squash(template)).toContain('- {配置名} (项目 {前缀})');
     expect(template).not.toContain('| 项目 |');
     // 五项按模板固定的顺序出现在产物区。
@@ -292,7 +304,7 @@ describe('shipped skills', () => {
       '  - before run:{第 1 步 / 第 2 步 / 无}',
       '  - run:{<前缀>_execute_run_configuration}',
       '  - after run:{产物落在哪 / 接下来要做什么 / 无}',
-      '  - desc:{它是什么 + 有什么坑}',
+      '  - desc:{它是什么 + 有什么坑 + 有哪些 @ 变体、各自怎么切环境}',
     ]) {
       expect(template).toContain(line);
     }
@@ -360,7 +372,7 @@ describe('shipped skills', () => {
     // undo the whole thing. Listing configurations is a tool call too.
     const content = readSkill('idea-run-config-manager').content;
     expect(content).toContain('直接调用,不传参数');
-    expect(content).toContain('逐个项目用**它自己那个前缀**');
+    expect(tight(content)).toContain(tight('逐个项目用**它自己那个前缀**'));
     expect(content).toContain('不要手搓启动命令');
   });
 
@@ -410,8 +422,8 @@ describe('shipped skills', () => {
     // a dependency service up). That something is usually not itself a run
     // configuration, so the only place to say it is prose in this column.
     const template = readTemplate();
-    expect(template).toContain(
-      '| app | run configuration | before run | run | port | after run | desc |',
+    expect(tight(template)).toContain(
+      tight('| app | run configuration | before run | run | port | after run | desc |'),
     );
     expect(template).toContain('**before run**');
     // A service is run, not just named: how it is run belongs in the table too,
@@ -425,7 +437,7 @@ describe('shipped skills', () => {
     // mostly "which port it listens on" (its own column) and nothing else, so the
     // rule says most rows leave it empty.
     expect(template).toContain('**after run**');
-    expect(template).toContain('多数写 `无`');
+    expect(tight(template)).toContain(tight('多数写 `无`'));
     // No "when" column here: a resident app is started when you want to test a
     // change, so there is no other moment to name. (The archive keeps one — a
     // build or a migration does happen at a particular time.)
@@ -450,7 +462,11 @@ describe('shipped skills', () => {
         .filter((line) => /^ {2}- [^:]+:/.test(line))
         .map((line) => line.slice(4, line.indexOf(':')));
 
-    const standalone = cellsOf(rowOf(readTemplate(), '| app |'));
+    const standalone = cellsOf(
+      readTemplate()
+        .split('\n')
+        .find((line) => line.trim().startsWith('|') && cellsOf(line)[0] === 'app'),
+    );
     expect(standalone[0]).toBe('app');
     // A service has a port; a fixed flow is not a service and has no such field.
     expect(standalone).toContain('port');
@@ -482,42 +498,49 @@ describe('shipped skills', () => {
     // the alignment.
     const displayWidth = (text) =>
       [...text].reduce((width, ch) => width + (/[⺀-￯]/.test(ch) ? 2 : 1), 0);
-    const tablesOf = (text, startsWith) =>
+    // 表头行按**首格**认,不按整行字面 —— 列宽会随内容变,行首不再恰好是 '| app |'。
+    const tablesOf = (text, firstCell) =>
       text
         .split('\n')
         .map((line, index, lines) => [line, lines[index + 1]])
-        .filter(([line]) => line.startsWith(startsWith))
+        .filter(([line]) => line.trim().startsWith('|') && cellsOf(line)[0] === firstCell)
         .map(([line, separator]) => [cellsOf(line), cellsOf(separator)]);
-    const tables = tablesOf(readTemplate(), '| app | run configuration');
+    const tables = tablesOf(readTemplate(), 'app');
     expect(tables.length, '应用表的表头后面没有分隔行').toBeGreaterThan(0);
     for (const [header, separator] of tables) {
       expect(separator.map((cell) => cell.length)).toEqual(header.map(displayWidth));
     }
   });
 
-  it('splits both blocks by operating system', () => {
-    // The same project starts differently per platform — an interpreter path is
-    // enough to make a configuration usable on one OS and dead on another (a
-    // Windows PowerShell INTERPRETER_PATH cannot run on macOS). One list would
-    // have to mix them, and the model would reach for the wrong one. Both blocks
-    // answer to this: the app tables here, the entry sections in the manager block.
+  it('registers only the base and explains the @-variants', () => {
+    // 平台与环境的差异由**配置名里的段**承担(`[os@]base[@env]`),所以两个块都只登记 base,
+    // 变体不另起条目、也不另起表 —— 否则同一个应用会因为"几个平台 × 几个环境"膨胀出
+    // 十几行,而它们其实是同一件事。
     const template = readTemplate();
-    expect(template).toContain('按操作系统分成两张表');
-    expect(template).toContain('### macOS / Linux');
-    expect(template).toContain('### Windows');
-    expect(template).toContain('INTERPRETER_PATH');
-    // Exactly two app tables, one per platform.
+    expect(squash(template)).toContain(squash('[os@]base[@env]'));
+    expect(squash(template)).toContain(squash('表里只登记 base'));
+    // 名字怎么读、变种怎么选,各占一节,且**排在表前面** —— 规则先讲清楚,表才有意义。
+    expect(template).toContain('### run configuration 名字怎么读');
+    expect(template).toContain('### 应用');
+    expect(template).toContain('### 选哪个变种');
+    expect(template.indexOf('### run configuration 名字怎么读')).toBeLessThan(template.indexOf('### 应用'));
+    // 缺省:没有系统段 = macOS / Linux;没有环境段 = 所有环境通用这一套。
+    expect(squash(template)).toContain(squash('缺省表示'));
+    // 选变种的纪律:问一次就够,别反复打扰用户。
+    expect(squash(template)).toContain(squash('启动前问一次用户走哪套'));
+    expect(squash(template)).toContain(squash('本会话内默认走这一套'));
+    // Exactly one app table now — the variants are not rows of their own.
     const header = '| app | run configuration | before run | run | port | after run | desc |';
-    expect(template.split(header)).toHaveLength(3);
+    expect(tight(template).split(tight(header))).toHaveLength(2);
 
-    // Same split on the other side — sections instead of tables.
+    // Same on the other side — a section instead of a table, and the entries are
+    // base entries.
     const manager = managerTemplate();
-    expect(manager).toContain('按操作系统分成两节');
-    expect(manager).toContain('### macOS / Linux');
-    expect(manager).toContain('### Windows');
+    expect(squash(manager)).toContain(squash('只登记 base'));
+    expect(manager).toContain('### base 登记');
     // 产物区(生成提示删掉之后要留下的那部分)是条目式,不是表格;
     // 生成提示里允许出现说明用的表格,它不会进产物。
-    const product = manager.slice(manager.indexOf('### macOS / Linux'), manager.indexOf('## 用户手动触发'));
+    const product = manager.slice(manager.indexOf('### base 登记'), manager.indexOf('## 用户手动触发'));
     expect(product).not.toContain('|');
   });
 
@@ -555,7 +578,7 @@ describe('shipped skills', () => {
     const content = readSkill('idea-standalone').content;
     expect(content).toContain('**交给用户**');
     expect(content).toContain('`idea-run-config-manager` skill');
-    expect(content).toContain('不要自己写 `.run/*.run.xml`');
+    expect(tight(content)).toContain(tight('不要自己写 `.run/*.run.xml`'));
 
     // The block written into a project's AGENTS.md routes the same way, so the
     // rule survives into the file an AI reads on its own next time.
@@ -576,15 +599,18 @@ describe('shipped skills', () => {
     // sections, `###` the per-platform sub-tables), and the parts are numbered in
     // order. Both halves matter: a lost section is invisible otherwise, and a
     // level slip silently changes how the block nests inside the host AGENTS.md.
-    const headings = template.split('\n').filter((line) => /^#{1,6} /.test(line));
+    // 排版归格式化工具管(它会在括号前插空格、折长行),所以比的是**级别与顺序**,不是字面:
+    // 两边都去掉所有空白再比。
+    const headings = template.split('\n').filter((line) => /^#{1,6} /.test(line)).map((line) => line.replace(/\s+/g, ''));
     expect(headings).toEqual([
       '# Standalone 模式纪律',
       '## 一、什么是 standalone 模式',
       '## 二、standalone 下启动哪些应用(必须经 IDEA run configuration)',
-      '### macOS / Linux',
-      '### Windows',
+      '### run configuration 名字怎么读',
+      '### 应用',
+      '### 选哪个变种(启动前必须做对)',
       '## 三、热重载矩阵:改代码后要不要提醒重启',
-    ]);
+    ].map((heading) => heading.replace(/\s+/g, '')));
 
     // Per-section guidance lives in the template, not in the skill.
     expect(template).toContain('<!-- 生成提示:begin -->');
@@ -606,7 +632,7 @@ describe('shipped skills', () => {
     // would re-derive what that call already returns.
     const content = readSkill('idea-standalone').content;
     expect(content).toContain('直接调用,不传任何参数');
-    expect(content).toContain('用户已经在 IDEA 里配好的那些');
+    expect(tight(content)).toContain(tight('用户已经在 IDEA 里配好的那些'));
     expect(content).toContain('不需要再去逐个翻 `.run/*.run.xml`');
   });
 

@@ -1,36 +1,37 @@
-# Python(`PythonConfigurationType`)
+# Python (`PythonConfigurationType`)
 
-**用途**:跑一个 Python 脚本(通常是服务入口)。**这个类型来自 Python 插件**(PyCharm 一定有,IDEA 装了 Python 插件也有)。
+**用途**:跑一个 Python 脚本 (通常是服务入口)。 **这个类型来自 Python 插件**(PyCharm 一定有,IDEA 装了 Python 插件也有)。
 
 ## 模板
 
 ```xml
+
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="backend" type="PythonConfigurationType" factoryName="Python">
-    <module name="my-project" />
-    <option name="ENV_FILES" value="" />
-    <option name="INTERPRETER_OPTIONS" value="" />
-    <option name="PARENT_ENVS" value="true" />
-    <envs>
-      <env name="PYTHONUNBUFFERED" value="1" />
-    </envs>
-    <option name="SDK_HOME" value="" />
-    <option name="SDK_NAME" value="my-project" />
-    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/backend/app" />
-    <option name="IS_MODULE_SDK" value="false" />
-    <option name="ADD_CONTENT_ROOTS" value="true" />
-    <option name="ADD_SOURCE_ROOTS" value="true" />
-    <option name="DEBUG_JUST_MY_CODE" value="false" />
-    <option name="RUN_TOOL" value="" />
-    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/backend/app/main.py" />
-    <option name="PARAMETERS" value="" />
-    <option name="SHOW_COMMAND_LINE" value="false" />
-    <option name="EMULATE_TERMINAL" value="false" />
-    <option name="MODULE_MODE" value="false" />
-    <option name="REDIRECT_INPUT" value="false" />
-    <option name="INPUT_FILE" value="" />
-    <method v="2" />
-  </configuration>
+    <configuration default="false" name="backend" type="PythonConfigurationType" factoryName="Python">
+        <module name="my-project"/>
+        <option name="ENV_FILES" value=""/>
+        <option name="INTERPRETER_OPTIONS" value=""/>
+        <option name="PARENT_ENVS" value="true"/>
+        <envs>
+            <env name="PYTHONUNBUFFERED" value="1"/>
+        </envs>
+        <option name="SDK_HOME" value=""/>
+        <option name="SDK_NAME" value="my-project"/>
+        <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/backend/app"/>
+        <option name="IS_MODULE_SDK" value="false"/>
+        <option name="ADD_CONTENT_ROOTS" value="true"/>
+        <option name="ADD_SOURCE_ROOTS" value="true"/>
+        <option name="DEBUG_JUST_MY_CODE" value="false"/>
+        <option name="RUN_TOOL" value=""/>
+        <option name="SCRIPT_NAME" value="$PROJECT_DIR$/backend/app/main.py"/>
+        <option name="PARAMETERS" value=""/>
+        <option name="SHOW_COMMAND_LINE" value="false"/>
+        <option name="EMULATE_TERMINAL" value="false"/>
+        <option name="MODULE_MODE" value="false"/>
+        <option name="REDIRECT_INPUT" value="false"/>
+        <option name="INPUT_FILE" value=""/>
+        <method v="2"/>
+    </configuration>
 </component>
 ```
 
@@ -53,7 +54,14 @@
 
 ## 坑
 
-- **`module name` 与 `SDK_NAME` 必须是本项目真实的模块 / 解释器名** —— 写错 IDE 会用不了,但不一定立刻报错。**先查项目里已有的 Python 配置照抄**,查不到就问用户。
-- 实测样本里带一个 `<EXTENSION ID="PythonCoverageRunConfigurationExtension" …/>`(覆盖率插件加的),**别抄**。
+- **`SDK_NAME` 必须是 IDE 里那个解释器的"名字"原文** —— 实测:venv 解释器在 IDE 里登记的名字是
+  `~/WebstormProjects/origin-seed-vc/.venv`(jdk.table.xml 的 `<name value>`),写成 `$HOME$/...`
+  会报 `Please select a valid Python interpreter`。拿不准就写 `IS_MODULE_SDK=true` 用模块 SDK,或先
+  `inspect` 一个已有的 Python 配置照抄 `SDK_NAME`。
+- **`module name` 与 `SDK_NAME` 必须是本项目真实的模块 / 解释器名** —— 写错 IDE 会用不了,但不一定立刻报错。 **先查项目里已有的
+  Python 配置照抄**,查不到就问用户。
+- 实测样本里带一个 `<EXTENSION ID="PythonCoverageRunConfigurationExtension" …/>`(覆盖率插件加的), **别抄**。
 - 依赖装在哪决定能不能跑:走项目解释器 + `ADD_SOURCE_ROOTS`,不要指向本机某个 venv 的绝对路径。
-- 服务类进程改代码后要重启才生效(没有热重载)—— 这条属于 `idea-standalone` 的纪律。
+- `SDK_HOME` 是 **机器级**的 (本机 venv / 解释器安装路径),别写进要共享的配置;`SDK_NAME` 只是个 **名字**,得是本项目里真实存在、
+  且 **别人机器上也配了同名**的解释器 —— 对方没配这个名字时,这个配置在别人机器上是红的。
+- 服务类进程改代码后要重启才生效 (没有热重载)—— 这条属于 `idea-standalone` 的纪律。

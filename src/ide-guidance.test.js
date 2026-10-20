@@ -164,7 +164,7 @@ describe('工具清单(按功能,不按项目重复)', () => {
   it('routes only IDE-only capabilities here; reading and searching stay native', () => {
     const text = stock();
     expect(text).toContain('只有 IDE 才有的能力才用它们');
-    expect(text).toContain('读写与搜索用原生工具');
+    expect(text).toContain('读与搜索用原生工具');
     expect(text).not.toContain('## 例外');
     expect(text).not.toContain('版本控制用原生');
   });
@@ -275,7 +275,7 @@ describe('run-lifecycle 能力', () => {
   it('says nothing about them for stock IDEes', () => {
     const text = stock();
     for (const suffix of [
-      'create_shell_run_configuration',
+      'create_run_configuration',
       'list_running_configurations',
       'stop_run_configuration',
       'rerun_run_configuration',
@@ -308,14 +308,13 @@ describe('run-lifecycle 能力', () => {
     // not a bare "ask the user": it names the one skill that owns those flows —
     // and that skill is user-invoked, so the model never picks it up by itself.
     const text = buildIdeGuidanceText([ROOT, CHILD], {
-      tools: { 'ide_create_shell_run_configuration': {} },
+      tools: { 'ide_create_run_configuration': {} },
     });
     expect(text).toContain('`idea-run-config-manager` skill');
-    expect(text).toContain('非 Shell 类型与删 / 改');
-    // Writing a configuration file is the skill's job now — but only there, with
-    // a type template. The always-on text keeps the general prohibition so an
-    // ordinary task does not start inventing `.run/*.run.xml` files.
-    expect(text).toContain('写 `.run/*.run.xml` **只走 `idea-run-config-manager` skill**');
+    // 档案同步是那个 skill 的职责;工具只负责把配置写对。
+    expect(text).toContain('改完别忘了同步档案');
+    // 提示词里必须保留"不要手写 / 手删 `.run/` 下的文件"这条总禁令。
+    expect(text).toContain('不要手写或手删 `.run/` 下的文件');
   });
 
   it('offers one when only one project serves it', () => {

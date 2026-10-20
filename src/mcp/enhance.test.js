@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CREATE_SHELL_RUN_CONFIGURATION_SUFFIX,
+  CREATE_RUN_CONFIGURATION_SUFFIX,
+  DELETE_RUN_CONFIGURATION_SUFFIX,
   DEPLOYMENT_SUFFIXES,
   DOWNLOAD_FROM_DEPLOYMENT_SUFFIX,
   GET_DEPLOYMENT_TASK_STATUS_SUFFIX,
+  INSPECT_RUN_CONFIGURATION_SUFFIX,
   LIST_DEPLOYMENT_SERVERS_SUFFIX,
   LIST_RUNNING_CONFIGURATIONS_SUFFIX,
   RERUN_RUN_CONFIGURATION_SUFFIX,
   RUN_LIFECYCLE_SUFFIXES,
   STOP_RUN_CONFIGURATION_SUFFIX,
+  UPDATE_RUN_CONFIGURATION_SUFFIX,
   UPLOAD_TO_DEPLOYMENT_SUFFIX,
   deploymentCapabilities,
   runLifecycleCapabilities,
@@ -17,6 +20,9 @@ import {
 
 const NONE = {
   canCreateRunConfiguration: false,
+  canInspectRunConfiguration: false,
+  canUpdateRunConfiguration: false,
+  canDeleteRunConfiguration: false,
   canListRunningConfigurations: false,
   canStopRunConfiguration: false,
   canRerunRunConfiguration: false,
@@ -32,7 +38,10 @@ const NO_DEPLOYMENT = {
 describe('RUN_LIFECYCLE_SUFFIXES', () => {
   it('lists the suffixes the enhance plugin contributes', () => {
     expect(RUN_LIFECYCLE_SUFFIXES).toEqual([
-      'create_shell_run_configuration',
+      'create_run_configuration',
+      'inspect_run_configuration',
+      'update_run_configuration',
+      'delete_run_configuration',
       'list_running_configurations',
       'stop_run_configuration',
       'rerun_run_configuration',
@@ -50,7 +59,10 @@ describe('RUN_LIFECYCLE_SUFFIXES', () => {
 
   it('composes the array from the named constants, not by hand', () => {
     expect(RUN_LIFECYCLE_SUFFIXES).toEqual([
-      CREATE_SHELL_RUN_CONFIGURATION_SUFFIX,
+          CREATE_RUN_CONFIGURATION_SUFFIX,
+      INSPECT_RUN_CONFIGURATION_SUFFIX,
+      UPDATE_RUN_CONFIGURATION_SUFFIX,
+      DELETE_RUN_CONFIGURATION_SUFFIX,
       LIST_RUNNING_CONFIGURATIONS_SUFFIX,
       STOP_RUN_CONFIGURATION_SUFFIX,
       RERUN_RUN_CONFIGURATION_SUFFIX,
@@ -122,7 +134,7 @@ describe('runLifecycleCapabilities', () => {
       ide_read_file: {},
       ide_stop_run_configuration: {},
       ide_rerun_run_configuration: {},
-      modelserver_create_shell_run_configuration: {},
+      modelserver_create_run_configuration: {},
     };
     expect(runLifecycleCapabilities(tools, 'ide_')).toEqual({
       ...NONE,
@@ -203,7 +215,7 @@ describe('deploymentCapabilities', () => {
 
   it('does not answer for the run-lifecycle group', () => {
     const lifecycleOnly = {
-      ide_create_shell_run_configuration: {},
+      ide_create_run_configuration: {},
       ide_list_running_configurations: {},
       ide_stop_run_configuration: {},
       ide_rerun_run_configuration: {},

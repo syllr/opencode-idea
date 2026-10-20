@@ -42,14 +42,20 @@
  * suffixes are its contract, and there is no runtime way to discover "which
  * plugin provided this tool": MCP carries no such marker.
  */
-export const CREATE_SHELL_RUN_CONFIGURATION_SUFFIX = 'create_shell_run_configuration';
+export const CREATE_RUN_CONFIGURATION_SUFFIX = 'create_run_configuration';
+export const INSPECT_RUN_CONFIGURATION_SUFFIX = 'inspect_run_configuration';
+export const UPDATE_RUN_CONFIGURATION_SUFFIX = 'update_run_configuration';
+export const DELETE_RUN_CONFIGURATION_SUFFIX = 'delete_run_configuration';
 export const LIST_RUNNING_CONFIGURATIONS_SUFFIX = 'list_running_configurations';
 export const STOP_RUN_CONFIGURATION_SUFFIX = 'stop_run_configuration';
 export const RERUN_RUN_CONFIGURATION_SUFFIX = 'rerun_run_configuration';
 
 /** All of them, in the order the guidance lists them: create, see, stop, restart. */
 export const RUN_LIFECYCLE_SUFFIXES = [
-  CREATE_SHELL_RUN_CONFIGURATION_SUFFIX,
+  CREATE_RUN_CONFIGURATION_SUFFIX,
+  INSPECT_RUN_CONFIGURATION_SUFFIX,
+  UPDATE_RUN_CONFIGURATION_SUFFIX,
+  DELETE_RUN_CONFIGURATION_SUFFIX,
   LIST_RUNNING_CONFIGURATIONS_SUFFIX,
   STOP_RUN_CONFIGURATION_SUFFIX,
   RERUN_RUN_CONFIGURATION_SUFFIX,
@@ -70,6 +76,18 @@ export const LIST_DEPLOYMENT_SERVERS_SUFFIX = 'list_deployment_servers';
 export const UPLOAD_TO_DEPLOYMENT_SUFFIX = 'upload_to_deployment';
 export const DOWNLOAD_FROM_DEPLOYMENT_SUFFIX = 'download_from_deployment';
 export const GET_DEPLOYMENT_TASK_STATUS_SUFFIX = 'get_deployment_task_status';
+
+/**
+ * The enhance plugin's **file edit** tool name, as a suffix — same contract and
+ * same reason for suffixes as {@link RUN_LIFECYCLE_SUFFIXES}.
+ *
+ * Keep in sync with `FileEditSchemas.kt` in the enhance repository.
+ *
+ * It is a tool of its own (not part of the run-lifecycle or deployment groups)
+ * because it serves a different purpose: writing a file **through the IDE**, so
+ * the IDE's in-memory copy and the file on disk are never two different things.
+ */
+export const EDIT_FILE_SUFFIX = 'edit_file';
 
 /** All of them: look at the servers, upload, download, then poll a transfer. */
 export const DEPLOYMENT_SUFFIXES = [
@@ -113,7 +131,10 @@ export const servesTool = (tools, prefix, suffix) =>
  */
 export function runLifecycleCapabilities(tools, prefix) {
   return {
-    canCreateRunConfiguration: servesTool(tools, prefix, CREATE_SHELL_RUN_CONFIGURATION_SUFFIX),
+    canCreateRunConfiguration: servesTool(tools, prefix, CREATE_RUN_CONFIGURATION_SUFFIX),
+    canInspectRunConfiguration: servesTool(tools, prefix, INSPECT_RUN_CONFIGURATION_SUFFIX),
+    canUpdateRunConfiguration: servesTool(tools, prefix, UPDATE_RUN_CONFIGURATION_SUFFIX),
+    canDeleteRunConfiguration: servesTool(tools, prefix, DELETE_RUN_CONFIGURATION_SUFFIX),
     canListRunningConfigurations: servesTool(tools, prefix, LIST_RUNNING_CONFIGURATIONS_SUFFIX),
     canStopRunConfiguration: servesTool(tools, prefix, STOP_RUN_CONFIGURATION_SUFFIX),
     canRerunRunConfiguration: servesTool(tools, prefix, RERUN_RUN_CONFIGURATION_SUFFIX),
