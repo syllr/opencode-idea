@@ -494,7 +494,7 @@ describe('shipped skills', () => {
     // 缺省:没有系统段 = macOS / Linux;没有环境段 = 所有环境通用这一套。
     expect(squash(template)).toContain(squash('缺省表示'));
     // 选变种的纪律:问一次就够,别反复打扰用户。
-    expect(squash(template)).toContain(squash('启动前问一次用户走哪套'));
+    expect(squash(template)).toContain(squash('启动前问一次用户走哪个环境'));
     expect(squash(template)).toContain(squash('本会话默认走这套'));
     // 产物里一条配置一条(变体不另起条目)—— 生成提示里的示例不算。
     const productOnly = template.replace(/<!-- 生成提示:begin -->[\s\S]*?<!-- 生成提示:end -->/g, '');

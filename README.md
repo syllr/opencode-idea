@@ -274,7 +274,7 @@ IDE 内置的 MCP Server 只能 **启动已有**的 run configuration (`execute_
 那个文件,字段名拼错则静默用默认值)。所以「照着模板手写」这条路已经封了,模板 (`assets/types/*.md`)降级为 **字段参考**。
 
 配置名有自己的文法:**`[os@]base[@env]`** —— os 段 (`win` = Windows,缺省 = macOS / Linux)、base 段 (配置本体)、env 段 (环境名,
-缺省 = 所有环境通用这一套)。`win@base` 与 `base@env` 都是同一个 base 的 **变体**,档案里只登记 base。解析 **交给工具**:
+缺省 = 默认环境)。`win@base` 与 `base@env` 都是同一个 base 的 **变体**,档案里只登记 base。解析 **交给工具**:
 `ide_inspect_run_configuration` 的 `naming` 字段把名字拆成 platform / base / env,规则是从两头往中间收 (末段是环境;首段只有
 恰好是 `win` 才算平台,不是就并进 base),所以 `a@b@c` 会解析成 base=`a@b`、env=`c`,不会丢段。
 
