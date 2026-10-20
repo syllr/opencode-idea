@@ -91,8 +91,10 @@ jar / 按 jar 路径 `grep` 唯一的正解:**IDE 索引里那份就是项目编
 
 ### 改代码
 
-- {{cmd_apply_patch}} **走 IDE 改文件**:传 Codex apply_patch 格式或 unified git diff 的补丁,支持 Add / Delete / Update
-  (可带 Move 改名);路径必须在项目内。
+- {{cmd_apply_patch}} **走 IDE 改文件**:`input` 传补丁 (两种格式都行 —— Codex 的 `*** Begin Patch` /
+  `*** Update File: <路径>` / `@@` / `*** End Patch`,或 unified git diff)。一个补丁里可混着 **Add / Update / Delete**
+  多个操作,`Update` 还能带 `*** Move to: <新路径>` 改名; **按上下文匹配**,`@@` 不用写行号。返回
+  `N out of M operations applied`,对不上的 hunk 会报 `Hunk context not found`。路径必须在项目内。
 - {{cmd_create_new_file}} **新建文件**:`pathInProject` + `text`;父目录自动建,`overwrite` 默认关 (文件已存在会报错)。
 
 ### 重构与格式化
