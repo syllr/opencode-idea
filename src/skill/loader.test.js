@@ -352,8 +352,9 @@ describe('shipped skills', () => {
     // Per-section guidance lives in the template, and the instructions for the
     // generating step must not survive into the produced block.
     expect(template).toContain('<!-- 生成提示:begin -->');
+    // 产物规则只在模板里说一次:skill 负责"去做",模板负责"怎么做"。
     expect(template).toContain('产物里整块删掉');
-    expect(skill.content).toContain('产物里整块删掉');
+    expect(skill.content).toContain('的生成提示逐段填');
     // The split is deliberate: SKILL.md is the flow, and every rule about what to
     // write where lives in this template's generation guidance. The skill has to
     // say so, or a later edit will start duplicating the rules back into it.
@@ -586,7 +587,7 @@ describe('shipped skills', () => {
     // The produced file is read by AIs as rules, so the instructions for the
     // generating step must not survive into it.
     expect(template).toContain('产物里整块删掉');
-    expect(readSkill('idea-standalone').content).toContain('产物里整块删掉');
+    expect(readSkill('idea-standalone').content).toContain('的生成提示逐段填充');
     expect(template).toContain('<前缀>_get_run_configurations');
     // The template carries metavariables; it also carries the rule that none of
     // them may survive into the produced block.

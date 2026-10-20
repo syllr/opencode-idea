@@ -14,9 +14,8 @@ IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-id
 
 ## 流程
 
-1. **读**:项目根 `AGENTS.md` —— 有没有 `<!-- idea-run-config-manager:begin -->` … `<!-- idea-run-config-manager:end -->`
-   标记块 (有则更新,没有就在文件末尾追加);同时读同文件里 `idea-standalone` 的标记块。 **服务化 / 常驻应用的配置一律不进
-   本块**(不管那边有没有块);有那个块时,把它登记过的名字一并排除。
+1. **读**:项目根 `AGENTS.md` 里 `<!-- idea-run-config-manager:begin -->` … `<!-- idea-run-config-manager:end -->` 标记块
+   (有则更新,没有就在文件末尾追加),以及同文件里 `idea-standalone` 的块;过滤规则在模板的生成提示里。
 2. **枚举**:逐个项目用 **它自己那个前缀**的 `<前缀>_get_run_configurations` 直接调用,不传参数 —— 本项目的工具前缀跟着接入时的名字走
    (root 是 `ide`,子项目是它的目录名)。
 3. **建 / 删 / 改**(**直接动手**):
@@ -32,8 +31,8 @@ IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-id
         - **看一眼**:`<前缀>_inspect_run_configuration` —— 定义、命名解析、活实例、历史日志路径全在里面;
           构建 patch 之前先用它拿到当前值 (尤其 `configurationXml`)。
         - **模板是字段参考**:`assets/types/*.md` 用来查类型 id、看这个类型有哪些字段、`configurationXml` 该长什么样。
-        - **建带平台 / 环境变体的配置** → 名字按第 5 条的文法拼 (`win@base` / `base@env`)。**这个环境具体怎么接上,
-          问用户或照项目里现成的同类配置来**。
+        - **建带平台 / 环境变体的配置** → 名字按模板「怎么读配置名」的文法拼 (`win@base` / `base@env`);环境具体怎么接上问
+          用户,或照项目里现成的同类配置来。
         - **没有模板**(矩阵之外)→ **走 `cloneFrom`**:复制一个同类型的现成配置再 patch 它的字段。
           字段名不确定时,这是 **唯一可靠**的路子 (照猜字段名 = 静默用默认值)。连一个同类型的现成配置都没有,
           才 **交给用户**:讲清要配什么 (配置名、干什么、什么时候跑),请他在 IDE 里配好,你只负责把档案补上。
@@ -41,9 +40,8 @@ IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-id
        字段名拼错了)、`storagePath` 文件落在哪。再用 `<前缀>_get_run_configurations` 二次确认它已被 IDE 认到 —— **看不到就是没被
        IDE 认**。
     4. **不要手搓启动命令**代替配置,也 **不要写模板里没有的字段**(多余字段被忽略、名字写错静默用默认值,都不会报错)。
-4. **同步文档**:按 [assets/AGENTS.template.md](assets/AGENTS.template.md) 逐段填,写在标记块内 ——
-   **条目怎么写、五项分别写什么、枚举与过滤的要求,都在那份模板的生成提示里**,动手前先读它;生成提示是给生成过程的说明,
-   **产物里整块删掉**,块外一字不动 (尤其 **不要触碰**其他 skill 的标记块)。
+4. **同步文档**:按 [assets/AGENTS.template.md](assets/AGENTS.template.md) 的生成提示逐段填,写在标记块内 —— 条目怎么写、
+   五项分别写什么、枚举与过滤的要求,都在那份模板的生成提示里,动手前先读它。 **块外一字不动**(尤其不要触碰其他 skill 的标记块)。
 5. **核对**:块里每个名字项目里都还在,项目里每个配置块里都有。
 
 ## 支持矩阵 (一个类型一份模板)
@@ -67,21 +65,11 @@ IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-id
 ## 硬性契约 (所有类型都一样)
 
 1. **落地位置不用管**:配置落在哪由工具决定 (项目级配置随项目共享);子项目的配置用 **子项目前缀**的工具建与查。
-2. **`configurationXml` 的信封照类型模板抄**(`assets/types/*.md` 每份都是完整的):外层
-   `<component name="ProjectRunConfigurationManager">`,里面一个
-   `<configuration default="false" name="<配置名>" type="<类型ID>">` + 该类型自己的字段 + `<method v="2" />`。
-   `factoryName` 可写可不写 —— IDE 认的是 `type`。
-
-3. **`type` 写错 = 整个文件被静默忽略,日志里也不报任何东西。** 有模板就照模板的 `type` 抄,没有模板就 `cloneFrom`
-   复制一个同类型的现成配置 —— 别照猜;工具的 `typeKnown` / `typeDisplayName` 会告诉你这台 IDE 认不认这个类型 (缺插件时是
-   `Unknown`)。
-4. **路径宏**:`$PROJECT_DIR$` = 该项目根。 **项目内的路径一律用它**(`$PROJECT_DIR$/子目录/...`),不要写本机绝对路径 ——
+2. **`type` 与字段照类型模板抄**(`assets/types/*.md`,每份都带完整的 `configurationXml`) —— 没有模板就 `cloneFrom` 复制
+   同类型的现成配置,别照猜:`type` 写错 = 整个文件被静默忽略、日志里也不报。工具的 `typeKnown` / `typeDisplayName` 会告诉你
+   这台 IDE 认不认这个类型 (缺插件时是 `Unknown`)。
+3. **路径宏**:`$PROJECT_DIR$` = 该项目根。 **项目内的路径一律用它**(`$PROJECT_DIR$/子目录/...`),不要写本机绝对路径 ——
    写死了别人 clone 下来就指到不存在的目录。
-5. **命名文法:`[os@]base[@env]`,`@` 分割、最多三段** —— `os` 段(`win` = Windows,缺省 = macOS / Linux)、`base` 段(配置本体,必填)、
-   `env` 段(环境名,缺省 = 默认环境)。`win@base`(换平台)与 `base@env`(换环境)都是**同一个 base 的变体**;
-   **档案只登记 base**,变体写进 base 的 `desc`。
-    - 名字怎么解析**交给工具**(`<前缀>_inspect_run_configuration` 的 `naming`),别自己猜。
-    - **一个环境具体怎么接上,是项目自己的事**(启动参数 / 环境变量 / 配置文件都常见):照项目里现成的同类变体来,或问用户。
-6. **选环境:只有一套就别问,有多套套才问一次**:`base` 与 `base@<env>` 里只有一个存在 → **直接用**。两个同时存在
-   (`test` 是默认环境、`test@dev` 是 `dev` 环境)→ **启动前问一次用户走哪个环境**(不是"要不要启动");**用户选定后本会话内
-   默认走这一套**,用户不说改就不改 —— 改代码 → 自己重启 → 同一套变体,AI 干活的链路上不打扰用户。
+
+名字怎么读、变体怎么选、每条登记什么,都在 [assets/AGENTS.template.md](assets/AGENTS.template.md) 的「怎么读配置名」
+「怎么选变体」与生成提示里 —— 本文件不重复那套规则。
