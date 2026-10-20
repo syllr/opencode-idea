@@ -134,6 +134,9 @@ describe('shipped skills', () => {
     // Same exact key set as `Skill.Info` allows — no stray field rides along.
     expect(Object.keys(skill).sort()).toEqual(['autoinvoke', 'content', 'description', 'id', 'name', 'path']);
     expect(rawFrontmatter(skill.path)).toContain('metadata:\n  opencode/autoinvoke: false');
+    // frontmatter 必须**原样**保留:IDE 的 Markdown 格式化器不认 YAML frontmatter,
+    // 一旦对它跑格式化,`metadata:` 这块会被吞掉,skill 就变成模型可自动调用的了。
+    expect(rawFrontmatter(skill.path)).toMatch(/^---\nname:[^\n]*\ndescription:[^\n]*\nmetadata:\n {2}opencode\/autoinvoke: false\n---\n/);
 
     // The standalone skill says nothing, so it keeps the plain shape and stays
     // model-invocable.
@@ -305,7 +308,7 @@ describe('shipped skills', () => {
       '  - before run:{第 1 步 / 第 2 步 / 无}',
       '  - run:{<前缀>_execute_run_configuration}',
       '  - after run:{产物落在哪 / 接下来要做什么 / 无}',
-      '  - desc:{它是什么 + 有什么坑 + 有哪些 @ 变体、各自怎么切环境}',
+      '  - desc:{它是什么 + 有什么坑 + 有哪些 @ 变体}',
     ]) {
       expect(template).toContain(line);
     }

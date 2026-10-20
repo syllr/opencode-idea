@@ -72,67 +72,16 @@
 
 ## 环境变体 (`base@env`)
 
-名字:`base@<环境名>`(mac/Linux)、`win@base@<环境名>`(Windows)。 **base 与变体是同一件事的两种配置**
-,变体只是把"用哪套环境"接上。
+名字:`base@<环境名>`(mac/Linux)、`win@base@<环境名>`(Windows)。 **base 与变体是同一件事的不同环境**,靠名字里的环境段区分。
 
-**环境怎么切有三条路,选哪条由该语言 / 框架的业务决定** —— 本 skill 不统一规定,但 **必须把环境真正接上**:
+**这个环境具体怎么接上,不归这份文档管** —— 不同项目、不同语言、不同框架的生效方式都不一样 (启动参数 / 环境变量 /
+配置文件都常见)。
+做法:**照项目里现成的同类环境变体来**(最稳),或者 **问用户**;实在看不出来就问,别自己编一套。
 
-### 路线 1:应用按环境变量选配置
+建完之后只要确认两件事:
 
-运行配置的 `envs` 里给环境名,应用启动时按它选自己那份配置。 **不读配置文件的业务就走这条。**
-
-```xml
-<component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="console-web@yutairstandalone" type="ShConfigurationType" factoryName="Shell Script">
-    <option name="SCRIPT_TEXT" value="APP_ENV=yutairstandalone pnpm --filter @aidata/console dev" />
-    <option name="INDEPENDENT_SCRIPT_PATH" value="true" />
-    <option name="SCRIPT_PATH" value="" />
-    <option name="SCRIPT_OPTIONS" value="" />
-    <option name="INDEPENDENT_SCRIPT_WORKING_DIRECTORY" value="true" />
-    <option name="SCRIPT_WORKING_DIRECTORY" value="$PROJECT_DIR$" />
-    <option name="INDEPENDENT_INTERPRETER_PATH" value="true" />
-    <option name="INTERPRETER_PATH" value="" />
-    <option name="INTERPRETER_OPTIONS" value="" />
-    <option name="EXECUTE_IN_TERMINAL" value="false" />
-    <option name="EXECUTE_SCRIPT_FILE" value="false" />
-    <envs>
-      <env name="APP_ENV" value="yutairstandalone" />
-    </envs>
-    <method v="2" />
-  </configuration>
-</component>
-```
-
-**环境名要同时写进 `SCRIPT_TEXT` 前缀**(`APP_ENV=yutairstandalone pnpm ...`):IDE 面板点 Run 认 `envs`,但 MCP 执行通道只认
-`SCRIPT_TEXT`(实测)。
-
-### 路线 2:脚本里加载配置文件
-
-应用自己读不到环境变量,就让脚本先把 `env/<环境名>.env` 灌进进程环境再起它。
-
-```xml
-    <option name="SCRIPT_TEXT" value="set -a
-. env/ytairstandalone.env
-set +a
-pnpm --filter @aidata/console dev" />
-```
-
-- 工作目录必须是 `$PROJECT_DIR$` —— `. env/...` 是相对路径,靠它定位仓库根。 **留空不等于项目根**:实测会继承 IDE 进程的
-  cwd (IDE 安装目录),命令会在错误的地方跑。
-- **这段是 POSIX shell 语法,绑平台**:Windows 侧要用 PowerShell 的写法 (把 env 文件读成环境变量),别把 mac 那份直接拷过去。
-- **这段脚本内容跟着平台走**:mac / Linux 用 POSIX 语法,Windows 用 PowerShell 的写法,别把一边直接拷到另一边。
-
-### 路线 3:启动参数指向配置文件
-
-应用本来就支持配置文件参数时最省事:**`--profile=yutairstandalone` / `--env-file=env/yutairstandalone.env`** 写进
-`SCRIPT_TEXT`。跨 shell 最安全 (只是个参数),也最不容易被"忘了设环境变量"坑到。
-
-### 铁律
-
-- **名字对了但环境没接上 = 没配好**。建完变体,确认它真的加载了那套配置 (应用启动日志里通常有一行"已加载配置 <名字>"之类)。
-- **环境名是项目级的、可共享**(进 git);地址 / 凭据在 `env/<环境名>.env` 里, **不进 run config**。
-- **base 与 `base@<env>` 同时存在时,启动前问一次用户走哪套**;问过之后本会话内默认走那一套,别反复打扰
-  (细则见 [../SKILL.md](../SKILL.md) 硬性契约第 9 条)。
+- **名字对得上**:环境段与这个变体实际指向的环境一致;
+- **它真的加载了那套配置**(应用启动日志里通常有一行"已加载配置 <名字>"之类)。
 
 ## 坑
 
