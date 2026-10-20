@@ -29,13 +29,13 @@ description: "为项目生成/维护 standalone(启动收口只有 IDEA run conf
 - **该项目的 `<前缀>_get_run_configurations` 直接调用,不传任何参数** → 项目里已有的 run configuration 就是 **用户已经在
   IDEA 里配好的那些**,
   这一次调用会把它们的名字连同启动细节 (程序参数、工作目录、环境变量、是否支持启动时覆盖)一并给出。
-  第二段的 `run configuration` 列、以及端口, **只能来自这里** —— 不需要再去逐个翻 `.run/*.run.xml`,那份列表已经是配置的结果。
+  第二段的 `run configuration` 列、以及端口, **只能来自这里** —— 不需要再去项目目录里逐个翻配置文件,那份列表已经是配置的结果。
 - 项目类型 (`package.json` / `pom.xml` / `go.mod` / `pyproject.toml` / `Cargo.toml`)→ 决定第三段的热重载列。
 - 端口:先看上面那份启动细节里有没有;项目自身配置里也读不到就 **问用户**,不要编。
 - `run configuration` 列表里缺某个应用:**先问用户要不要建**,再用 `<前缀>_create_run_configuration` 建 (建配置是
   **项目资产**,
   建之前要把"配置名、干什么、为什么值得留"摊开给用户看,同意才建)。工具列表里没有它时,请用户自己在 IDE 里建。
-  建完 **重新查一次**,再登记进档案。不要手搓启动命令,也不要自己写 `.run/*.run.xml`。
+  建完 **重新查一次**,再登记进档案。不要手搓启动命令,也不要自己写配置文件。
 - 补齐缺口:哪些应用进 standalone、哪些配置名对不上、端口与热重载不确定 —— **逐条向用户确认**,不猜。
 - 生成或更新前先读 [assets/AGENTS.template.md](assets/AGENTS.template.md),确认三段与各段生成提示。
 

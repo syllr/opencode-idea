@@ -1,6 +1,6 @@
 ---
 name: idea-run-config-manager
-description: "管理本项目的 run configuration:**增 / 删 / 改 / 改名全部走工具**(`create_run_configuration` / `update_run_configuration` / `delete_run_configuration` / `inspect_run_configuration`,不要手写 `.run/` 下的文件;类型字段照 `assets/types/` 里的实测模板作参考),并把配置档案同步进**项目根 `AGENTS.md`** 里由 `<!-- idea-run-config-manager:begin -->` 与 `<!-- idea-run-config-manager:end -->` 包裹的标记块 —— 每个 run configuration 一个条目,写清它干什么、怎么跑、什么时候跑;服务化的那些不在这里,它们归 `idea-standalone` 的块。当用户要建 / 删 / 改 run configuration,或要一份「这个项目有哪些配置、各自干什么」的说明时使用。"
+description: "管理本项目的 run configuration:**增 / 删 / 改 / 改名全部走工具**(`create_run_configuration` / `update_run_configuration` / `delete_run_configuration` / `inspect_run_configuration`,不要自己写文件;类型字段照 `assets/types/` 里的实测模板作参考),并把配置档案同步进**项目根 `AGENTS.md`** 里由 `<!-- idea-run-config-manager:begin -->` 与 `<!-- idea-run-config-manager:end -->` 包裹的标记块 —— 每个 run configuration 一个条目,写清它干什么、怎么跑、什么时候跑;服务化的那些不在这里,它们归 `idea-standalone` 的块。当用户要建 / 删 / 改 run configuration,或要一份「这个项目有哪些配置、各自干什么」的说明时使用。"
 metadata:
   opencode/autoinvoke: false
 ---
@@ -11,7 +11,7 @@ metadata:
 (你做的、用户自己做的、用户删掉的,都算)。改了配置却忘了同步这个档案块,等于它在骗下一个读者。
 
 **工具不在时**:先看工具表里有没有 `<前缀>_get_run_configurations` / `<前缀>_create_run_configuration`。没有,就是项目还没接入
-IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-ide`,接入之前 **不要手写 `.run/*.run.xml` 假装做完**(IDE
+IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-ide`,接入之前 **不要手写配置文件假装做完**(IDE
 不认,复查也过不了)。
 
 ## 流程
@@ -24,7 +24,7 @@ IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-id
     1. **先查重**:已经在做同一件事的配置直接复用,不要新建一个几乎一样的。 **查重按 (base, 平台, 职责) 三个维度比** —— 同一个
        base 在同一个平台上做同一件事才算重复;`base` 与 `base@<env>` 是同一 base 的两套环境,`base` 与 `win@base` 是同一
        base 的两个平台,都 **不算重复**,要各建各的。
-    2. **走工具,不要手写 `.run/` 下的文件**:
+    2. **走工具,不要自己写文件**:
         - **新建**:`<前缀>_create_run_configuration` —— 任意类型,内容来源三选一:`cloneFrom`(复制一个现成的,
           最稳)/ `configurationXml`(模板里的 XML 片段)/ 平台模板 + `options` / `attributes` / `envs` 补丁。
         - **修改 / 改名**:`<前缀>_update_run_configuration`。改字段用 `options` / `envs` 补丁;
@@ -69,9 +69,8 @@ IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-id
 
 ## 硬性契约 (所有类型都一样)
 
-1. **落地位置**:项目根的 `.run/<配置名>.run.xml`(配置名带空格就原样用,例如 `Hello World.run.xml`)。子项目的配置写在
-   **子项目自己的** `.run/` 下,并用 **子项目前缀**的工具复查。 **文件由工具写,不要手写** —— 手写出来的文件要么被 IDE
-   静默忽略 (`type` 写错),要么字段名拼错却静默用默认值。
+1. **落地位置不用管**:配置落在哪由工具决定 (项目级配置随项目共享)。 **文件由工具写,不要自己写** —— 手写出来的要么被 IDE
+   静默忽略 (`type` 写错),要么字段名拼错却静默用默认值。子项目的配置用 **子项目前缀**的工具建与查。
 2. **信封固定**(这是 **`configurationXml` 参数**该有的形状,不是"你手写的文件"):
 
    ```xml
@@ -91,7 +90,7 @@ IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-id
    "现在能不能跑"的权威答案。
 5. **路径宏**:`$PROJECT_DIR$` = 该项目根。 **项目内的路径一律用它**(`$PROJECT_DIR$/子目录/...`),不要写本机绝对路径 ——
    写死了别人 clone 下来就指到不存在的目录。
-6. **跨机器共享 (`.run/*.run.xml` 是进 git 给全组共用的)**:按"绑在哪一层"分三档,建 / 改配置前对着过一遍:
+6. **跨机器共享 (配置是进 git 给全组共用的)**:按"绑在哪一层"分三档,建 / 改配置前对着过一遍:
     - **项目级**(可直接共享):配置名、命令、仓库内的路径、工作目录、`EXECUTE_*`、前置任务 → 直接进 git。
     - **OS 级**(每个 OS 一份;同 OS 内路径是常量,人人一样,可共享):脚本后缀、命令语法差异、平台专属工具 → mac/Linux 一份,
       Windows 一份 (见第 7 条的命名文法)。
@@ -106,7 +105,7 @@ IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-id
     - `win@base`(换平台)与 `base@env`(换环境)都是 **同一个 base 的变体** —— 同一件事,平台不同 / 环境不同。 **档案只登记
       base**,变体不另起条目;把"有哪些变体、各自怎么切环境"写进 base 的 `desc`。
     - **用 `@` 不用 `-` 切分**:名字里本来就有多个连字符 (`console-web`),用 `@` 才切得清前后缀;`@` 在文件名里合法 (落地就是
-      `.run/win@console-web.run.xml`,IDE 认得、跑得起来,已实测)。
+      名字里带 `@` 没问题,IDE 认得、跑得起来,已实测)。
     - **解析交给工具,别自己猜**:`<前缀>_inspect_run_configuration` 的 `naming` 字段会把名字解析成
       platform / base / env。它的规则是 **从两头往中间收** —— 末段是环境 (两段及以上才有);首段 **只有恰好是 `win`**
       才算平台,不是 `win` 的首段并进 base;中间剩下的是 base。所以 `a@b@c` 解析成 base=`a@b`、env=`c`,不会丢段。

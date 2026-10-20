@@ -156,7 +156,7 @@ describe('shipped skills', () => {
 
   it('edits configuration files through a per-type template, never from memory', () => {
     // `idea-run-config` was removed because of its METHOD: hand-authoring
-    // `.run/*.run.xml` from memory is the fragile path — a wrong `type` makes the
+    // 手写配置文件是 fragile path —— a wrong `type` makes the
     // IDE ignore the whole file, silently, with nothing in the log.
     // `idea-run-config-manager` takes the subject over and keeps exactly that
     // guard rail while doing the work itself: the model DOES edit those files,
@@ -168,10 +168,11 @@ describe('shipped skills', () => {
 
     const manager = readSkill('idea-run-config-manager').content;
     expect(manager).toContain('直接动手');
-    expect(manager).toContain('`.run/<配置名>.run.xml`');
+    // 提示词里**不出现**配置文件路径 —— 提了模型就会去手写文件。
+    expect(manager).not.toContain('.run/');
     expect(manager).toContain('支持矩阵');
     expect(manager).toContain('assets/types/');
-    expect(manager).toContain('走工具,不要手写');
+    expect(tight(manager)).toContain(tight('走工具,不要自己写文件'));
     // Writing the file is only half of it: an unnoticed file is worse than none,
     // so the catalog has to prove it was picked up.
     expect(manager).toContain('写完必须复查');
@@ -357,7 +358,7 @@ describe('shipped skills', () => {
     // write where lives in this template's generation guidance. The skill has to
     // say so, or a later edit will start duplicating the rules back into it.
     expect(skill.content).toContain('都在那份模板的生成提示里');
-    expect(template).toContain('看里面的内容');
+    expect(tight(template)).toContain(tight('看它的内容'));
     expect(template).toContain('它会起出重复实例');
     // The template carries metavariables; it also carries the rule that none of
     // them may survive into the produced block.
@@ -578,7 +579,7 @@ describe('shipped skills', () => {
     const content = readSkill('idea-standalone').content;
     expect(tight(content)).toContain(tight('先问用户要不要建'));
     expect(tight(content)).toContain(tight('create_run_configuration'));
-    expect(tight(content)).toContain(tight('不要自己写 `.run/*.run.xml`'));
+    expect(tight(content)).toContain(tight('也不要自己写配置文件'));
 
     // The block written into a project's AGENTS.md routes the same way, so the
     // rule survives into the file an AI reads on its own next time.
@@ -625,15 +626,15 @@ describe('shipped skills', () => {
     expect(template).toContain('不留进产物');
   });
 
-  it('reads the configurations from the tool, not by walking .run/', () => {
+  it('reads the configurations from the tool, not by reading files', () => {
     // `<前缀>_get_run_configurations` called with no arguments answers exactly the
     // question this skill asks: the configurations the USER has already set up,
-    // launch details included. Reading the `.run/*.run.xml` files one by one
+    // launch details included. Reading the configuration files one by one
     // would re-derive what that call already returns.
     const content = readSkill('idea-standalone').content;
     expect(content).toContain('直接调用,不传任何参数');
     expect(tight(content)).toContain(tight('用户已经在 IDEA 里配好的那些'));
-    expect(content).toContain('不需要再去逐个翻 `.run/*.run.xml`');
+    expect(tight(content)).toContain(tight('不需要再去项目目录里逐个翻配置文件'));
   });
 
   it('references no tool that the plugin hides from the model', () => {

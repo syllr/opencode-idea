@@ -123,31 +123,33 @@ jar / 按 jar 路径 `grep` 唯一的正解:**IDE 索引里那份就是项目编
 
 ### 读压缩包内的东西
 
-- {{cmd_read_file}} **压缩包内的条目**(路径形如 `libs/foo.jar!/com/x/Bar.class` 或 `jar://` URL)只有它能读 —— 原生
-  `read` 打不开压缩包,而它还能把 `.class` **反编译成源码**;「符号」那条搜出来的路径也用它 (原样传即可)。
+- {{cmd_read_file}} **压缩包内的条目**只有它能读 —— 原生 `read` 打不开压缩包,而它还能把 `.class` **反编译成源码**
+  。两种路径写法:
+  `<路径>.jar!/<条目>`(相对或绝对都行)或 `jar://<**绝对**路径>.jar!/<条目>`(`jar://` 只认绝对路径);「符号」那条搜出来的路径原样传即可。
 
 ### 运行配置
 
-- {{cmd_get_run_configurations}} **项目里有哪些运行配置**:传 `filePath` 可列该文件的运行入口。 **不要翻 `.run/` 目录** ——
-  存在 `.idea/` 里的那些看不到。
-- {{cmd_execute_run_configuration}} **跑已有配置**:Shell Script 要 `EXECUTE_IN_TERMINAL: false`;覆盖参数
-  (`programArguments` / `workingDirectory` / `envs`)需配置支持 `supportsDynamicLaunchOverrides`。
+- {{cmd_get_run_configurations}} **项目里有哪些运行配置**:传 `filePath` 可列该文件的运行入口。
+  **别去项目目录里翻配置** ——
+  存在 IDE 自己存储里 (不在项目目录)的那些,翻文件是看不到的。
+- {{cmd_execute_run_configuration}} **跑已有配置**:配置里的 `EXECUTE_IN_TERMINAL` 要是 `false`(共享出去的配置都这样)
+  ;覆盖参数 (`programArguments` / `workingDirectory` / `envs`)需配置支持 `supportsDynamicLaunchOverrides`,否则会直接报错。
   {{#if canCreateRunConfiguration}}
-- {{cmd_create_run_configuration}} **新建任意类型的项目级配置**(写 `.run/<name>.run.xml`):内容来源三选一 —— `cloneFrom`
+- {{cmd_create_run_configuration}} **新建任意类型的项目级配置**:内容来源三选一 —— `cloneFrom`
   (复制一个现成的,最稳;字段名不确定时只走它)、`configurationXml`(模板里的 XML 片段)、平台模板 + `options` / `attributes` /
   `envs` 补丁。它是 **项目资产**,不是"跑命令"的手段 —— 只是要跑一条命令就用原生 `shell`。判据只有一条:
   **这件事以后会不会以同样的形态再发生?**
-    - **改 / 改名 / 删**都走同一组工具 (`update_run_configuration` / `delete_run_configuration`), **不要手写或手删
-      `.run/` 下的文件**。
+    - **改 / 改名 / 删**都走同一组工具 (`update_run_configuration` / `delete_run_configuration`), **不要自己写文件、
+      也不要自己删文件**。
     - **会 → 该建,而且你要主动提**。典型信号:用户让你做的是 **重复性动作**,还会对别的环境 / 别的分支 /
       下一次改表再做一遍 —— 例如改完表结构要 **同步某个环境的 DDL**、跑数据库迁移或回滚、生成代码、打包、起 dev
       server、往某个环境部署、按固定步骤清洗数据。这时 **别默默每次手搓命令**(下次还得从头猜一遍),也 **别自己动手建**:
       **先问用户**"这个流程以后要反复跑,要不要固化成一个 run configuration?",并把方案摊开:配置名、类型、实际执行的命令、工作目录、为什么值得留。
       **同意才建**;用户说这次先这样,就照办,别再追着问。
     - **不会 → 用原生 `shell` 直接跑,别建**。这就是两者的分界线:原生 `shell` 是 **就地执行、用完不留痕**
-      (命令只存在于会话里);`create_run_configuration` 是 **把命令落盘成 `.run/<name>.run.xml`、往后反复用**(它产出的是项目文件,IDE
-      的 Run 窗口里也会多一项)。所以一次性的、探索性的、调试性的、参数每次都不一样的操作
-      (查条数据、看个日志、试一条命令、临时换个路径跑一下)一律走 `shell` 跑完算 —— 这类东西建配置只是给项目留垃圾。确需项目环境的解释器时,在
+      (命令只存在于会话里);`create_run_configuration` 是 **把命令固化成一条往后反复用的配置**(IDE 的 Run 窗口里会多一项)
+      。所以一次性的、探索性的、调试性的、参数每次都不一样的操作 (查条数据、看个日志、试一条命令、临时换个路径跑一下)一律走
+      `shell` 跑完算 —— 这类东西建配置只是给项目留垃圾。确需项目环境的解释器时,在
       `shell` 命令里显式指定、或在已有配置上单次覆盖参数,也别为这一次性的事新建配置。
     - **改完别忘了同步档案**:新增 / 删除 / 改名之后,用 `idea-run-config-manager` skill 更新项目根 `AGENTS.md`
       里的配置档案块 —— 档案和项目里的配置对不上,比没有档案更糟。
@@ -171,13 +173,15 @@ jar / 按 jar 路径 `grep` 唯一的正解:**IDE 索引里那份就是项目编
 - {{cmd_delete_run_configuration}} **删配置**:在跑或被人引用时拒绝;`force = true` 才会连引用一起清掉。
   {{/if}}
   {{#if canListRunningConfigurations}}
-- {{cmd_list_running_configurations}} **当前真正在跑的配置**(几个实例 / 各自 pid / 退出码):停 / 重启前后都先用它看状态。
+- {{cmd_list_running_configurations}} **当前真正在跑的配置**(几个实例 / 各自 pid / 退出码,每个实例还带自己的日志文件路径
+  `logFile`):停 / 重启前后都先用它看状态。
   {{/if}}
   {{#if canStopRunConfiguration}}
 - {{cmd_stop_run_configuration}} **停掉该配置的全部实例并等它们退出**:没在跑也返回成功。
   {{/if}}
   {{#if canRerunRunConfiguration}}
-- {{cmd_rerun_run_configuration}} **改完代码重启无热重载的进程**:在跑就重启、没在跑就启动;读 `started` 判断新进程是否真的起来了。不要用
+- {{cmd_rerun_run_configuration}} **改完代码重启无热重载的进程**:在跑就重启、没在跑就启动;读 `started`
+  判断新进程是否真的起来了。这次运行的输出在 `output`,完整日志文件路径在 `fullOutputPath`。不要用
   `pkill` / `kill` / `shell` 代替。
   {{/if}}
   {{#if canListDeploymentServers}}
@@ -210,11 +214,10 @@ IDE 在管的那一份。
 
 - 需要项目环境的命令 (依赖 IDE 里配好的 JDK / Node / Python 版本等):用该项目前缀的 run configuration 工具,不要用原生
   `shell`。
-- 写 `.run/*.run.xml` **只走 `idea-run-config-manager` skill**:它有逐类型模板 (`assets/types/`),写完还要复查。
-  **平时不要自己手写配置,也不要用一条裸命令代替配置。**
+- 建 / 改 / 删运行配置 **只走上面「运行配置」里的定义态工具**, **不要自己写文件**;`idea-run-config-manager` skill
+  管的是 **要不要建 / 建什么 / 档案怎么记**,不是写文件。
   {{#if canCreateRunConfiguration}}
-- 要固化的固定流程 (判据见上:会不会以同样形态重复发生):Shell 类型用上面那个「新建项目级 Shell 配置」建;非 Shell 类型与删 /
-  改,交给用户调 `idea-run-config-manager` skill。
+- 要固化的固定流程 (判据见上:会不会以同样形态重复发生):用上面「运行配置」里的 **新建工具**建,建之前先问用户。
   {{else}}
 - 要固化的固定流程:把配置名、实际执行的命令、工作目录、为什么值得留讲清楚, **请用户在 IDE 里自己建** —— 当前没有能建它的工具
   (`idea-run-config-manager` skill 仍可加载,但缺这件工具时它也做不了新建),不要手写文件凑。

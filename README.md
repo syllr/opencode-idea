@@ -167,9 +167,11 @@ IDE MCP 可用时,插件通过 **系统提示注入**告诉模型 **哪些事该
         - 运行配置 → `ide_get_run_configurations` / `ide_execute_run_configuration`(+ 配套插件的启停工具)
         - 部署 (**仅配套插件 + Ultimate**)→ `ide_list_deployment_servers` / `ide_upload_to_deployment` /
           `ide_download_from_deployment` / `ide_get_deployment_task_status`
-    - **读、写、找文本、找文件用原生工具**(`read` / `write` / `edit` / `grep` / `glob`)—— 这几件事走 IDE 只是多一跳,
-      所以映射表里 **不出现** `ide_search_text` / `ide_search_regex` / `ide_search_file` / `ide_apply_patch` /
-      `ide_create_new_file`,也不再禁止它们的原生对应物。
+    - **读、找文本、找文件用原生工具**(`read` / `grep` / `glob`)—— 这几件事走 IDE 只是多一跳,
+      所以映射表里 **不出现** `ide_search_text` / `ide_search_regex` / `ide_search_file`,也不再禁止它们的原生对应物。
+    - **写文件反过来走 IDE**(`ide_apply_patch` / `ide_create_new_file`):原生 `write` / `edit` 是 **进程外**写,
+      IDE 对编辑器里开着的文件留着一份内存副本,要等 VFS 刷新才重读 —— 这期间 IDE 侧工具读到的是旧内容,
+      `reformat_file` 还会把旧副本存回磁盘把刚写的代码冲掉。走 IDE 写,内存与磁盘才是同一份。
     - **唯一例外是 `ide_read_file`**:它是读 **包内文件**的唯一手段 (`<jar>!/<entry>` 的依赖 jar 内文件、`jrt://` 的
       JDK 镜像),引导只在这个用途上点名它,并写明普通文件一律用 `read`。
 
@@ -258,17 +260,17 @@ IDE 内置的 MCP Server 只能 **启动已有**的 run configuration (`execute_
 也查不到运行状态**。配套的 IDEA 插件 [`idea-mcp-enhance`](https://github.com/syllr/idea-mcp-enhance)(IDEA 2026.2+,另装)
 补齐这一族 —— 「定义态 (查 / 建 / 改 / 删)」加「运行态 (看 / 停 / 重启)」:
 
-| 工具 (OpenCode 里叫 `ide_*`)      | 作用                                                                                                                                                                                                                                       |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ide_inspect_run_configuration`   | 看**一个**配置的全貌:定义(options / envs / before-launch)、**命名解析**(platform / base / env)、活实例、历史运行及各自的日志文件路径                                                                                                       |
-| `ide_create_run_configuration`    | 新建**任意类型**的项目级配置(写 `.run/<name>.run.xml`):内容来源三选一 —— `cloneFrom`(复制现成的,最稳)/ `configurationXml` / 平台模板 + `options` / `attributes` / `envs` 补丁。**项目资产 —— 只给会重复发生的流程建,且必须先征得用户同意** |
-| `ide_update_run_configuration`    | 改字段或改名:字段走补丁(`null` = 删),`newName` 改名并**连带更新别人对它的引用**、迁移历史日志的键                                                                                                                                          |
-| `ide_delete_run_configuration`    | 删配置:在跑或被人引用时拒绝,`force = true` 才连引用一起清掉                                                                                                                                                                                |
-| `ide_list_running_configurations` | **当前真正在跑**的配置:几个实例 / 各自 pid / 退出码。`>1` 个实例就是端口漂移的信号                                                                                                                                                         |
-| `ide_stop_run_configuration`      | 停掉该配置的**全部**实例并等它们退出;没在跑也返回成功(幂等)                                                                                                                                                                                |
-| `ide_rerun_run_configuration`     | 等同 IDE 的 **Rerun** 按钮:在跑就重启、没在跑就启动,读 `started` 判断是否真起来了                                                                                                                                                          |
+| 工具 (OpenCode 里叫 `ide_*`)      | 作用                                                                                                                                                                                                             |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ide_inspect_run_configuration`   | 看**一个**配置的全貌:定义(options / envs / before-launch)、**命名解析**(platform / base / env)、活实例、历史运行及各自的日志文件路径                                                                             |
+| `ide_create_run_configuration`    | 新建**任意类型**的项目级配置:内容来源三选一 —— `cloneFrom`(复制现成的,最稳)/ `configurationXml` / 平台模板 + `options` / `attributes` / `envs` 补丁。**项目资产 —— 只给会重复发生的流程建,且必须先征得用户同意** |
+| `ide_update_run_configuration`    | 改字段或改名:字段走补丁(`null` = 删),`newName` 改名并**连带更新别人对它的引用**、迁移历史日志的键                                                                                                                |
+| `ide_delete_run_configuration`    | 删配置:在跑或被人引用时拒绝,`force = true` 才连引用一起清掉                                                                                                                                                      |
+| `ide_list_running_configurations` | **当前真正在跑**的配置:几个实例 / 各自 pid / 退出码。`>1` 个实例就是端口漂移的信号                                                                                                                               |
+| `ide_stop_run_configuration`      | 停掉该配置的**全部**实例并等它们退出;没在跑也返回成功(幂等)                                                                                                                                                      |
+| `ide_rerun_run_configuration`     | 等同 IDE 的 **Rerun** 按钮:在跑就重启、没在跑就启动,读 `started` 判断是否真起来了                                                                                                                                |
 
-**这族工具是 `.run/*.run.xml` 的唯一写入口** —— 工具描述里写得很直白:手写的文件失败时是 **静默**的 (`type` 写错 IDE 整个忽略
+**这族工具是运行配置的唯一写入口** —— 工具描述里写得很直白:手写的配置失败时是 **静默**的 (`type` 写错 IDE 整个忽略
 那个文件,字段名拼错则静默用默认值)。所以「照着模板手写」这条路已经封了,模板 (`assets/types/*.md`)降级为 **字段参考**。
 
 配置名有自己的文法:**`[os@]base[@env]`** —— os 段 (`win` = Windows,缺省 = macOS / Linux)、base 段 (配置本体)、env 段 (环境名,
@@ -291,7 +293,7 @@ opencode-idea 对这一组工具做三件事:
       装依赖 / dev server / 迁移), **不是随手一条命令就建一个**;判据是 **这件事以后会不会以同样形态再发生** —— 会就该建、模型必须
       **主动**向用户提议 (摊开配置名 /
       实际命令 / 工作目录 / 理由),用户同意才动手;不会就裸 `shell` 跑完算 (那条里写明了这层区分:`shell` 就地执行不留痕、
-      建配置是落盘成 `.run/*.run.xml` 供反复用)。判据只写在这一处, **「命令执行」段不重复**,只留
+      建配置是固化成一条可反复用的)。判据只写在这一处, **「命令执行」段不重复**,只留
       「配置一律不由你写」这条无条件的,以及"该建的用哪条路建"那一条按工具是否存在分流:有工具时指向上面那条、
       并说明非 Shell 类型与删 / 改交给用户调 `idea-run-config-manager` skill;
       没有工具时换成「讲清楚配置名 / 命令 / 工作目录 / 理由,请用户在 IDE 里自己建」—— 那时 skill 本身仍在
@@ -313,7 +315,7 @@ opencode-idea 对这一组工具做三件事:
 
 所以插件的立场是:
 
-- **`.run/*.run.xml` 只有工具写** —— `ide_create_run_configuration` / `ide_update_run_configuration` /
+- **运行配置只有工具写** —— `ide_create_run_configuration` / `ide_update_run_configuration` /
   `ide_delete_run_configuration`
   是唯一写入口。理由不是"不许写",而是 **手写失败时是静默的**:`type` 写错 IDE 整个忽略那个文件,字段名拼错则静默用默认值;
 - **建之前先问用户** —— run configuration 是 **项目资产**,一个项目通常只建几个。判据是
@@ -328,7 +330,7 @@ opencode-idea 对这一组工具做三件事:
   档案和项目里的配置对不上,比没有档案更糟;
 - **没装配套插件** → 工具不存在,引导也不提,模型继续按原来的方式工作 (在 IDE 里建)。
 
-> **曾经有一个 `idea-run-config` skill 教模型凭记忆手写 `.run/*.run.xml`,已经删掉。** 理由不是"不许写",而是
+> **曾经有一个 `idea-run-config` skill 教模型凭记忆手写配置文件,已经删掉。** 理由不是"不许写",而是
 > **不许凭空写**:`type` 写错 IDE 会
 > **静默忽略整个文件、日志里也不报**,凭记忆猜 option 名就是这么错的。现在这件事由 `idea-run-config-manager` 接手 —— 但
 > **每个类型都得有一份实测模板**
@@ -437,7 +439,8 @@ loader 读的是 OpenCode 文档里的那个嵌套写法 (它自己的读取器�
 矩阵之外 (JUnit / TestNG / Kotlin / Docker / Spring Boot / Tomcat / Flyway / Liquibase / HTTP Request …)一律
 **没有模板** → 交给用户在 IDE 里配。
 
-**给某个类型补模板的流程**:在 IDE 里建一个最简配置 → 勾 Store as project file → 读生成的 `.run/*.run.xml` 照抄结构 →
+**给某个类型补模板的流程**:在 IDE 里建一个最简配置 → 勾 Store as project file → 用 `ide_inspect_run_configuration` 读它的
+`configurationXml` 照抄结构 →
 标清哪些字段实测 →
 把矩阵里那个类型从 ⏳ 改成 ✅。 **每个字段名都来自真实文件,不靠猜** —— `js.build_tools.npm`(属性 + 自定义元素)、
 `ShConfigurationType`
@@ -468,7 +471,7 @@ skill ——
 
 **而且只能用户调**:它的 frontmatter 带 `metadata: opencode/autoinvoke: false`,loader 翻成定义的 `autoinvoke: false` ——
 skill 照常注册,但 **不进模型的可选列表**,模型不会自己挑上它,只有用户显式指定 (`@idea-run-config-manager`)才会加载。
-理由是它 **直接动手改项目文件与项目资产**:`.run/*.run.xml` 与 `AGENTS.md` 都由用户自己按这个 skill 的流程来改,模型不主动挑上它。
+理由是它 **直接动手改项目文件与项目资产**:运行配置与 `AGENTS.md` 都由用户自己按这个 skill 的流程来改,模型不主动挑上它。
 「该不该建」的时机判断仍在引导文本的判据里 (那是模型该管的事), **动手权**留给人。
 
 ## Deployment 全套 (配套插件 `idea-mcp-enhance`)
@@ -518,7 +521,7 @@ IDE 的连接、路径映射、排除规则都在它后面,自己拼的那份与
 
 - 判据是:这条命令 **依赖项目的运行时版本**。是 → run configuration;不是 (看文件、git、临时脚本)→ 原生 shell。
 - run configuration 会继承开发时具体配的那套运行时,或者干脆是你那个应用配好的运行时,所以这就是个应用。
-- 配置必须 **先在 IDEA 里存在**(项目级 `.run/*.run.xml`, **由用户建**)。没有就请用户建一个,再跑;
+- 配置必须 **先在 IDEA 里存在**(由用户建)。没有就请用户建一个,再跑;
 
 > 为什么不再用 IDE 终端:`ide_execute_terminal_command` 之前被当成"自动继承 IDE 项目环境"的通道而保留暴露,但实测
 > **它拿不到项目配好的 JDK / Node / Python 版本**,和原生 shell 没有区别。既然没有优势,就把它从模型可见的工具表里
@@ -681,18 +684,19 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
   不存在 —— 用错会让 `ctx.skill.transform` 抛 `SchemaError`,而 **任何 transform 失败都会禁用整个插件**(0.0.6 就是这样丢了
   `/open-in-ide`)。同理,`Skill.Info` 的完整字段是 `id` / `name` / `description?` / `autoinvoke?` / `path` / `content`。
 - 需要项目环境的命令走 `ide_execute_run_configuration`(run configuration 要先在 IDEA 里配好),不用原生 shell。
-- 一批用不到的 IDE MCP 工具被硬编码隐藏 (`src/plugin.js` 的 `HIDDEN_IDE_TOOL_SUFFIXES`, **共 48 个后缀**):
+- 一批用不到的 IDE MCP 工具被硬编码隐藏 (`src/plugin.js` 的 `HIDDEN_IDE_TOOL_SUFFIXES`, **共 47 个后缀**):
   VCS (`git_status` / `get_repositories`,版本控制走原生 `git`)、Router 派发工具 (`execute_tool`,未启用 router-only
   时冗余)、
   Debugger (全部 `xdebug_*`)、Dev Kit MCP、Inspection KTS MCP、解释器环境 MCP、 **IDE 内置终端 (`execute_terminal_command`:
   实测不继承项目环境,对原生 shell 没有优势)**、 **整个 Database 组**(数据源由用户在
-  IDE 里配置,而 IDE 也不是本插件设想的数据库客户端),以及 **有原生对应的文件读写**
-  (`search_text` / `search_regex` / `search_file` / `apply_patch` / `create_new_file`
-  分别对应 `grep` / `grep -E` / `glob` / `edit` / `write`)。
+  IDE 里配置,而 IDE 也不是本插件设想的数据库客户端),以及 **有原生对应的文件搜索**
+  (`search_text` / `search_regex` / `search_file` 分别对应 `grep` / `grep -E` / `glob`)。 **文件"写"(`apply_patch` /
+  `create_new_file`)刻意不隐藏** —— 走 IDE 写才有"内存与磁盘是同一份"这件事 (见上面
+  「写文件反过来走 IDE」);配套插件自带的那个写文件工具则隐藏,同一个活儿不摆两个工具。
 
   存的是 **后缀**,清洗时按当前每个项目前缀 **各删一遍** —— 只处理 `ide_` 会让子项目那几份原样送到模型面前。
-  实测数字 (拿运行中的 IDE MCP 拉 `tools/list`,单个项目):IDE 暴露 **64** 个 → 隐藏 48 → **模型可见 16 个**,
-  而且这 16 个 **恰好等于引导里点名的 16 个** —— 没有"能看见但没人告诉它用途"的残留。多项目就是 N × 16:
+  实测数字 (拿运行中的 IDE MCP 拉 `tools/list`,单个项目):IDE 暴露 **76** 个 → 隐藏 47 → **模型可见 29 个**,
+  而且这 29 个 **恰好等于引导里点名的 29 个** —— 没有"能看见但没人告诉它用途"的残留。多项目就是 N × 29:
   暴露面完全由插件决定,不需要 OpenCode 提供任何白名单能力,也不需要惰性注册。
 
 - **部署工具只在 Ultimate 上出现**:`ide_list_deployment_servers` / `ide_upload_to_deployment` /

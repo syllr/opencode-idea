@@ -779,7 +779,7 @@ describe('plugin setup', () => {
     const stock = { system: [], tools: { read: {}, ide_read_file: {}, ide_build_project: {} } };
     await state.sessionHook(stock);
     expect(stock.system[1].text).toContain('ide_get_run_configurations');
-    expect(stock.system[1].text).toContain('不要翻 `.run/`');
+    expect(stock.system[1].text.replace(/\s+/g, ' ')).toContain('别去项目目录里翻配置');
     expect(stock.system[1].text).not.toContain('ide_rerun_run_configuration');
     expect(stock.system[1].text).not.toContain('pkill');
 
@@ -1408,7 +1408,7 @@ describe('plugin setup', () => {
 
 
   it('does not resurrect the removed hand-written-XML skill', async () => {
-    // The old `idea-run-config` taught hand-writing `.run/*.run.xml` — the fragile
+    // The old `idea-run-config` taught hand-writing configuration files — the fragile
     // path (a wrong `type` makes the IDE ignore the whole file, silently).
     // Management now lives in `idea-run-config-manager`, which goes through the
     // tools and hands anything it cannot do to the user.

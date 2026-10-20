@@ -164,7 +164,8 @@ describe('工具清单(按功能,不按项目重复)', () => {
     const text = stock();
     expect(text).toContain('`analysisKind` 取 `INCOMING_CALLS` / `OUTGOING_CALLS`');
     expect(text).toContain('`childOffset` 翻页');
-    expect(text).toContain('EXECUTE_IN_TERMINAL: false');
+    // 措辞改成"配置里的字段"——`EXECUTE_IN_TERMINAL` 是配置自己的字段,不是工具参数。
+    expect(flat(text)).toContain(flat('配置里的 `EXECUTE_IN_TERMINAL` 要是 `false`'));
     expect(text).toContain('supportsDynamicLaunchOverrides');
     expect(text).toContain('没返回即没问题');
   });
@@ -191,7 +192,7 @@ describe('工具清单(按功能,不按项目重复)', () => {
     expect(text).toContain('压缩包内的条目');
     expect(text).toContain('.jar!/');
     expect(text).toContain('反编译');
-    expect(text).toContain('「符号」那条搜出来的路径也用它');
+    expect(flat(text)).toContain(flat('「符号」那条搜出来的路径原样传即可'));
   });
 
   it('writes no caveats or edge cases', () => {
@@ -329,8 +330,8 @@ describe('run-lifecycle 能力', () => {
     expect(text).toContain('`idea-run-config-manager` skill');
     // 档案同步是那个 skill 的职责;工具只负责把配置写对。
     expect(text).toContain('改完别忘了同步档案');
-    // 提示词里必须保留"不要手写 / 手删 `.run/` 下的文件"这条总禁令。
-    expect(flat(text)).toContain(flat('不要手写或手删 `.run/` 下的文件'));
+    // 提示词里必须保留"不要自己写文件 / 自己删文件"这条总禁令。
+    expect(tight(text)).toContain(tight('不要自己写文件、也不要自己删文件'));
   });
 
   it('offers one when only one project serves it', () => {

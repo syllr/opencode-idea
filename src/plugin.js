@@ -232,6 +232,12 @@ export const HIDDEN_IDE_TOOL_SUFFIXES = [
     'search_text',
     'search_regex',
     'search_file',
+    // The companion plugin's own write tool. The IDE's built-in `apply_patch` /
+    // `create_new_file` already cover writing through the IDE, so this one is
+    // hidden: two tools for the same job is a worse answer than one. The plugin
+    // has dropped it as well — this line only hides the copies still served by
+    // the plugin version installed before that.
+    'edit_file',
 ];
 
 /**
