@@ -24,12 +24,8 @@
   `search` 搜不到。
 - **只有 IDE 才有的能力才用它们**:符号级检索、项目模型、检查与构建、重构与格式化、run configuration。
 - **读与搜索用原生工具**(`read` / `grep` / `glob`):不要为读一个文件、搜一段文本去绕 IDE 工具。
-- **改项目代码走 IDE 的编辑命令**(`<P>_apply_patch`,新建文件用 `<P>_create_new_file`), **不要用原生 `write` / `edit`
-  改代码**。原生那两个是 **进程外**写:IDE 对 **在编辑器里打开过的文件**持有一份内存副本,进程外写完它不会立刻更新,要等 VFS
-  刷新 —— 这段时间里 IDE 侧的工具读到的还是旧内容,`reformat_file` 更会把旧副本格式化后 **存回磁盘**,把你刚写的代码整个冲掉
-  (实测:外部写完 `read_file` 立刻读到的仍是旧内容;`apply_patch` 写完立刻就是新内容)。走 IDE 写,IDE 的索引、内存与磁盘是同一份,后面
-  `lint_files` / `build_project` / `search_symbol` 看到的都是新代码。
-    - 例外:**项目目录之外**的文件 (`apply_patch` 要求路径在项目内)才用原生 `write` / `edit`。
+- **改项目代码用 IDE 的编辑命令**(`<P>_apply_patch`,新建文件用 `<P>_create_new_file`),不要用原生 `write` / `edit` ——
+  那两个在进程外写,IDE 手里可能还是旧内容,紧接着的 IDE 侧工具会基于旧代码干活。项目目录之外的文件才用原生那两个。
 - **改完代码自己先查一遍**(`lint_files` / `build_project`,怎么挑见下面「校验」):什么时候查、查几次由你判断,但
   **别把校验整段省掉** —— 自己查一次,远比让用户替你发现或留到构建 / 测试炸了才暴露要便宜。
 - **要看某个类 / 方法 / 字段在哪定义、内部怎么实现的**(见下面「符号」):`<P>_search_symbol`(`include_external: true`)
@@ -95,12 +91,9 @@ jar / 按 jar 路径 `grep` 唯一的正解:**IDE 索引里那份就是项目编
 
 ### 改代码
 
-- {{cmd_apply_patch}} **走 IDE 改文件**:传 Codex apply_patch 格式或 unified git diff 格式的补丁,支持 Add / Delete /
-  Update (可带 Move 改名)。 **改项目代码就用它,不要用原生 `write` / `edit`** —— 那两个在进程外写,IDE 手里留的是旧副本,紧接着的
-  IDE 侧工具 (`reformat_file` / `lint_files` / `search_symbol`)会基于旧内容干活,`reformat_file`
-  甚至会把旧副本存回磁盘把新代码冲掉。路径必须在项目内。
-- {{cmd_create_new_file}} **新建文件**:`pathInProject` + `text`;父目录自动建,`overwrite` 默认关
-  (文件已存在会报错,不会默默覆盖)。
+- {{cmd_apply_patch}} **走 IDE 改文件**:传 Codex apply_patch 格式或 unified git diff 的补丁,支持 Add / Delete / Update
+  (可带 Move 改名);路径必须在项目内。
+- {{cmd_create_new_file}} **新建文件**:`pathInProject` + `text`;父目录自动建,`overwrite` 默认关 (文件已存在会报错)。
 
 ### 重构与格式化
 

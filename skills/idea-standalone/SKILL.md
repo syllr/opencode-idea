@@ -48,8 +48,8 @@ description: "为项目生成/维护 standalone(启动收口只有 IDEA run conf
 3. **新增**(文件里还没有标记块):在 `AGENTS.md` **末尾追加**标记块,文件既有内容原样保留;文件不存在则创建它。
    只替换标记内内容、不动标记外 —— 尤其 **不要触碰**其他 skill 的标记块 (例如 `project-scaffold`)。
 4. **更新**(已有标记块):只替换 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 之间的内容,块外一字不动。
-5. 改文件走 **IDE 的编辑命令** `<前缀>_apply_patch`(新建用 `<前缀>_create_new_file`):走 IDE 写,IDE 的内存副本与磁盘
-   才是同一份 —— 紧接着的 IDE 侧工具 (`reformat_file` / `lint_files`)看到的才是新内容。 **不要整文件重写**。
+5. 改文件用 **IDE 的编辑命令** `<前缀>_apply_patch`(新建用 `<前缀>_create_new_file`),不要用原生 `write` / `edit`。
+   **不要整文件重写**。
    「run configuration 名字怎么读」与「选哪个变种」两节是 **固定文本**,照抄,不要改写、不要删条目 —— 它们是读名字与选环境的规则,应用表靠它们才成立。
    **平台 / 环境变体不另起条目、也不另起表** —— 一张应用表,`run configuration` 列填 base;变体怎么切环境写进那一行的
    `desc`。
