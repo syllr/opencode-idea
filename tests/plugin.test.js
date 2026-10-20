@@ -1379,8 +1379,8 @@ describe('plugin setup', () => {
     // is written around and must not ride along into the definition OpenCode
     // validates or the model reads.
     for (const skill of state.skills.values()) expect(skill.requires).toBeUndefined();
-    // User-invoked only: registered, but left out of the model's available list.
-    expect(state.skills.get('idea-run-config-manager').autoinvoke).toBe(false);
+    // 两个 skill 都模型可自取(曾经 manager 是用户点名才可用的,那条路由在 guidance 里是死路)。
+    for (const skill of state.skills.values()) expect(skill.autoinvoke).toBeUndefined();
 
     await cleanup();
   });

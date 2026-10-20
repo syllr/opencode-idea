@@ -123,24 +123,19 @@ describe('shipped skills', () => {
     expect(skill.content.startsWith('---')).toBe(false);
   });
 
-  it('makes the manager user-invoked only, through the portable frontmatter', () => {
-    // `opencode/autoinvoke: false` is OpenCode's own switch: the skill stays
-    // registered and loadable by ID, but is left out of the model's available
-    // list — so only the user can bring it in (`@idea-run-config-manager`).
-    // Frontmatter is not registered, so the loader has to translate it onto the
-    // definition under the name the registration API uses.
-    const skill = readSkill('idea-run-config-manager');
-    expect(skill.autoinvoke).toBe(false);
-    // Same exact key set as `Skill.Info` allows — no stray field rides along.
-    expect(Object.keys(skill).sort()).toEqual(['autoinvoke', 'content', 'description', 'id', 'name', 'path']);
-    expect(rawFrontmatter(skill.path)).toContain('metadata:\n  opencode/autoinvoke: false');
-    // frontmatter 必须**原样**保留:IDE 的 Markdown 格式化器不认 YAML frontmatter,
-    // 一旦对它跑格式化,`metadata:` 这块会被吞掉,skill 就变成模型可自动调用的了。
-    expect(rawFrontmatter(skill.path)).toMatch(/^---\nname:[^\n]*\ndescription:[^\n]*\nmetadata:\n {2}opencode\/autoinvoke: false\n---\n/);
-
-    // The standalone skill says nothing, so it keeps the plain shape and stays
-    // model-invocable.
-    expect(readSkill('idea-standalone').autoinvoke).toBeUndefined();
+  it('ships both skills model-invocable', () => {
+    // 两个 skill 都让模型自己加载:manager 曾经是用户点名才可用的(autoinvoke: false),
+    // 结果 guidance 里"建配置走这个 skill"变成了死路 —— 模型在可用列表里看不到它。
+    // 现在 frontmatter 不再带那个开关,两个都是模型可自取的普通 skill;
+    // 开关本身仍由 `readAutoinvoke` 支持(见下一条),只是没有 shipped skill 用它。
+    for (const id of ['idea-run-config-manager', 'idea-standalone']) {
+      const skill = readSkill(id);
+      expect(skill.autoinvoke).toBeUndefined();
+      // 确切的 key 集合:没有多余字段跟着进定义。
+      expect(Object.keys(skill).sort()).toEqual(['content', 'description', 'id', 'name', 'path']);
+      // frontmatter 里的开关至少要能被读出来 —— 想恢复成用户点名时只需要写回去。
+      expect(rawFrontmatter(skill.path)).toMatch(/^---\nname:[^\n]*\ndescription:[^\n]*\n---\n/);
+    }
   });
 
   it('flattens the nested autoinvoke block and rejects other values', () => {
@@ -344,7 +339,7 @@ describe('shipped skills', () => {
     // filtered out first, so the two blocks never document the same one. The
     // filter reads that block rather than guessing which name looks resident.
     expect(template).toContain('先过滤');
-    expect(template).toContain('这些一律不进本块');
+    expect(template).toContain('一律不进本块');
     expect(template).toContain('`idea-standalone` 的标记块');
     // 应用条目(端口、热重载)留在那边,本块不重复登记。
     expect(template).not.toContain('| 应用 | run configuration | 怎么跑 | 端口 |');
@@ -428,7 +423,7 @@ describe('shipped skills', () => {
     // a dependency service up). That something is usually not itself a run
     // configuration, so the only place to say it is prose in this item.
     const template = readTemplate();
-    expect(tight(template)).toContain(tight('- {应用名}(项目 {前缀},{base 名})'));
+    expect(tight(template)).toContain(tight('- {base 名}(项目 {前缀})'));
     expect(template).toContain('**before run**');
     // A service is run, not just named: how it is run belongs in the table too,
     // or the reader has to go looking for the rule somewhere else.
@@ -447,7 +442,7 @@ describe('shipped skills', () => {
     // build or a migration does happen at a particular time.)
     expect(template).not.toContain('when:');
     // port 是本块独有的项(服务化应用一定有端口)。
-    expect(tight(template)).toContain(tight('- port:{固定 / 默认 / 被占用即启动失败}'));
+    expect(tight(template)).toContain(tight('- 端口:{固定 / 默认 / 被占用即启动失败}'));
   });
 
   it('shares four item names with the archive block', () => {
@@ -456,7 +451,7 @@ describe('shipped skills', () => {
     // `after run` / `desc`. Each block adds only what it alone has: 应用块多
     // `app` 与 `port`,档案块多 `when`(服务化应用就是"改完代码要起它来测"的时候起)。
     const standaloneText = readTemplate();
-    const appSection = standaloneText.slice(standaloneText.indexOf('### 应用'));
+    const appSection = standaloneText.slice(standaloneText.indexOf('### 服务化配置'));
     /** 条目项的项名（`    - before run:…` 的那一段）。 */
     const itemNames = (text) =>
       text
@@ -465,7 +460,7 @@ describe('shipped skills', () => {
         .map((line) => line.trim().slice(2, line.trim().indexOf(':')));
 
     const standaloneFields = itemNames(appSection);
-    expect(standaloneFields).toEqual(['before run', 'run', 'port', '热重载', 'after run', 'desc']);
+    expect(standaloneFields).toEqual(['应用', 'before run', 'run', '端口', '热重载', 'after run', 'desc']);
 
     const manager = managerTemplate();
     const managerFields = managerItemNames();
@@ -490,21 +485,21 @@ describe('shipped skills', () => {
     // 十几行,而它们其实是同一件事。
     const template = readTemplate();
     expect(squash(template)).toContain(squash('[os@]base[@env]'));
-    expect(squash(template)).toContain(squash('这里只登记 base'));
+    expect(squash(template)).toContain(squash('只登记 base'));
     // 名字怎么读、变种怎么选,各占一节,且**排在表前面** —— 规则先讲清楚,表才有意义。
     expect(template).toContain('### 怎么读配置名');
-    expect(template).toContain('### 应用');
+    expect(template).toContain('### 服务化配置');
     expect(template).toContain('### 怎么选变体');
-    expect(template.indexOf('### 怎么读配置名')).toBeLessThan(template.indexOf('### 应用'));
+    expect(template.indexOf('### 怎么读配置名')).toBeLessThan(template.indexOf('### 服务化配置'));
     // 缺省:没有系统段 = macOS / Linux;没有环境段 = 所有环境通用这一套。
     expect(squash(template)).toContain(squash('缺省表示'));
     // 选变种的纪律:问一次就够,别反复打扰用户。
     expect(squash(template)).toContain(squash('启动前问一次用户走哪套'));
-    expect(squash(template)).toContain(squash('本会话内默认走这一套'));
-    // 产物里一个应用一条(变体不另起条目)—— 生成提示里的示例不算。
+    expect(squash(template)).toContain(squash('本会话默认走这套'));
+    // 产物里一条配置一条(变体不另起条目)—— 生成提示里的示例不算。
     const productOnly = template.replace(/<!-- 生成提示:begin -->[\s\S]*?<!-- 生成提示:end -->/g, '');
-    expect(tight(productOnly)).toContain(tight('- {应用名}(项目 {前缀},{base 名})'));
-    expect(productOnly).not.toContain('- `console`(项目 ide,`console-web`)');
+    expect(tight(productOnly)).toContain(tight('- {base 名}(项目 {前缀})'));
+    expect(productOnly).not.toContain('- `console-web`(项目 ide)');
 
     // Same on the other side — a section instead of a table, and the entries are
     // base entries.
@@ -583,7 +578,7 @@ describe('shipped skills', () => {
       '## 二、standalone 下启动哪些应用(必须经 IDEA run configuration)',
       '### 怎么读配置名',
       '### 怎么选变体',
-      '### 应用',
+      '### 服务化配置',
     ].map((heading) => heading.replace(/\s+/g, '')));
 
     // Per-section guidance lives in the template, not in the skill.
@@ -606,8 +601,8 @@ describe('shipped skills', () => {
     // would re-derive what that call already returns.
     const content = readSkill('idea-standalone').content;
     expect(content).toContain('直接调用,不传任何参数');
-    expect(tight(content)).toContain(tight('用户已经在 IDEA 里配好的那些'));
-    expect(tight(content)).toContain(tight('不需要再去项目目录里逐个翻配置文件'));
+    expect(tight(content)).toContain(tight('它给出 IDE 真正认的配置'));
+    expect(tight(content)).toContain(tight('不用再去项目目录逐个翻配置文件'));
   });
 
   it('references no tool that the plugin hides from the model', () => {

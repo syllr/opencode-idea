@@ -105,25 +105,25 @@ describe('工具清单(按功能,不按项目重复)', () => {
     expect(text).toContain('本插件最不可替代的能力');
     // 正向流程:①已知名字(代码里看到调用)②只记得关键字(调研库的 API,按返回路径筛出属于那个库的);
     // 同名多份时按 import/类型/路径消歧。
-    expect(text).toContain('典型用法 ①');
-    expect(text).toContain('典型用法 ②');
+    expect(text).toContain('查某个库的 API');
+    expect(text).toContain('调研一个库有哪些 API');
     // 最典型的用法:代码里的 import 直接给出包名,用「包名+符号」搜一次定位。
     // 四种语言各自的形式都实测过(Java 全限定名 / Go 包名.符号 / Python 全模块路径 / Node 用 import 的包名)。
-    expect(text).toContain('包名就在代码里');
+    expect(text).toContain('包名 + 符号名');
     expect(text).toContain('gorm.DeletedAt');
     expect(text).toContain('vue.Teleport');
-    expect(text).toContain('torch.nn.modules.module.Module');
+    expect(text).toContain('torch.nn.Module');
     // 边界说清楚:只覆盖项目已引入的依赖;搜不到就别反复试,给两条出路。
-    expect(text).toContain('只覆盖「项目已经引入」的依赖');
+    expect(text).toContain('搜不到 = 依赖没进来');
     // 用法 ②:包名从依赖清单拿(Python/Java/Go 直接按包名搜),Node 是例外。
-    expect(text).toContain('包名从依赖清单里拿');
+    expect(text).toContain('拿包名当 `q`');
     expect(text).toContain('element-plus');
     // Node 的收敛:带 -/@scope 的包名点号拼接无效,只能裸符号名 + paths 圈目录。
     expect(text).toContain('就收敛到一处');
-    expect(text).toContain('按代码上下文选');
+    expect(text).toContain('同名符号往往有多处定义');
     expect(text).toContain('原样交给同一个项目的');
-    expect(text).toContain('相对路径的基准一致');
-    expect(text).toContain('别把这条路径交给原生 `read`');
+    expect(text).toContain('会话工作目录');
+    expect(text).toContain('别交给原生 `read`');
     // 依赖索引按项目走,不按语言 —— 语言与 IDE 的对应是用户配置的结果,写死"Python→PyCharm"
     // 换个配置就不对了。实测:同一个 uvicorn,根项目侧搜不到库,子项目侧能搜到。
     expect(text).toContain('依赖索引是按项目的');

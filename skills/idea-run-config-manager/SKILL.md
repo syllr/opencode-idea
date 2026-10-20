@@ -1,8 +1,6 @@
 ---
 name: idea-run-config-manager
-description: "管理本项目的 run configuration:**增 / 删 / 改 / 改名全部走工具**(`create_run_configuration` / `update_run_configuration` / `delete_run_configuration` / `inspect_run_configuration`,不要自己写文件;类型字段照 `assets/types/` 里的实测模板作参考),并把配置档案同步进**项目根 `AGENTS.md`** 里由 `<!-- idea-run-config-manager:begin -->` 与 `<!-- idea-run-config-manager:end -->` 包裹的标记块 —— 每个 run configuration 一个条目,写清它干什么、怎么跑、什么时候跑;服务化的那些不在这里,它们归 `idea-standalone` 的块。当用户要建 / 删 / 改 run configuration,或要一份「这个项目有哪些配置、各自干什么」的说明时使用。"
-metadata:
-  opencode/autoinvoke: false
+description: "管理本项目的 run configuration:增 / 删 / 改 / 改名走这几个工具(`create_run_configuration` / `update_run_configuration` / `delete_run_configuration` / `inspect_run_configuration`,不写文件;字段照 `assets/types/` 的实测模板),并把配置档案同步进项目根 `AGENTS.md` 的 `idea-run-config-manager` 标记块(一条配置一个条目:干什么、怎么跑、什么时候跑;服务化的归 `idea-standalone`)。要建 / 删 / 改 run configuration、要判断一条固定流程该不该固化成配置,或要一份「这个项目有哪些配置」的说明时使用。"
 ---
 
 # idea-run-config-manager — 增删改 run configuration + 维护配置档案
@@ -17,7 +15,8 @@ IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-id
 ## 流程
 
 1. **读**:项目根 `AGENTS.md` —— 有没有 `<!-- idea-run-config-manager:begin -->` … `<!-- idea-run-config-manager:end -->`
-   标记块 (有则更新,没有就在文件末尾追加);同时读同文件里 `idea-standalone` 的标记块,它登记过的配置不进本块。
+   标记块 (有则更新,没有就在文件末尾追加);同时读同文件里 `idea-standalone` 的标记块。 **服务化 / 常驻应用的配置一律不进
+   本块**(不管那边有没有块);有那个块时,把它登记过的名字一并排除。
 2. **枚举**:逐个项目用 **它自己那个前缀**的 `<前缀>_get_run_configurations` 直接调用,不传参数 —— 本项目的工具前缀跟着接入时的名字走
    (root 是 `ide`,子项目是它的目录名)。
 3. **建 / 删 / 改**(**直接动手**):
@@ -68,18 +67,10 @@ IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-id
 ## 硬性契约 (所有类型都一样)
 
 1. **落地位置不用管**:配置落在哪由工具决定 (项目级配置随项目共享);子项目的配置用 **子项目前缀**的工具建与查。
-2. **信封固定**(这是 **`configurationXml` 参数**该有的形状,不是"你手写的文件"):
-
-   ```xml
-   <component name="ProjectRunConfigurationManager">
-     <configuration default="false" name="<配置名>" type="<类型ID>">
-       …该类型自己的字段…
-       <method v="2" />
-     </configuration>
-   </component>
-   ```
-
-   `factoryName="<类型名>"` **可写可不写** —— 实物里两种都有,IDE 认的是 `type`。
+2. **`configurationXml` 的信封照类型模板抄**(`assets/types/*.md` 每份都是完整的):外层
+   `<component name="ProjectRunConfigurationManager">`,里面一个
+   `<configuration default="false" name="<配置名>" type="<类型ID>">` + 该类型自己的字段 + `<method v="2" />`。
+   `factoryName` 可写可不写 —— IDE 认的是 `type`。
 
 3. **`type` 写错 = 整个文件被静默忽略,日志里也不报任何东西。** 有模板就照模板的 `type` 抄,没有模板就 `cloneFrom`
    复制一个同类型的现成配置 —— 别照猜;工具的 `typeKnown` / `typeDisplayName` 会告诉你这台 IDE 认不认这个类型 (缺插件时是

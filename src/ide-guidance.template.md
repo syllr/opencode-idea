@@ -28,6 +28,23 @@
 - **改完代码自己先查一遍**:用 `lint_files` / `build_project`,怎么挑见下面「校验」。
 - 某条功能下面没有你正要操作的那个项目的命令,就是那个项目没接上:提示用户执行 `/open-in-ide`,不要重试,也不要去别处找。
 
+## 命令执行 (所有项目通用)
+
+- **`<前缀>` 是 IDE 项目的名字**:根项目是 `ide`,子项目是它的目录名 (如 `modelserver`) —— 一套工具属于一个项目,
+  操作哪个项目就用哪个前缀的工具。
+- **需要项目环境才跑得起来的命令**(依赖 IDE 里配好的 JDK / Node / Python 版本等):先看有没有现成的 run configuration ——
+  有就跑它 (常驻用 `rerun`,跑完即退用 `execute`);没有、又只是一次性的命令,用原生 `shell` 并显式指定解释器,
+  **不要为它新建配置**。
+- 其余命令:用原生 `shell`。
+{{#if canCreateRunConfiguration}}
+- **建 / 改 / 删运行配置,走 `idea-run-config-manager` skill**(服务化应用的配置归 `idea-standalone`):要不要建、建什么、
+  怎么建、建完档案怎么记,全由它管;它落手用的就是「运行配置」里的那组工具。 **不要自己写文件、也不要自己删文件**。
+{{else}}
+- **建 / 改 / 删运行配置,走 `idea-run-config-manager` skill**(服务化应用的配置归 `idea-standalone`):要不要建 / 建什么 /
+  档案怎么记由它管;本会话没有新建工具,"建"这一步它只能讲清配置名、实际执行的命令、工作目录、为什么值得留,
+  **请用户在 IDE 里自己建** —— 不要手写文件凑。
+{{/if}}
+
 ## 工具 (每条第一行是各项目的命令,接着是它的用法)
 
 ### 符号 (只有 IDE 的语义索引能给)
@@ -36,42 +53,20 @@
 `<前缀>_read_file` 原样读它给的路径。 **依赖库 / 三方包 / 平台 jar 里的实现**正是它最该用的场合 —— IDE 索引里那份就是项目
 编译时真正用的依赖 (`javap` / 解包 jar / 按 jar 路径 `grep` 拼出来的往往是另一份,版本对不上),读出来还是反编译源码。
 
-- {{cmd_search_symbol}} **`q` 传查询文本,固定带上 `include_external: true`。** 本插件最不可替代的能力 —— 它搜的是
+- {{cmd_search_symbol}} **`q` 传查询文本,固定带上 `include_external: true`。** **本插件最不可替代的能力**在于它搜的是
   **符号**(类 / 接口 / 方法 / 函数 / 字段 / 类型 / 常量这类 **有名字的定义**)的 **声明位置**,不是"哪段文本提到过它"(那是
-  `grep` 的事);带上 `include_external` 才会连 **依赖库和标准库**一起搜,于是你能直接定位第三方库里的实现 —— 这是原生
-  `grep` / `glob` 够不着的地方 (IDE 自己的 `search_text` / `search_file` 也只搜项目内)。
-    - **典型用法 ①:代码里引用了某个库的 API (最常见)** —— 读代码时看到 `from fastapi import FastAPI`、
-      `import org.apache.poi...FormulaParser`、`gorm.DeletedAt`、`from 'vue'` 这类引用时, **包名就在代码里**,直接
-      **用「包名+符号名」当 `q` 搜**,一次定位到它的实现:
-        - **Java**:全限定名 —— `com.nimbusds.jose.util.Base64`(实测 1 条命中 `~/.m2/.../poi-5.3.0-sources.jar!/...`)
-        - **Go**:包名.符号 —— `gorm.DeletedAt`(实测 2 条,全在 `go/pkg/mod/gorm.io/gorm@...`)
-        - **Python**:模块路径给得越全越准 —— `torch.nn.modules.module.Module`(目标全在最前);`torch.nn.Module` 也能把目标排进前
-          2
-        - **Node/TS**:用 **import 的那层包名**(不是子模块路径)—— `vue.Teleport` 有效,`@vue/runtime-core.TeleportProps`
-          搜不到
-    - **典型用法 ②:调研一个库有哪些 API** —— 包名从依赖清单里拿 (pom.xml / package.json / go.mod / requirements.txt),
-      **直接拿包名当 `q` 搜**,结果基本就落在这个库里,再读入口:
-        - **Python**:`fastapi` → `fastapi/applications.py`、`fastapi/__init__.py`(**入口就是导出清单**:直接看到
-          `FastAPI`、`HTTPException` 这些公开名字)
-        - **Java**:`poi` → `~/.m2/.../poi-5.3.0-sources.jar!/org/apache/poi/...`;读该库的入口类
-        - **Go**:`gorm` → `go/pkg/mod/gorm.io/gorm@v1.31.0/...`
-        - **Node/TS 例外**:包名当 `q` 搜不到 (实测 `element-plus` → 0 条)。要用 **代码里 import 的符号名**
-          ;包名是简单标识符时可以「包名.符号」 (`vue.Teleport` 有效),但 **带 `-` 或 `@scope/` 的这么拼是 0 条**
-          (`element-plus.ElMessage`、`@vue/runtime-core.TeleportProps` 都搜不到)。而裸符号名会跨多个子项目 (`ElMessage` 命中
-          user / admin / vcop 三处),这时用 `paths` 圈到那个 `node_modules` —— `paths: ['frontend/user/**']` 就收敛到一处。
-    - **它只覆盖「项目已经引入」的依赖**:搜不到某个库,基本就是这个库还没进依赖 —— 别反复试:要么先把它加进依赖 (pom /
-      requirements / package.json),要么改用 web 搜索 / GitHub 看它的源码。
-    - **同名符号往往有多处定义**(标准库一份、几个依赖各一份,还有测试和示例),所以 **按代码上下文选**:看调用处 import
-      的是哪个包、传参是什么类型、返回路径属于哪个库 —— 别把第一行当答案。
-    - **它返回的路径,原样交给同一个项目的 `<前缀>_read_file` 就是源码**:
-      两者同属一个项目、相对路径的基准一致,所以不用拼绝对路径、不用管是什么语言 —— 压缩包里的条目它也照样读 (`.class`
-      还会反编译)。
-      例:`<前缀>_search_symbol({ q: "UvicornWorker", include_external: true })` 给出
-      `../../../Library/.../uvicorn/workers.py` → `<前缀>_read_file({ file_path: "那个字符串" })`。
-    - **依赖索引是按项目的**:任何依赖都用 **它所在项目**的那个 MCP 工具去搜 ——
-      根项目的依赖用根项目的命令,子项目的依赖用子项目的命令。拿一个项目的工具去搜另一个项目的依赖,只会在那个项目自己的文件里找,
-      **拿不到库**。
-    - **别把这条路径交给原生 `read`**:原生 read 的基准是本会话的工作目录 (根项目),拿子项目的相对路径去读会落到错误的位置。
+  `grep` 的事);带上 `include_external` 才会连依赖库和标准库一起搜 —— 这是原生 `grep` / `glob` 够不着的地方。
+    - **查某个库的 API**:代码里 import 的包名就是线索,直接「包名 + 符号名」当 `q` —— Java 用全限定名
+      (`com.nimbusds.jose.util.Base64`)、Go 用 `pkg.Symbol`(`gorm.DeletedAt`)、Python 给全模块路径
+      (`torch.nn.Module`)、Node/TS 用 import 的那层包名(`vue.Teleport`)。
+    - **调研一个库有哪些 API**:拿包名当 `q`(`fastapi` → 入口文件就是导出清单),再读它的入口。
+    - **Node/TS 例外**:带 `-` 或 `@scope/` 的包名这么拼是 0 条(`element-plus`);改用 import 的符号名,并用 `paths` 圈到
+      那个 `node_modules`(`paths: ['frontend/user/**']` 就收敛到一处)。
+    - **搜不到 = 依赖没进来**:先把它加进依赖,或改用 web 搜索 / GitHub 看源码;别反复换写法试。
+    - **同名符号往往有多处定义**(标准库 / 依赖 / 测试各一份):按调用处的 import 与参数类型选,别拿第一行当答案。
+    - **它返回的路径原样交给同一个项目的 `<前缀>_read_file`** 就是源码(压缩包里的条目也行,`.class` 会反编译)——
+      别交给原生 `read`:它的基准是会话工作目录,子项目的相对路径会落到错的位置。
+    - **依赖索引是按项目的**:用 **它所在项目** 前缀的工具搜,拿别的项目的工具搜不到库。
 - {{cmd_get_symbol_info}} **一个符号的签名 / 文档 / 声明位置**:`filePath` + `line` + `column`。
 - {{cmd_analyze_calls}} **调用关系**:`symbolFqn` 传符号名,`analysisKind` 取 `INCOMING_CALLS` / `OUTGOING_CALLS`;`depth`
   控层数,`childOffset` 翻页。
@@ -84,21 +79,15 @@
 - {{cmd_get_all_open_file_paths}} **用户在 IDE 里打开了哪些文件**(含当前激活的那个)。
 - {{cmd_open_file_in_editor}} **把文件在 IDE 里打开并激活**,给用户看。
 
-### 改代码
+### 改代码 (编辑 · 重构 · 校验)
 
 - {{cmd_apply_patch}} **走 IDE 改文件**:`input` 传补丁 (两种格式都行 —— Codex 的 `*** Begin Patch` /
   `*** Update File: <路径>` / `@@` / `*** End Patch`,或 unified git diff)。一个补丁里可混着 **Add / Update / Delete**
   多个操作,`Update` 还能带 `*** Move to: <新路径>` 改名; **按上下文匹配**,`@@` 不用写行号。返回
   `N out of M operations applied`,对不上的 hunk 会报 `Hunk context not found`。路径必须在项目内。
 - {{cmd_create_new_file}} **新建文件**:`pathInProject` + `text`;父目录自动建,`overwrite` 默认关 (文件已存在会报错)。
-
-### 重构与格式化
-
 - {{cmd_rename_refactoring}} **按符号改名**,项目内的引用一并更新。
 - {{cmd_reformat_file}} **按 IDE 的代码风格重排**。
-
-### 校验
-
 - {{cmd_lint_files}} **批量检查**:`files` 传数组;只列有问题的文件。
 - {{cmd_get_file_problems}} **单文件检查**:`filePath`;结果在 `errors`。
 - {{cmd_build_project}} **构建校验**:`filesToRebuild` 可只构建指定文件;有问题返回在 `problems`,没返回即没问题。
@@ -193,21 +182,4 @@ IDE 在管的那一份。
 
 上传 / 下载都在 IDE 后台跑,单次调用只等到 `waitMs`(默认 10 秒)为止;返回 `in_progress` 是 **正常**的,不是失败 —— 拿
 `handle` 去查进度, **别用重复调上传 / 下载代替**(那样拿不到进度)。
-{{/if}}
-
-## 命令执行 (所有项目通用)
-
-- **`<前缀>` 是 IDE 项目的名字**:根项目是 `ide`,子项目是它的目录名 (如 `modelserver`) —— 一套工具属于一个项目,
-  操作哪个项目就用哪个前缀的工具。
-- **需要项目环境才跑得起来的命令**(依赖 IDE 里配好的 JDK / Node / Python 版本等):先看有没有现成的 run configuration ——
-  有就跑它 (常驻用 `rerun`,跑完即退用 `execute`);没有、又只是一次性的命令,用原生 `shell` 并显式指定解释器,
-  **不要为它新建配置**。
-- 其余命令:用原生 `shell`。
-{{#if canCreateRunConfiguration}}
-- **建 / 改 / 删运行配置,走 `idea-run-config-manager` skill**(服务化应用的配置归 `idea-standalone`):要不要建、建什么、
-  怎么建、建完档案怎么记,全由它管;它落手用的就是上面「运行配置」里的那组工具。 **不要自己写文件、也不要自己删文件**。
-{{else}}
-- **建 / 改 / 删运行配置,走 `idea-run-config-manager` skill**(服务化应用的配置归 `idea-standalone`):要不要建 / 建什么 /
-  档案怎么记由它管;本会话没有新建工具,"建"这一步它只能讲清配置名、实际执行的命令、工作目录、为什么值得留,
-  **请用户在 IDE 里自己建** —— 不要手写文件凑。
 {{/if}}

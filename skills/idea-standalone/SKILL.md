@@ -1,6 +1,6 @@
 ---
 name: idea-standalone
-description: "为项目生成/维护 standalone(启动收口只有 IDEA run configuration)模式的纪律,写进**项目根 `AGENTS.md`** 里由 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 包裹的标记块。当用户要做 standalone 规范、要固化「本机跑哪几个应用」「哪些应用热重载、哪些改了必须重启」「启停走哪个工具」这类项目级纪律时使用。产物固定两段:standalone 是什么、经 IDEA run configuration 启动哪些应用 —— 每个应用一条,写清端口、热重载与改完代码要不要重启。"
+description: "为项目固化 standalone(启动收口只有 IDEA run configuration)模式的纪律:写进项目根 `AGENTS.md` 的 `idea-standalone` 标记块,产物两段 —— standalone 是什么、经 run configuration 启动哪些应用(每个应用一条:端口、热重载、改完代码要不要重启)。要定「本机跑哪几个应用」「启停走哪个工具」「哪些应用改了必须重启」这类项目级纪律时使用。"
 ---
 
 # idea-standalone — standalone 模式纪律
@@ -19,24 +19,26 @@ description: "为项目生成/维护 standalone(启动收口只有 IDEA run conf
 
 ## 读取
 
-- **工具名前缀跟着项目走**:root 是 `ide`,子项目是它的目录名,下文写 `<前缀>_` 时指的就是它。
-- 读 `<项目根>/AGENTS.md`,确认是否已存在 `idea-standalone` 标记块 (更新)或需要在文件末尾追加 (新增)。
-- **只登记 base**:run configuration 的名字是 `[os@]base[@env]`,`@` 分割、最多三段 (os 段 `win` = Windows、缺省 =
-  macOS/Linux;base 段 = 配置本体;env 段 = 环境名、缺省 = 所有环境通用这一套)。
-  `get_run_configurations` 给的名字里,带 `@` 段的都 **取 base 部分登记** —— 平台 / 环境由名字里的段决定,不逐个列
-  (文法与选法见 [assets/AGENTS.template.md](assets/AGENTS.template.md) 的「怎么读配置名」与「怎么选变体」)。
-- **该项目的 `<前缀>_get_run_configurations` 直接调用,不传任何参数** → 项目里已有的 run configuration 就是 **用户已经在
-  IDEA 里配好的那些**,
-  这一次调用会把它们的名字连同启动细节 (程序参数、工作目录、环境变量、是否支持启动时覆盖)一并给出。
-  每个应用条目的 base 名与端口, **只能来自这里** —— 不需要再去项目目录里逐个翻配置文件,那份列表已经是配置的结果。
-- 项目类型 (`package.json` / `pom.xml` / `go.mod` / `pyproject.toml` / `Cargo.toml`)→ 决定每个应用条目里「热重载」那一项
-  怎么填 (有没有 HMR、改完要不要重启)。
-- 端口:先看上面那份启动细节里有没有;项目自身配置里也读不到就 **问用户**,不要编。
-- `run configuration` 列表里缺某个应用:**先问用户要不要建**,再用 `<前缀>_create_run_configuration` 建 (建配置是
-  **项目资产**,
-  建之前要把"配置名、干什么、为什么值得留"摊开给用户看,同意才建)。工具列表里没有它时,请用户自己在 IDE 里建。
-  建完 **重新查一次**,再登记进档案。不要手搓启动命令,也不要自己写配置文件。
-- 补齐缺口:哪些应用进 standalone、哪些配置名对不上、端口与热重载不确定 —— **逐条向用户确认**,不猜。
+**现状**
+
+- 读 `<项目根>/AGENTS.md`:有没有 `idea-standalone` 标记块 (有则更新,没有就在文件末尾追加)。
+- 枚举:该项目的 `<前缀>_get_run_configurations` 直接调用,不传任何参数 —— 它给出 IDE 真正认的配置,连同启动细节 (程序参数、
+  工作目录、环境变量、能否启动时覆盖)。 **条目里的 base 名与端口只能来自这里**,不用再去项目目录逐个翻配置文件。
+- 只登记 base:名字是 `[os@]base[@env]` (`@` 分割、最多三段),带 `@` 段的一律 **取 base 部分登记**;平台 / 环境由名字里的
+  段决定,不逐个列 —— 文法与选法见模板的「怎么读配置名」与「怎么选变体」。 **一条配置一个条目**:服务化 / 常驻的都算,
+  同一个应用有多条就写多条。
+
+**缺口** (逐条向用户确认,不猜)
+
+- 端口:启动细节里没有、项目自身配置里也读不到 → **问用户**。
+- 热重载:看运行方式 (项目类型 `package.json` / `pom.xml` / `go.mod` / `pyproject.toml` / `Cargo.toml` 决定有没有 HMR),
+  不确定就问用户。
+- 缺配置:`run configuration` 列表里没有某个应用 → **先问用户要不要建**,再用 `<前缀>_create_run_configuration` 建 (建配置是
+  **项目资产**:把"配置名、干什么、为什么值得留"摊开给用户看,同意才建);工具列表里没有它时,请用户自己在 IDE 里建。建完
+  **重新查一次**,再登记。不要手搓启动命令,也不要自己写配置文件。
+- 归属:哪些配置进 standalone、`应用` 那一项填什么 (同一个应用可以有多条配置)、哪些配置名对不上 → 问用户。
+
+**写之前**先读 [assets/AGENTS.template.md](assets/AGENTS.template.md)。
 
 ## 生成与更新
 

@@ -348,10 +348,11 @@ opencode-idea 对这一组工具做三件事:
 - **`requires:` 这个键已彻底删除** —— 它曾是本插件自己的门禁元数据,OpenCode 不认,注册走 `ctx.skill.transform` 时也不会带上它;
   门禁取消后它就成了"看起来在设门、实际没人读"的死字段,留着只会误导下一个改代码的人。skill 绕着哪几件工具写,由正文自己说明。
 
-文档放在 `skills/<id>/SKILL.md`(每个 skill 一个目录,`name` / `description` 走 YAML frontmatter,需要"只由用户调"时再加
-`metadata: opencode/autoinvoke: false`),由 `src/skill/loader.js` 扫描加载 —— **加新 skill 只需加一个目录,不用改代码**。
+文档放在 `skills/<id>/SKILL.md`(每个 skill 一个目录,`name` / `description` 走 YAML frontmatter),由 `src/skill/loader.js`
+扫描加载 —— **加新 skill 只需加一个目录,不用改代码**。两个 shipped skill 都让模型自己加载:manager 一度是用户点名才可用,结果
+guidance 里"建配置走这个 skill"成了死路 —— 模型在可选列表里看不到它,只能自己去调工具。
 
-还可以用 OpenCode 官方的 frontmatter 写法 **关掉模型主动调用**:
+仍然可以用 OpenCode 官方的 frontmatter 写法 **关掉模型主动调用**(目前没有 skill 这么做):
 
 ```yaml
 metadata:
@@ -365,23 +366,19 @@ loader 读的是 OpenCode 文档里的那个嵌套写法 (它自己的读取器�
 
 ## Standalone 模式纪律 (skill)
 
-本机直跑应用的 **项目级纪律**由 `idea-standalone` skill 固化:它把这份纪律写进 **项目根 `AGENTS.md`** 里由
+本机直跑应用的 **项目级纪律**由 `idea-standalone` skill 固化:写进 **项目根 `AGENTS.md`** 里由
 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 包裹的 **标记块**(根 `AGENTS.md` 本来就是 AI 在本项目
-工作时必读的文件,所以不需要另建规则文件、也不需要 always-apply 开关;标记块是"以后改没改过"的判据)。骨架与各段写作规范在
-`skills/idea-standalone/assets/AGENTS.template.md`, **SKILL.md 只写流程、指向模板**,不重复骨架。两段固定 ——
+工作时必读的文件,所以不需要另建规则文件、也不需要 always-apply 开关;标记块是"以后改没改过"的判据)。骨架与逐段写作规范在
+`skills/idea-standalone/assets/AGENTS.template.md`, **SKILL.md 只写流程、指向模板**,不重复骨架。
 
-1. **什么是 standalone 模式**:**standalone = 启动收口只有 IDEA run configuration**(每个应用的启动入口是 run
-   configuration,不是手搓命令行;
-   至于配置内部怎么起 —— 本机进程 / 容器 / 部署到远端 —— 由它自己决定,本段不预设),只启动其中一部分是常态; **跑应用只用
-   `ide_rerun_run_configuration`**(在跑就重启、没在跑就启动)
-   —— 不必分辨启动还是重启,直接 rerun 就完事,常驻进程化 / 服务化的配置一律走这条; **`ide_execute_run_configuration`
-   不用于这里**(它是给命令 / Job 类型的配置跑的,对常驻进程只会起重复实例);也不绕开 IDEA 用
-   `go run` / `pnpm dev` 这类裸命令或 `kill` / `pkill`; **重启不必先问** —— 改完代码要重启就直接 rerun,这条链是无人化的;
-2. **启动哪些应用**:一个应用一条(条目开头写应用名与 base 名),启动路径 **只能是 IDEA run configuration**(配置名必须能在
-   `ide_get_run_configurations` 里查到; **缺配置就交给用户** —— 让他调 `idea-run-config-manager` skill 去建),端口与被依赖的
-   先后顺序一并写明; 每条里的 **`热重载`** 写有没有 HMR —— 带 HMR 的 dev server 改动后 **不用**提示重启,`go run .` 这类
-   无热重载的进程改动后 **必须**显式点名「需要重启 <应用>」,不得在未提示的情况下宣称"改完可验证";
-3. **项目补充条款**:文件写入位置、测试纪律、访问归属、dev 模式特有限制等,按用户给的条款逐条续写、保留原意。
+产物两段,只写"这个项目怎么起"这一件事:
+
+1. **什么是 standalone 模式** —— 启动收口只有 IDEA run configuration。唯一绝对的约束是"入口唯一";形态不限 (本机进程 / 容器 /
+   部署到远端,哪些应用不在本机跑要单独写明);跑应用一律 `ide_rerun_run_configuration`(在跑就重启、没在跑就启动),
+   **不用** `execute`、不绕开 IDE 用裸命令或 `kill`/`pkill`,重启前也不必先问 —— 这条链是无人化的。
+2. **启动哪些服务** —— 一条服务化配置一条 (base 名), **应用只是它的一个属性**:同一个应用有多条配置 (前端 dev server +
+   后端服务) 就写多条。每条写:应用、端口、`热重载` (有 HMR 就不用提示重启,没有就必须点名重启)、before / after run、
+   `desc`,外加"哪条必须先起来"这类依赖关系。
 
 事实一律先查后写:配置名来自 `ide_get_run_configurations`,`热重载` 来自运行方式,端口读不到就问用户 —— 不猜。
 **只动自己的标记块**:根 `AGENTS.md` 是共享文件 (`project-scaffold` 的宪法、项目自己的内容都在里面),标记之外一字不改。
@@ -390,32 +387,20 @@ loader 读的是 OpenCode 文档里的那个嵌套写法 (它自己的读取器�
 
 `idea-run-config-manager` skill 做三件事:
 
-1. **建 / 改 / 删**(直接动手, **走工具不手写文件**):`ide_create_run_configuration` / `ide_update_run_configuration` /
-   `ide_delete_run_configuration`,拿不准字段名时用 `cloneFrom` 复制一个同类型的现成配置再 patch;建之前先问用户要不要建、建完看
-   工具返回的 `canRun` / `unknownOptions`;
-2. **建档**:过滤之后剩下的每个 run configuration 在 **项目根 `AGENTS.md`** 的标记块
-   (`<!-- idea-run-config-manager:begin -->` /
-   `<!-- idea-run-config-manager:end -->`)里占 **一个条目** —— 标题是配置名 (括号里写它属于哪个项目),下面五项固定:
-   `when` / `before run` / `run` / `after run` / `desc`; **每一项各选一种写法**(行内 / 子列表),同一配置里可以混用 ——
-   全行内、全子列表、混合 (例如 `when` 一句、`after run` 三条)都合法,判据只有"这一项自己有几句话",模板里给了两种形态的可照抄例子;
-   `when` 回答的是 **谁能起它**,而这件事只有三种:`用户授权触发`(用户开口 / 在本会话里一次性授权之后 AI
-   才跑,后面写用户通常在什么情况下要它跑)、
-   `AI 自己触发`(AI 判断到场景就自己跑, **必须把场景写具体**)、`用户手动触发` ——
-   最后这一种 **不进条目**,只登记在块末尾「用户手动触发 (线下,AI 不跑)」一节, **只有名字**,五项一律不写 (没人会照它跑);
-   判断不了就问用户,有副作用 (改远端 / 动数据 / 出产物)又说不清场景的,归"用户授权触发";
-   `after run` 写跑完的结果 (产物落在哪、接下来要不要发布 / 拷贝 / 通知,没有就写 `无`),`desc` 写它是什么、有什么坑 ——
-   **五项始终都在**,不省略; **只登记 base,变体不另起条目** —— 平台与环境由配置名里的段承担 (`[os@]base[@env]`):
-   `win@base` 与 `base@env` 都是同一个 base 的
-   变体,把它们写进 base 的 `desc` 即可; **与 `idea-standalone` 那个块的项名同名同序** ——
-   `before run` / `run` / `after run` / `desc` 四项两边一致;
-   本块多 `when`(服务化应用就是改完代码起它来测,没有别的时机),那边多 `port` 与 `热重载`;
-   **目录 / 端口 / 干什么都不单开一项**(standalone 的端口除外):
-   前两个配置里本来就有,抄进来只会过时,第三个与 `desc` 重复;
-3. **过滤**:服务化 (长驻应用)的配置归 `idea-standalone` 的块,这里先读那个块把它排除, **两个块永不重叠**。
+1. **建 / 改 / 删** —— 直接动手, **走工具不手写文件**:`create_run_configuration` / `update_run_configuration` /
+   `delete_run_configuration`,字段拿不准就用 `cloneFrom` 复制一个同类型的现成配置再 patch;建之前先问用户要不要建,建完看工具
+   返回的 `canRun` / `unknownOptions`。
+2. **建档** —— 过滤后剩下的每条配置在项目根 `AGENTS.md` 的标记块里占一个条目,五项固定
+   (`when` / `before run` / `run` / `after run` / `desc`);只登记 base (`win@base` / `base@env` 是同一个 base 的变体,
+   写进 `desc`)。`when` 回答"谁能起它":`用户授权触发` / `AI 自己触发` **进条目**,`用户手动触发` 只在块末尾登记名字、不进条目。
+   每一项各选一种写法 (行内 / 子列表),同一配置里混用是常态 —— 判据只有"这一项自己有几句话"。
+3. **过滤** —— 服务化 (长驻应用)的配置归 `idea-standalone` 的块, **两个块永不重叠**。
 
-> **两个块都是条目式**(一条一个条目,每项一行 —— `desc` 常是一段话,塞进表格格子里既难读、又要靠补空格维持对齐)。
-> 所以两边靠的是 **同名同序的四项**(`before run` / `run` / `after run` / `desc`)加各自独有的项;
-> `AGENTS.md` 里一眼能看出哪几条是服务、哪几条是固定流程,靠的就是它。
+每项怎么写、两种写法各长什么样、两个示例,都在模板的生成提示里,这里不再抄一遍。
+
+> **两个块都是条目式**(一条一个条目,每项一行):`desc` 常是一段话,塞进表格格子里既难读、又要靠补空格维持对齐。
+> 两边靠 **同名同序的四项**(`before run` / `run` / `after run` / `desc`)加各自独有的项 —— 在 `AGENTS.md` 里一眼就能看出
+> 哪几条是服务、哪几条是固定流程。
 
 **SKILL.md 只有一份五步流程**(读 → 枚举 → 建 / 删 / 改 → 同步 → 核对),外加 **支持矩阵**与 **硬性契约**(落地位置、固定信封、复查、
 路径宏、不要写模板外的字段)—— **它自己就带着规矩**;两类内容另放在两个地方,各管一段:
