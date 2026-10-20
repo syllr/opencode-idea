@@ -269,6 +269,8 @@ describe('shipped skills', () => {
     expect(headings).toEqual([
       '#runconfiguration档案',
       '##runconfiguration一览',
+      '###怎么读配置名',
+      '###怎么选变体',
       '###base登记',
       '##用户手动触发(线下,AI不跑)',
     ]);
@@ -526,7 +528,7 @@ describe('shipped skills', () => {
     // 名字怎么读、变种怎么选,各占一节,且**排在表前面** —— 规则先讲清楚,表才有意义。
     expect(template).toContain('### run configuration 名字怎么读');
     expect(template).toContain('### 应用');
-    expect(template).toContain('### 选哪个变种');
+    expect(template).toContain('### 怎么选变体');
     expect(template.indexOf('### run configuration 名字怎么读')).toBeLessThan(template.indexOf('### 应用'));
     // 缺省:没有系统段 = macOS / Linux;没有环境段 = 所有环境通用这一套。
     expect(squash(template)).toContain(squash('缺省表示'));
@@ -541,6 +543,8 @@ describe('shipped skills', () => {
     // base entries.
     const manager = managerTemplate();
     expect(squash(manager)).toContain(squash('只登记 base'));
+    expect(manager).toContain('### 怎么读配置名');
+    expect(manager).toContain('### 怎么选变体');
     expect(manager).toContain('### base 登记');
     // 产物区(生成提示删掉之后要留下的那部分)是条目式,不是表格;
     // 生成提示里允许出现说明用的表格,它不会进产物。
@@ -612,7 +616,7 @@ describe('shipped skills', () => {
       '## 二、standalone 下启动哪些应用(必须经 IDEA run configuration)',
       '### run configuration 名字怎么读',
       '### 应用',
-      '### 选哪个变种(启动前必须做对)',
+      '### 怎么选变体(启动前必须做对)',
       '## 三、热重载矩阵:改代码后要不要提醒重启',
     ].map((heading) => heading.replace(/\s+/g, '')));
 

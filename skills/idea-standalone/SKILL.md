@@ -25,7 +25,7 @@ description: "为项目生成/维护 standalone(启动收口只有 IDEA run conf
 - **只登记 base**:run configuration 的名字是 `[os@]base[@env]`,`@` 分割、最多三段 (os 段 `win` = Windows、缺省 =
   macOS/Linux;base 段 = 配置本体;env 段 = 环境名、缺省 = 所有环境通用这一套)。
   `get_run_configurations` 给的名字里,带 `@` 段的都 **取 base 部分登记** —— 平台 / 环境由名字里的段决定,不逐个列
-  (文法与选法见 [assets/AGENTS.template.md](assets/AGENTS.template.md) 的「run configuration 名字怎么读」与「选哪个变种」)。
+  (文法与选法见 [assets/AGENTS.template.md](assets/AGENTS.template.md) 的「run configuration 名字怎么读」与「怎么选变体」)。
 - **该项目的 `<前缀>_get_run_configurations` 直接调用,不传任何参数** → 项目里已有的 run configuration 就是 **用户已经在
   IDEA 里配好的那些**,
   这一次调用会把它们的名字连同启动细节 (程序参数、工作目录、环境变量、是否支持启动时覆盖)一并给出。
@@ -50,7 +50,6 @@ description: "为项目生成/维护 standalone(启动收口只有 IDEA run conf
 4. **更新**(已有标记块):只替换 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 之间的内容,块外一字不动。
 5. 改文件用 **IDE 的编辑命令** `<前缀>_apply_patch`(新建用 `<前缀>_create_new_file`),不要用原生 `write` / `edit`。
    **不要整文件重写**。
-   「run configuration 名字怎么读」与「选哪个变种」两节是 **固定文本**,照抄,不要改写、不要删条目 —— 它们是读名字与选环境的规则,应用表靠它们才成立。
    **平台 / 环境变体不另起条目、也不另起表** —— 一张应用表,`run configuration` 列填 base;有哪些变体写进那一行的
    `desc`。
 6. 复读并核对:标记块内逐段与模板一致,块外内容与改动前逐字一致,报告产物清单。
