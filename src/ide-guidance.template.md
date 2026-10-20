@@ -135,28 +135,18 @@ jar / 按 jar 路径 `grep` 唯一的正解:**IDE 索引里那份就是项目编
 - {{cmd_execute_run_configuration}} **跑已有配置**:配置里的 `EXECUTE_IN_TERMINAL` 要是 `false`(共享出去的配置都这样)
   ;覆盖参数 (`programArguments` / `workingDirectory` / `envs`)需配置支持 `supportsDynamicLaunchOverrides`,否则会直接报错。
   {{#if canCreateRunConfiguration}}
-- {{cmd_create_run_configuration}} **新建任意类型的项目级配置**:内容来源三选一 —— `cloneFrom`
-  (复制一个现成的,最稳;字段名不确定时只走它)、`configurationXml`(模板里的 XML 片段)、平台模板 + `options` / `attributes` /
-  `envs` 补丁。它是 **项目资产**,不是"跑命令"的手段 —— 只是要跑一条命令就用原生 `shell`。判据只有一条:
-  **这件事以后会不会以同样的形态再发生?**
-    - **改 / 改名 / 删**都走同一组工具 (`update_run_configuration` / `delete_run_configuration`), **不要自己写文件、
+- {{cmd_create_run_configuration}} **新建任意类型的项目级配置**:内容来源三选一 —— `cloneFrom`(复制一个现成的,最稳;
+  字段名不确定时只走它)、`configurationXml`(模板里的 XML 片段)、平台模板 + `options` / `attributes` / `envs` 补丁。
+  它是 **项目资产**,不是"跑命令"的手段 —— 只是要跑一条命令就用原生 `shell`。
+  **要不要建、建什么、怎么建、档案怎么记,全按 `idea-run-config-manager` skill 走**。判据只有一条: **这件事以后会不会以
+  同样的形态再发生?** 会 (改表后同步 DDL、跑迁移、生成代码、打包、起 dev server、往某个环境部署这类)就 **主动提**一次
+  "要不要固化成 run configuration",并把配置名 / 类型 / 命令 / 工作目录 / 为什么值得留摊开;不会 (查条数据、看个日志、
+  试一条命令)就用原生 `shell` 跑完算,别给项目留垃圾。
+    - **改 / 改名 / 删**走同一组工具 (`update_run_configuration` / `delete_run_configuration`), **不要自己写文件、
       也不要自己删文件**。
-    - **会 → 该建,而且你要主动提**。典型信号:用户让你做的是 **重复性动作**,还会对别的环境 / 别的分支 /
-      下一次改表再做一遍 —— 例如改完表结构要 **同步某个环境的 DDL**、跑数据库迁移或回滚、生成代码、打包、起 dev
-      server、往某个环境部署、按固定步骤清洗数据。这时 **别默默每次手搓命令**(下次还得从头猜一遍),也 **别自己动手建**:
-      **先问用户**"这个流程以后要反复跑,要不要固化成一个 run configuration?",并把方案摊开:配置名、类型、实际执行的命令、工作目录、为什么值得留。
-      **同意才建**;用户说这次先这样,就照办,别再追着问。
-    - **不会 → 用原生 `shell` 直接跑,别建**。这就是两者的分界线:原生 `shell` 是 **就地执行、用完不留痕**
-      (命令只存在于会话里);`create_run_configuration` 是 **把命令固化成一条往后反复用的配置**(IDE 的 Run 窗口里会多一项)
-      。所以一次性的、探索性的、调试性的、参数每次都不一样的操作 (查条数据、看个日志、试一条命令、临时换个路径跑一下)一律走
-      `shell` 跑完算 —— 这类东西建配置只是给项目留垃圾。确需项目环境的解释器时,在
-      `shell` 命令里显式指定、或在已有配置上单次覆盖参数,也别为这一次性的事新建配置。
-    - **改完别忘了同步档案**:新增 / 删除 / 改名之后,用 `idea-run-config-manager` skill 更新项目根 `AGENTS.md`
-      里的配置档案块 —— 档案和项目里的配置对不上,比没有档案更糟。
-    - **建之前先查,防泛滥**:先 `get_run_configurations` 看有没有已在做同一件事的配置 —— 有就 **复用**(必要时让用户改它)
-      ,别新建一个几乎一样的;同一件事 **不要按参数 / 按文件 / 按环境拆成一堆配置**,变化的入参用 `programArguments` /
-      `envs` 单次覆盖。一个项目通常就那么 **几个**(构建、装依赖、起服务、迁移这类固定流程);配置数量明显长起来就是滥用信号 ——
-      动手前先问自己:这是项目固定流程,还是我只是想省一条 shell 命令?
+    - **建之前先查重**:先在 `get_run_configurations` 里找做同一件事的配置,有就复用,别新建一个几乎一样的。
+    - **改完别忘了同步档案**:新增 / 删除 / 改名之后,用 `idea-run-config-manager` skill 更新 `AGENTS.md` 里的档案块 ——
+      档案和项目里的配置对不上,比没有档案更糟。
       {{/if}}
       {{#if canInspectRunConfiguration}}
 - {{cmd_inspect_run_configuration}} **看一个配置的全貌**:定义 (options / envs / before-launch)、命名解析 (`win` /
@@ -212,14 +202,14 @@ IDE 在管的那一份。
 
 ## 命令执行 (所有项目通用)
 
-- 需要项目环境的命令 (依赖 IDE 里配好的 JDK / Node / Python 版本等):用该项目前缀的 run configuration 工具,不要用原生
-  `shell`。
-- 建 / 改 / 删运行配置 **只走上面「运行配置」里的定义态工具**, **不要自己写文件**;`idea-run-config-manager` skill
-  管的是 **要不要建 / 建什么 / 档案怎么记**,不是写文件。
-  {{#if canCreateRunConfiguration}}
-- 要固化的固定流程 (判据见上:会不会以同样形态重复发生):用上面「运行配置」里的 **新建工具**建,建之前先问用户。
-  {{else}}
-- 要固化的固定流程:把配置名、实际执行的命令、工作目录、为什么值得留讲清楚, **请用户在 IDE 里自己建** —— 当前没有能建它的工具
-  (`idea-run-config-manager` skill 仍可加载,但缺这件工具时它也做不了新建),不要手写文件凑。
-  {{/if}}
+- **`<项目前缀>` 就是 IDE 项目的名字**:根项目是 `ide`,子项目是它的目录名 (如 `modelserver`) —— 一套工具属于一个项目。
+  需要项目环境的命令 (依赖 IDE 里配好的 JDK / Node / Python 版本等):用 **那个应用所在项目**前缀的 run configuration 工具,
+  不要用原生 `shell`。
 - 不需要项目环境的命令:用原生 `shell`。
+{{#if canCreateRunConfiguration}}
+- **建 / 改 / 删运行配置,直接走 `idea-run-config-manager` skill**:要不要建、建什么、怎么建、建完档案怎么记,全由它管;
+  它落手用的就是上面「运行配置」里的那组工具。 **不要自己写文件、也不要自己删文件**。
+{{else}}
+- **建 / 改 / 删运行配置,直接走 `idea-run-config-manager` skill**:要不要建 / 建什么 / 档案怎么记由它管;本会话没有新建工具,
+  "建"这一步它也只能讲清配置名、实际执行的命令、工作目录、为什么值得留, **请用户在 IDE 里自己建** —— 不要手写文件凑。
+{{/if}}
