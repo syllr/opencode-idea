@@ -286,8 +286,7 @@ opencode-idea 对这一组工具做三件事:
    和 IDE 自带的 `### 运行配置` 分开:两个来源,两节,读者要能分清"IDE 给我的"和"我额外装的"。没装插件时
    **整节连同标题一起消失**。
    两个地方会跟着变:
-    - 「运行配置」段写明 **改完代码要重启无热重载的进程就用 `ide_rerun_run_configuration`,不要用 `pkill` / `kill` /
-      shell**
+    - 「运行配置」段写明 **启动 / 重启常驻进程就用 `ide_rerun_run_configuration`,不要用 `pkill` / `kill` / shell**
       —— 这正是它要解决的问题:外部杀掉的进程 IDE 并不知道,Run 窗口仍显示运行中,下次启动就会撞端口;
     - 「运行配置」段的 **新建那条**把 run configuration 定性成 **项目资产**:一个项目通常只建几个 (固定要跑的构建 /
       装依赖 / dev server / 迁移), **不是随手一条命令就建一个**;判据是 **这件事以后会不会以同样形态再发生** —— 会就该建、模型必须
@@ -369,7 +368,7 @@ loader 读的是 OpenCode 文档里的那个嵌套写法 (它自己的读取器�
 本机直跑应用的 **项目级纪律**由 `idea-standalone` skill 固化:它把这份纪律写进 **项目根 `AGENTS.md`** 里由
 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 包裹的 **标记块**(根 `AGENTS.md` 本来就是 AI 在本项目
 工作时必读的文件,所以不需要另建规则文件、也不需要 always-apply 开关;标记块是"以后改没改过"的判据)。骨架与各段写作规范在
-`skills/idea-standalone/assets/AGENTS.template.md`, **SKILL.md 只写流程、指向模板**,不重复骨架。三段固定 ——
+`skills/idea-standalone/assets/AGENTS.template.md`, **SKILL.md 只写流程、指向模板**,不重复骨架。两段固定 ——
 
 1. **什么是 standalone 模式**:**standalone = 启动收口只有 IDEA run configuration**(每个应用的启动入口是 run
    configuration,不是手搓命令行;
@@ -378,13 +377,13 @@ loader 读的是 OpenCode 文档里的那个嵌套写法 (它自己的读取器�
    —— 不必分辨启动还是重启,直接 rerun 就完事,常驻进程化 / 服务化的配置一律走这条; **`ide_execute_run_configuration`
    不用于这里**(它是给命令 / Job 类型的配置跑的,对常驻进程只会起重复实例);也不绕开 IDEA 用
    `go run` / `pnpm dev` 这类裸命令或 `kill` / `pkill`; **重启不必先问** —— 改完代码要重启就直接 rerun,这条链是无人化的;
-2. **启动哪些应用**:一行一个应用,启动路径 **只能是 IDEA run configuration**(配置名必须能在 `ide_get_run_configurations`
-   里查到; **缺配置就交给用户** —— 让他调 `idea-run-config-manager` skill 去建),端口与被依赖的先后顺序一并写明;
-3. **热重载矩阵**:逐应用标"是 / 否" —— 带 HMR 的 dev server 改动后 **不用**提示重启;`go run .` 这类无热重载的进程改动后
-   **必须**显式点名「需要重启 <应用>」,不得在未提示的情况下宣称"改完可验证";
-4. **项目补充条款**:文件写入位置、测试纪律、访问归属、dev 模式特有限制等,按用户给的条款逐条续写、保留原意。
+2. **启动哪些应用**:一个应用一条(条目开头写应用名与 base 名),启动路径 **只能是 IDEA run configuration**(配置名必须能在
+   `ide_get_run_configurations` 里查到; **缺配置就交给用户** —— 让他调 `idea-run-config-manager` skill 去建),端口与被依赖的
+   先后顺序一并写明; 每条里的 **`热重载`** 写有没有 HMR —— 带 HMR 的 dev server 改动后 **不用**提示重启,`go run .` 这类
+   无热重载的进程改动后 **必须**显式点名「需要重启 <应用>」,不得在未提示的情况下宣称"改完可验证";
+3. **项目补充条款**:文件写入位置、测试纪律、访问归属、dev 模式特有限制等,按用户给的条款逐条续写、保留原意。
 
-事实一律先查后写:配置名来自 `ide_get_run_configurations`,热重载列来自运行方式,端口读不到就问用户 —— 不猜。
+事实一律先查后写:配置名来自 `ide_get_run_configurations`,`热重载` 来自运行方式,端口读不到就问用户 —— 不猜。
 **只动自己的标记块**:根 `AGENTS.md` 是共享文件 (`project-scaffold` 的宪法、项目自己的内容都在里面),标记之外一字不改。
 
 ## run configuration 增删改 + 档案 (skill)
@@ -447,7 +446,7 @@ loader 读的是 OpenCode 文档里的那个嵌套写法 (它自己的读取器�
 
 **先过滤,再建档**:**服务化的配置不进这个块** —— 它们已经登记在 `AGENTS.md` 的 `idea-standalone` 块里 (端口 /
 热重载也写在那里),
-所以建档第一步是读那个块、把它的表里出现过的名字记下来并排除, **剩下的**才是本块内容。
+所以建档第一步是读那个块、把它登记过的名字记下来并排除, **剩下的**才是本块内容。
 
 这个档案块 **以带前缀的工具为准**,不围绕 IDE 界面说话:各项目各有自己的前缀 (root 是 `ide`,子项目是它的目录名),枚举与执行都用
 **它自己那个前缀**的

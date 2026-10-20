@@ -318,8 +318,8 @@ describe('shipped skills', () => {
     // 这条判据必须写在模板里,否则复杂条目会被压成一行、简单条目又会被拆散。
     expect(template).toContain('每一项都有两种写法,逐项判断');
     expect(template).toContain('混着两种写法是常态');
-    expect(template).toContain('全子列表');
-    expect(template).toContain('全行内');
+    expect(template).toContain('写在项名同一行');
+    expect(template).toContain('缩进两个空格各起一条');
     // 两种形态各给一份可照抄的例子,否则"什么时候拆"仍然只能靠猜。
     expect(template).toContain('- `connector-build`(项目 ide)');
     expect(template).toContain('- `db-migrate`(项目 ide)');

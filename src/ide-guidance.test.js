@@ -230,18 +230,17 @@ describe('看依赖实现只有一条路(javap 的坑)', () => {
     // 总则里也点一句,那是每条路由规则都会路过的地方。
     // ("只有一条路"这个定性后来从总则那行去掉了 —— 总则只留动因与两步走法,
     //  禁止替代手艺的话挪进了「符号」小节,见下面那条。)
-    expect(text).toContain('**要看某个类 / 方法 / 字段在哪定义、内部怎么实现的**');
+    expect(text).toContain('**要读任何类 / 方法 / 字段的源码,就两步**');
   });
 
   it('bans the javap / unzip route instead of merely offering the tool', () => {
     const text = stock();
     // 只写"我能搜符号"拦不住 `javap -c -p -cp <自己拼的 jar 路径>` —— 那是模型的默认手艺,
     // 必须把话说到"替代路走不通",并给出它自己的理由(副本 / 字节码清单)。
-    // 这一句 77cc21f 从总则挪进了「符号」小节,写法也从"不要用 X"换成把 X 收成"唯一的正解":
-    // 反正 javap / unzip / 解包 jar / 按 jar 路径 grep 这几条都被点名成"只有这样一条路"。
-    expect(flat(text)).toContain(flat('也是 `javap` / `unzip` / 解包 jar / 按 jar 路径 `grep` 唯一的正解'));
+    // 这几条被点名成"自己拼出来的往往是另一份",不是"也能用"。
+    expect(flat(text)).toContain(flat('`javap` / 解包 jar / 按 jar 路径 `grep` 拼出来的往往是另一份'));
     expect(text).toContain('编译时真正用的依赖');
-    expect(text).toContain('另一份副本');
+    expect(text).toContain('版本对不上');
     expect(text).toContain('反编译源码');
     // 依赖库正是这套的主要用场,不是"顺带也能搜到"。
     expect(text).toContain('正是它最该用的场合');
@@ -310,14 +309,14 @@ describe('run-lifecycle 能力', () => {
     };
     const text = buildIdeGuidanceText([ROOT, CHILD], { tools });
     expect(text).toContain(
-      '**改完代码重启无热重载的进程**',
+      '**启动 / 重启常驻进程**',
     );
     expect(text).toContain(
       '根项目 `ide_rerun_run_configuration` ｜ modelserver `modelserver_rerun_run_configuration`',
     );
     expect(text).toContain('`ide_list_running_configurations`');
     // 只在清单里出现一次,不重复成两段。
-    expect(text.match(/\*\*改完代码重启无热重载的进程\*\*/g)).toHaveLength(1);
+    expect(text.match(/\*\*启动 \/ 重启常驻进程\*\*/g)).toHaveLength(1);
   });
 
   it('routes the work it cannot do to the run-configuration manager skill', () => {
@@ -339,7 +338,7 @@ describe('run-lifecycle 能力', () => {
     const text = buildIdeGuidanceText([ROOT, CHILD], {
       tools: { 'modelserver_rerun_run_configuration': {} },
     });
-    expect(text).toContain('**改完代码重启无热重载的进程**');
+    expect(text).toContain('**启动 / 重启常驻进程**');
     expect(text).toContain('`modelserver_rerun_run_configuration`');
   });
 });
