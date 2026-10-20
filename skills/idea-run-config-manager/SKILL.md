@@ -31,7 +31,7 @@ IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-id
         - **看一眼**:`<前缀>_inspect_run_configuration` —— 定义、命名解析、活实例、历史日志路径全在里面;
           构建 patch 之前先用它拿到当前值 (尤其 `configurationXml`)。
         - **模板是字段参考**:`assets/types/*.md` 用来查类型 id、看这个类型有哪些字段、`configurationXml` 该长什么样。
-        - **建带平台 / 环境变体的配置** → 名字按模板「怎么读配置名」的文法拼 (`win@base` / `base@env`);环境具体怎么接上问
+        - **建带平台 / 环境变体的配置** → 名字文法见 IDE 引导的「运行配置」(`win@base` / `base@env`);环境具体怎么接上问
           用户,或照项目里现成的同类配置来。
         - **没有模板**(矩阵之外)→ **走 `cloneFrom`**:复制一个同类型的现成配置再 patch 它的字段。
           字段名不确定时,这是 **唯一可靠**的路子 (照猜字段名 = 静默用默认值)。连一个同类型的现成配置都没有,
@@ -71,5 +71,5 @@ IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-id
 3. **路径宏**:`$PROJECT_DIR$` = 该项目根。 **项目内的路径一律用它**(`$PROJECT_DIR$/子目录/...`),不要写本机绝对路径 ——
    写死了别人 clone 下来就指到不存在的目录。
 
-名字怎么读、变体怎么选、每条登记什么,都在 [assets/AGENTS.template.md](assets/AGENTS.template.md) 的「怎么读配置名」
-「怎么选变体」与生成提示里 —— 本文件不重复那套规则。
+名字怎么读、变体怎么选 —— 见 IDE 引导的「运行配置」(每次请求都在);每条登记什么,见
+[assets/AGENTS.template.md](assets/AGENTS.template.md) 的生成提示。两处都不在本文件重复。

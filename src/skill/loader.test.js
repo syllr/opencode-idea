@@ -264,15 +264,13 @@ describe('shipped skills', () => {
     expect(headings).toEqual([
       '#runconfiguration档案',
       '##runconfiguration一览',
-      '###怎么读配置名',
-      '###怎么选变体',
       '###base登记',
       '##用户手动触发(线下,AI不跑)',
     ]);
-    // 平台与环境由**名字里的段**决定(`[os@]base[@env]`),所以本块只登记 base,
-    // 变体不另起条目 —— 要把"有哪些变体、怎么切环境"写进 base 的 desc。
-    expect(squash(template)).toContain('[os@]base[@env]');
+    // 名字文法与选变体的规则住在 guidance(每次请求都在),块里只留"只登记 base"这一句,
+    // 不把那张表抄进每个项目的 AGENTS.md。
     expect(squash(template)).toContain('只登记 base');
+    expect(template).toContain('IDE 引导的「运行配置」');
     expect(squash(template)).toContain('判断不了就问用户');
 
     // One entry answers the only question the catalog is for: what is this
@@ -485,18 +483,12 @@ describe('shipped skills', () => {
     // 变体不另起条目、也不另起表 —— 否则同一个应用会因为"几个平台 × 几个环境"膨胀出
     // 十几行,而它们其实是同一件事。
     const template = readTemplate();
-    expect(squash(template)).toContain(squash('[os@]base[@env]'));
     expect(squash(template)).toContain(squash('只登记 base'));
-    // 名字怎么读、变种怎么选,各占一节,且**排在表前面** —— 规则先讲清楚,表才有意义。
-    expect(template).toContain('### 怎么读配置名');
+    // 名字文法与选变体的规则只在 guidance 里讲一次;块里指过去,不重复那张表。
+    expect(template).toContain('IDE 引导的「运行配置」');
+    expect(template).not.toContain('### 怎么读配置名');
+    expect(template).not.toContain('### 怎么选变体');
     expect(template).toContain('### 服务化配置');
-    expect(template).toContain('### 怎么选变体');
-    expect(template.indexOf('### 怎么读配置名')).toBeLessThan(template.indexOf('### 服务化配置'));
-    // 缺省:没有系统段 = macOS / Linux;没有环境段 = 所有环境通用这一套。
-    expect(squash(template)).toContain(squash('缺省表示'));
-    // 选变种的纪律:问一次就够,别反复打扰用户。
-    expect(squash(template)).toContain(squash('启动前问一次用户走哪个环境'));
-    expect(squash(template)).toContain(squash('本会话默认走这套'));
     // 产物里一条配置一条(变体不另起条目)—— 生成提示里的示例不算。
     const productOnly = template.replace(/<!-- 生成提示:begin -->[\s\S]*?<!-- 生成提示:end -->/g, '');
     expect(tight(productOnly)).toContain(tight('- {base 名}(项目 {前缀})'));
@@ -506,8 +498,7 @@ describe('shipped skills', () => {
     // base entries.
     const manager = managerTemplate();
     expect(squash(manager)).toContain(squash('只登记 base'));
-    expect(manager).toContain('### 怎么读配置名');
-    expect(manager).toContain('### 怎么选变体');
+    expect(manager).not.toContain('### 怎么读配置名');
     expect(manager).toContain('### base 登记');
     // 产物区(生成提示删掉之后要留下的那部分)是条目式,不是表格;
     // 生成提示里允许出现说明用的表格,它不会进产物。
@@ -577,8 +568,6 @@ describe('shipped skills', () => {
       '# Standalone 模式纪律',
       '## 一、什么是 standalone 模式',
       '## 二、standalone 下启动哪些应用(必须经 IDEA run configuration)',
-      '### 怎么读配置名',
-      '### 怎么选变体',
       '### 服务化配置',
     ].map((heading) => heading.replace(/\s+/g, '')));
 

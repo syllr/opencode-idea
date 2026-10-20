@@ -124,7 +124,7 @@ function syncFiles(previousVersion, nextVersion) {
     .split(`version: '${previousVersion}'`)
     .join(`version: '${nextVersion}'`);
   if (updatedIdeaMcp === ideaMcp) {
-    throw new Error("src/mcp/idea.js: clientInfo version not found; expected two occurrences");
+    throw new Error("src/mcp/idea.js: no clientInfo version matched the previous version; nothing to replace");
   }
   writeFileSync(ideaMcpPath, updatedIdeaMcp);
 

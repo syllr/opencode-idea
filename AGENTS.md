@@ -25,7 +25,7 @@
 
 - 只递增 patch，不会自行做 minor / major；需要时人工改并先征得用户同意。
 - 已发布到 npm 的版本号会被跳过，绝不覆盖。
-- `src/mcp/idea.js` 中两处 `clientInfo.version` 必须与 `package.json` 一致，找不到会直接报错退出。
+- `src/mcp/idea.js` 里所有 `clientInfo.version` 都必须与 `package.json` 一致（当前一处，`src/mcp/idea.js:130`）；一个都匹配不上时脚本直接报错退出。
 - 正式发布会先检查 `git status --porcelain` 必须干净；未提交就中止。
 
 ### 发布鉴权（重要）

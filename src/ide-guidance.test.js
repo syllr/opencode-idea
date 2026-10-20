@@ -287,6 +287,21 @@ describe('校验(改完代码自己先查一遍)', () => {
   });
 });
 
+describe('配置名与变体', () => {
+  it('teaches the naming grammar in the always-on guidance', () => {
+    // 名字文法与"一批里跑哪个变体"是所有项目共用的规则,所以放在每次请求都注入的指引里;
+    // 两个 AGENTS.md 块只登记 base,不再各抄一张表 —— 否则同一个文件里会有两遍。
+    const text = stock();
+    expect(text).toContain('配置名怎么读');
+    expect(text).toContain('[os@]base[@env]');
+    expect(text).toContain('缺省 = 默认环境');
+    expect(text).toContain('逐条解析');
+    expect(text).toContain('问一次走哪个环境');
+    // 平台段缺失时的纪律:交回用户,不拿 base 顶替。
+    expect(text).toContain('交回用户');
+  });
+});
+
 describe('run-lifecycle 能力', () => {
   it('says nothing about them for stock IDEes', () => {
     const text = stock();
