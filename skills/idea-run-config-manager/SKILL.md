@@ -27,20 +27,22 @@ IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-id
     2. **走工具,不要手写 `.run/` 下的文件**:
         - **新建**:`<前缀>_create_run_configuration` —— 任意类型,内容来源三选一:`cloneFrom`(复制一个现成的,
           最稳)/ `configurationXml`(模板里的 XML 片段)/ 平台模板 + `options` / `attributes` / `envs` 补丁。
-          Shell 场景也可以用它的快捷入口 `<前缀>_create_run_configuration`。
         - **修改 / 改名**:`<前缀>_update_run_configuration`。改字段用 `options` / `envs` 补丁;
-          改名用 `newName`,它会**连带更新别人对它的引用**并把历史日志的键一起迁移。
+          改名用 `newName`,它会 **连带更新别人对它的引用**并把历史日志的键一起迁移。
         - **删除**:`<前缀>_delete_run_configuration` —— 在跑或被人引用时会拒绝,`force = true` 才会连引用一起清掉。
         - **看一眼**:`<前缀>_inspect_run_configuration` —— 定义、命名解析、活实例、历史日志路径全在里面;
-          构建 patch 之前先用它拿到当前值(尤其 `configurationXml`)。
-        - **模板的用途变了**:`assets/types/*.md` 不再是"照着写文件"的说明书,而是**字段参考**:查类型 id、
+          构建 patch 之前先用它拿到当前值 (尤其 `configurationXml`)。
+        - **模板的用途变了**:`assets/types/*.md` 不再是"照着写文件"的说明书,而是 **字段参考**:查类型 id、
           看这个类型有哪些字段、`configurationXml` 该长什么样。
         - **建带平台 / 环境变体的配置** → 名字按第 7 条的文法拼 (`win@base` / `base@env`),并且 **把环境真正接上**(第 8
           条):环境变量路线要把环境名同时写进 `envs` 与 `SCRIPT_TEXT` 前缀,启动参数路线要在 `SCRIPT_TEXT` 里带对应参数。
           **名字对了但环境没接上 = 没配好。**
-        - **没有模板**(⏳ 或矩阵之外)→ **交给用户**:讲清要配什么 (配置名、干什么、什么时候跑),请他在 IDE 里配好,你只负责把档案补上。
-    3. **写完必须复查**:`<前缀>_get_run_configurations` 里要能看到它。 **看不到就是文件没被 IDE 认** —— `type`
-       写错会被静默忽略且不报错;工具返回的 `unknownOptions` 就是字段名拼错的证据。
+        - **没有模板**(⏳ 或矩阵之外)→ **走 `cloneFrom`**:复制一个同类型的现成配置再 patch 它的字段。
+          字段名不确定时,这是 **唯一可靠**的路子 (照猜字段名 = 静默用默认值)。连一个同类型的现成配置都没有,
+          才 **交给用户**:讲清要配什么 (配置名、干什么、什么时候跑),请他在 IDE 里配好,你只负责把档案补上。
+    3. **写完必须复查**:工具的返回值就是结论 —— `canRun` 能不能跑、`unknownOptions` 有没有字段名被平台丢弃 (非空 =
+       字段名拼错了)、`storagePath` 文件落在哪。再用 `<前缀>_get_run_configurations` 二次确认它已被 IDE 认到。 **看不到就是文件没被
+       IDE 认** —— `type` 写错会被静默忽略且不报错。
     4. **不要手搓启动命令**代替配置,也 **不要写模板里没有的字段**(多余字段被忽略、名字写错静默用默认值,都不会报错)。
 4. **同步文档**:按 [assets/AGENTS.template.md](assets/AGENTS.template.md) 逐段填,写在标记块内 ——
    **条目怎么写、五项分别写什么、枚举与过滤的要求,都在那份模板的生成提示里**,动手前先读它;生成提示是给生成过程的说明,
@@ -62,13 +64,15 @@ IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-id
 | JAR               | `JarApplication`                | —                                    | ⏳ 同上                                     |
 
 **矩阵之外一律没有模板** —— JUnit / TestNG / Kotlin / Docker / Spring Boot / Tomcat / Flyway / Liquibase / HTTP Request
-等等。 **没有模板的类型交给用户在 IDE 里自己新建、自己维护**,模板由我们后续按需补上。
+等等。 **没有模板不等于建不了**:`cloneFrom` 复制一个同类型的现成配置再 patch 就能建,`assets/types/*.md` 只是 **字段参考**
+(查类型 id、看这个类型有哪些字段),不是建配置的前置条件。模板由我们后续按需补上。
 
 ## 硬性契约 (所有类型都一样)
 
 1. **落地位置**:项目根的 `.run/<配置名>.run.xml`(配置名带空格就原样用,例如 `Hello World.run.xml`)。子项目的配置写在
-   **子项目自己的** `.run/` 下,并用 **子项目前缀**的工具复查。
-2. **信封固定**:
+   **子项目自己的** `.run/` 下,并用 **子项目前缀**的工具复查。 **文件由工具写,不要手写** —— 手写出来的文件要么被 IDE
+   静默忽略 (`type` 写错),要么字段名拼错却静默用默认值。
+2. **信封固定**(这是 **`configurationXml` 参数**该有的形状,不是"你手写的文件"):
 
    ```xml
    <component name="ProjectRunConfigurationManager">
@@ -81,8 +85,10 @@ IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-id
 
    `factoryName="<类型名>"` **可写可不写** —— 实物里两种都有,IDE 认的是 `type`。
 
-3. **`type` 写错 = 整个文件被静默忽略,日志里也不报任何东西。** 每种类型都得有一份实测模板,就是为了不靠猜。
-4. **写完必须复查**(见流程第 3 步):`get_run_configurations` 里看不到,就是文件没被认。
+3. **`type` 写错 = 整个文件被静默忽略,日志里也不报任何东西。** 每种类型都得有一份实测模板,就是为了不靠猜;
+   工具的 `typeKnown` / `typeDisplayName` 会告诉你这台 IDE 能不能认这个类型 (缺插件时是 `Unknown`)。
+4. **写完必须复查**(见流程第 3 步):`get_run_configurations` 里看不到,就是文件没被认;工具返回的 `canRun` 才是
+   "现在能不能跑"的权威答案。
 5. **路径宏**:`$PROJECT_DIR$` = 该项目根。 **项目内的路径一律用它**(`$PROJECT_DIR$/子目录/...`),不要写本机绝对路径 ——
    写死了别人 clone 下来就指到不存在的目录。
 6. **跨机器共享 (`.run/*.run.xml` 是进 git 给全组共用的)**:按"绑在哪一层"分三档,建 / 改配置前对着过一遍:
@@ -101,6 +107,9 @@ IDE (或那个 IDE 没装 `idea-mcp-enhance`)—— 让用户执行 `/open-in-id
       base**,变体不另起条目;把"有哪些变体、各自怎么切环境"写进 base 的 `desc`。
     - **用 `@` 不用 `-` 切分**:名字里本来就有多个连字符 (`console-web`),用 `@` 才切得清前后缀;`@` 在文件名里合法 (落地就是
       `.run/win@console-web.run.xml`,IDE 认得、跑得起来,已实测)。
+    - **解析交给工具,别自己猜**:`<前缀>_inspect_run_configuration` 的 `naming` 字段会把名字解析成
+      platform / base / env。它的规则是 **从两头往中间收** —— 末段是环境 (两段及以上才有);首段 **只有恰好是 `win`**
+      才算平台,不是 `win` 的首段并进 base;中间剩下的是 base。所以 `a@b@c` 解析成 base=`a@b`、env=`c`,不会丢段。
 8. **多环境 = 选环境,不是复制配置**:环境变体有两条实现路线, **选哪条由该语言 / 框架的业务决定**:
     - **环境变量**:运行配置的 `envs` 里给环境名 (`APP_ENV=yutao`),应用启动时按它选自己那份配置。
       **不读配置文件的业务就走这条**。

@@ -10,7 +10,7 @@
 | **脚本文本**(默认) | `EXECUTE_SCRIPT_FILE="false"` + `SCRIPT_TEXT` 有值 + `SCRIPT_PATH` 空 | 就一条命令,不需要单独脚本文件           |
 | **脚本文件**       | `EXECUTE_SCRIPT_FILE="true"` + `SCRIPT_PATH` 有值 + `SCRIPT_TEXT` 空  | 命令已经写成仓库里的 `.sh`,或脚本比较长 |
 
-## 模板:脚本文本形态
+## XML 形状:脚本文本形态
 
 ```xml
 
@@ -33,7 +33,7 @@
 </component>
 ```
 
-## 模板:脚本文件形态
+## XML 形状:脚本文件形态
 
 ```xml
 
@@ -58,17 +58,17 @@
 
 ## 字段
 
-| 字段                                                                                                | 含义                           | 怎么填                                                  |
-| --------------------------------------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------- |
-| `SCRIPT_TEXT`                                                                                       | 要执行的命令                   | **多行用 `&#10;` 分隔**(实测这么存的),不要塞真实换行    |
-| `EXECUTE_SCRIPT_FILE`                                                                               | `false` 跑文本 / `true` 跑文件 | 决定上面两个字段谁生效                                  |
-| `SCRIPT_PATH`                                                                                       | 脚本路径                       | `$PROJECT_DIR$/...`                                     |
-| `SCRIPT_OPTIONS`                                                                                    | 传给脚本的参数                 | 没有就留空                                              |
+| 字段                                                                                                | 含义                           | 怎么填                                                                                                                   |
+| --------------------------------------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `SCRIPT_TEXT`                                                                                       | 要执行的命令                   | **多行用 `&#10;` 分隔**(实测这么存的),不要塞真实换行                                                                     |
+| `EXECUTE_SCRIPT_FILE`                                                                               | `false` 跑文本 / `true` 跑文件 | 决定上面两个字段谁生效                                                                                                   |
+| `SCRIPT_PATH`                                                                                       | 脚本路径                       | `$PROJECT_DIR$/...`                                                                                                      |
+| `SCRIPT_OPTIONS`                                                                                    | 传给脚本的参数                 | 没有就留空                                                                                                               |
 | `SCRIPT_WORKING_DIRECTORY`                                                                          | 工作目录                       | `$PROJECT_DIR$` 或其子目录;**不要留空** —— 留空会继承 IDE 安装目录(实测 `pwd` 输出 `…/idea-2026.2.3-aarch64`,不是项目根) |
-| `INDEPENDENT_SCRIPT_PATH` / `INDEPENDENT_SCRIPT_WORKING_DIRECTORY` / `INDEPENDENT_INTERPRETER_PATH` | 三处"各自独立"开关             | 照抄模板里的默认形状即可,不用管                         |
-| `INTERPRETER_PATH` / `INTERPRETER_OPTIONS`                                                          | 解释器 / 解释器参数            | **不碰** —— 用户 / IDE 级配置,留空即默认,不要填具体路径 |
-| `EXECUTE_IN_TERMINAL`                                                                               | 是否开终端跑                   | **`false`** —— 共享出去的配置不要依赖本机终端           |
-| `envs`                                                                                              | 环境变量                       | 没有就 `<envs />`;有就 `<env name="K" value="V" />`     |
+| `INDEPENDENT_SCRIPT_PATH` / `INDEPENDENT_SCRIPT_WORKING_DIRECTORY` / `INDEPENDENT_INTERPRETER_PATH` | 三处"各自独立"开关             | 照抄上面 XML 形状里的默认写法即可,不用管                                                                                 |
+| `INTERPRETER_PATH` / `INTERPRETER_OPTIONS`                                                          | 解释器 / 解释器参数            | **不碰** —— 用户 / IDE 级配置,留空即默认,不要填具体路径                                                                  |
+| `EXECUTE_IN_TERMINAL`                                                                               | 是否开终端跑                   | **`false`** —— 共享出去的配置不要依赖本机终端                                                                            |
+| `envs`                                                                                              | 环境变量                       | 没有就 `<envs />`;有就 `<env name="K" value="V" />`                                                                      |
 
 ## 环境变体 (`base@env`)
 
@@ -117,7 +117,8 @@ set +a
 pnpm --filter @aidata/console dev" />
 ```
 
-- 工作目录必须是 `$PROJECT_DIR$` —— `. env/...` 是相对路径,靠它定位仓库根。**留空不等于项目根**:实测会继承 IDE 进程的 cwd(IDE 安装目录),命令会在错误的地方跑。
+- 工作目录必须是 `$PROJECT_DIR$` —— `. env/...` 是相对路径,靠它定位仓库根。 **留空不等于项目根**:实测会继承 IDE 进程的
+  cwd (IDE 安装目录),命令会在错误的地方跑。
 - **这段是 POSIX shell 语法,绑平台**:Windows 侧要用 PowerShell 的写法 (把 env 文件读成环境变量),别把 mac 那份直接拷过去。
 - **这段脚本内容跟着平台走**:mac / Linux 用 POSIX 语法,Windows 用 PowerShell 的写法,别把一边直接拷到另一边。
 

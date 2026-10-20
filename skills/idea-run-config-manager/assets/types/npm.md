@@ -2,7 +2,7 @@
 
 **用途**:跑 `package.json` 里的脚本 (dev / build / test)。三种包管理器 **共用同一个 `type`**,靠 `<package-manager>` 区分。
 
-## 模板
+## XML 形状
 
 ```xml
 

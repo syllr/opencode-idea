@@ -1,8 +1,8 @@
-# Gradle(`GradleRunConfiguration`)
+# Gradle (`GradleRunConfiguration`)
 
-**用途**:跑 Gradle 任务(`build`、`test`、`detekt`、`wasmJsBrowserDevelopmentRun` …)。
+**用途**:跑 Gradle 任务 (`build`、`test`、`detekt`、`wasmJsBrowserDevelopmentRun` …)。
 
-## 模板
+## XML 形状
 
 ```xml
 <component name="ProjectRunConfigurationManager">
@@ -51,7 +51,7 @@
 
 ## 坑
 
-- **`externalSystemIdString` 必须是 `GRADLE`** —— 写别的值文件会被忽略(而且没有报错)。
-- 参数(`--info`、`-Pxxx`)放 `scriptParameters`,**不是** `taskNames`。
-- `env` 里像 `DEVELOPER_DIR` 这种本机特定路径,共享出去对别人无效 —— 换个不带绝对路径的做法(写进 `gradle.properties`)。
+- **`externalSystemIdString` 必须是 `GRADLE`** —— 写别的值文件会被忽略 (而且没有报错)。
+- 参数 (`--info`、`-Pxxx`)放 `scriptParameters`, **不是** `taskNames`。
+- `env` 里像 `DEVELOPER_DIR` 这种本机特定路径,共享出去对别人无效 —— 换个不带绝对路径的做法 (写进 `gradle.properties`)。
 - 多模块里跑别的模块的任务用 `:module:task`;`externalProjectPath` 仍指 Gradle 根。

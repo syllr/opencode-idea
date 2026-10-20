@@ -1,8 +1,8 @@
-# Go Build(`GoApplicationRunConfiguration`)
+# Go Build (`GoApplicationRunConfiguration`)
 
-**用途**:跑一个 Go 程序(`go run` 那条路)。测试是另一个类型(`GoTestRunConfiguration`),**不在本模板范围**。
+**用途**:跑一个 Go 程序 (`go run` 那条路)。测试是另一个类型 (`GoTestRunConfiguration`), **不在本模板范围**。
 
-## 模板
+## XML 形状
 
 ```xml
 <component name="ProjectRunConfigurationManager">
@@ -37,8 +37,9 @@
 
 ## 坑
 
-- **字段写法和其他类型不一样**:这里是 `<working_directory value=…>` 这种**自定义元素名**,不是 `<option name=…>`;照别的类型的写法套会被静默忽略。
+- **字段写法和其他类型不一样**:这里是 `<working_directory value=…>` 这种 **自定义元素名**,不是 `<option name=…>`
+  ;照别的类型的写法套会被静默忽略。
 - **`kind` 与 `filePath`/`directory`/`package` 必须一致**:填了 `kind=FILE` 又给 `directory`,行为不可预期 —— 只填对应的那一个。
-- `parameters` 里是**给程序**的参数,不是 `go build` 的参数;构建参数走 IDE 的 Go 配置项,别塞这里。
-- 实测样本的 `envs` 里塞了本机路径(`localhost:6379` 之类)—— 共享出去对别人不一定适用,这类值考虑换成读本地配置文件。
+- `parameters` 里是 **给程序**的参数,不是 `go build` 的参数;构建参数走 IDE 的 Go 配置项,别塞这里。
+- 实测样本的 `envs` 里塞了本机路径 (`localhost:6379` 之类)—— 共享出去对别人不一定适用,这类值考虑换成读本地配置文件。
 - Go 服务通常是常驻进程:启停走 `rerun` / `stop`,不要 `pkill`(规则见 `idea-standalone`)。

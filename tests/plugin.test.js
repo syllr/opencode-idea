@@ -596,6 +596,7 @@ describe('plugin setup', () => {
         ide_execute_sql_query: {},
         ide_search_text: {},
         ide_apply_patch: {},
+        ide_create_new_file: {},
       },
     };
     await state.sessionHook(request);
@@ -603,8 +604,10 @@ describe('plugin setup', () => {
     // Version control goes through the native tool, and the router dispatcher is
     // redundant while every routed tool is exposed directly. The Debugger, Dev
     // Kit MCP, Inspection KTS MCP and Python Environment MCP groups are hidden as
-    // a whole; the whole Database group is hidden; and plain file access with a
-    // native equivalent (search / patch / create) is hidden too.
+    // a whole; the whole Database group is hidden; and plain file SEARCH with a
+    // native equivalent is hidden too. Plain file WRITE is **kept** — writing
+    // through the IDE is what keeps its in-memory copy and the file on disk the
+    // same thing.
     for (const name of [
       'ide_git_status',
       'ide_execute_tool',
@@ -616,10 +619,14 @@ describe('plugin setup', () => {
       'ide_create_database_connection',
       'ide_execute_sql_query',
       'ide_search_text',
-      'ide_apply_patch',
     ]) {
       expect(request.tools).not.toHaveProperty(name);
     }
+
+    // Kept: writing through the IDE keeps the IDE's copy and the file on disk in
+    // step, which an out-of-process write does not.
+    expect(request.tools).toHaveProperty('ide_apply_patch');
+    expect(request.tools).toHaveProperty('ide_create_new_file');
 
     // Kept: it is the only way to read inside a jar or the jrt:// image.
     expect(request.tools).toHaveProperty('ide_read_file');
@@ -793,7 +800,8 @@ describe('plugin setup', () => {
     expect(enhanced.system[1].text).toContain('ide_list_running_configurations');
     expect(enhanced.system[1].text).toContain('ide_stop_run_configuration');
     expect(enhanced.system[1].text).toContain('ide_rerun_run_configuration');
-    expect(enhanced.system[1].text).toContain('不要用 `pkill`');
+    // 引导文本会被 IDE 的 Markdown 格式化器重排(长行折行),断言只关心内容。
+    expect(enhanced.system[1].text.replace(/\s+/g, ' ')).toContain('不要用 `pkill`');
 
     // The two variants are different texts, so the second request does not get
     // deduplicated against the first one's guidance.

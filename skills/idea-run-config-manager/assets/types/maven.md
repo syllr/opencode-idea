@@ -1,8 +1,8 @@
-# Maven(`MavenRunConfiguration`)
+# Maven (`MavenRunConfiguration`)
 
-**用途**:跑 Maven 目标(`clean package`、`test`、`spring-boot:run` …)。
+**用途**:跑 Maven 目标 (`clean package`、`test`、`spring-boot:run` …)。
 
-## 模板
+## XML 形状
 
 ```xml
 <component name="ProjectRunConfigurationManager">
@@ -55,7 +55,8 @@
 
 ## 坑
 
-- **嵌套层级别少**:`MavenSettings` → `myRunnerParameters` → `MavenRunnerParameters`,三层都在才认;空的 `<set />` / `<map />` / `<list />` **不要删**(实测文件里都有)。
-- `pomFileName` 只写**文件名**,不要写相对路径。
+- **嵌套层级别少**:`MavenSettings` → `myRunnerParameters` → `MavenRunnerParameters`,三层都在才认;空的 `<set />` /
+  `<map />` / `<list />` **不要删**(实测文件里都有)。
+- `pomFileName` 只写 **文件名**,不要写相对路径。
 - 多模块项目:要么 `pomFileName` 指子模块,要么用 `multimoduleDir` 指根 —— 二选一,别都填。
-- 跑测试类目标(`-Dtest=…`)时 `cmdOptions` 里带 `-D`,不要放进 `goals`。
+- 跑测试类目标 (`-Dtest=…`)时 `cmdOptions` 里带 `-D`,不要放进 `goals`。

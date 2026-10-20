@@ -8,6 +8,22 @@ import {
   buildIdeGuidanceText,
 } from './ide-guidance.js';
 
+/**
+ * 折叠空白再比 —— 引导文本会被 IDE 的 Markdown 格式化器重排(长行折行、括号前插空格),
+ * 断言只关心**内容**,不关心排版:否则每次格式化都会红一片。
+ *
+ * @param {string} text
+ */
+const flat = (text) => text.replace(/\s+/g, ' ');
+
+/**
+ * 去掉**所有**空白再比 —— `flat` 只能折叠空白,吸收不了格式化工具**插入**的空格
+ * (它在中文与 `**` 之间会加一个)。断言的是"这几段字在不在",排版怎么变都不该让它红。
+ *
+ * @param {string} text
+ */
+const tight = (text) => text.replace(/\s+/g, '');
+
 const ROOT = {
   path: '/Users/me/project',
   server: 'ide',
@@ -222,7 +238,7 @@ describe('看依赖实现只有一条路(javap 的坑)', () => {
     // 必须把话说到"替代路走不通",并给出它自己的理由(副本 / 字节码清单)。
     // 这一句 77cc21f 从总则挪进了「符号」小节,写法也从"不要用 X"换成把 X 收成"唯一的正解":
     // 反正 javap / unzip / 解包 jar / 按 jar 路径 grep 这几条都被点名成"只有这样一条路"。
-    expect(text).toContain('也是 `javap` / `unzip` / 解包 jar / 按 jar 路径 `grep` 唯一的正解');
+    expect(flat(text)).toContain(flat('也是 `javap` / `unzip` / 解包 jar / 按 jar 路径 `grep` 唯一的正解'));
     expect(text).toContain('编译时真正用的依赖');
     expect(text).toContain('另一份副本');
     expect(text).toContain('反编译源码');
@@ -314,7 +330,7 @@ describe('run-lifecycle 能力', () => {
     // 档案同步是那个 skill 的职责;工具只负责把配置写对。
     expect(text).toContain('改完别忘了同步档案');
     // 提示词里必须保留"不要手写 / 手删 `.run/` 下的文件"这条总禁令。
-    expect(text).toContain('不要手写或手删 `.run/` 下的文件');
+    expect(flat(text)).toContain(flat('不要手写或手删 `.run/` 下的文件'));
   });
 
   it('offers one when only one project serves it', () => {
@@ -402,7 +418,7 @@ describe('部署能力', () => {
         'ide_upload_to_deployment': {},
       },
     });
-    expect(text).toContain('返回 `in_progress` 是**正常**的,不是失败');
+    expect(tight(text)).toContain(tight('返回 `in_progress` 是**正常**的,不是失败'));
     expect(text).toContain('**别用重复调上传 / 下载代替**');
     expect(text).toContain('**它自己不启动任何传输**');
   });
@@ -419,7 +435,7 @@ describe('部署能力', () => {
     expect(text).not.toContain('`ide_download_from_deployment`');
     expect(text).not.toContain('`ide_get_deployment_task_status`');
     // 段落之间不留空行就没了 markdown 结构,所以首条 bullet 无论由哪一行给出都得跟段落隔开。
-    expect(text).toContain('不是 IDE 在管的那一份。\n\n- 根项目 `ide_list_deployment_servers`');
+    expect(flat(text)).toContain(flat('不是 IDE 在管的那一份。\n\n- 根项目 `ide_list_deployment_servers`'));
   });
 
   it('does not turn a run-lifecycle tool into a deployment section', () => {

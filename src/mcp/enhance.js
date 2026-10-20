@@ -77,17 +77,6 @@ export const UPLOAD_TO_DEPLOYMENT_SUFFIX = 'upload_to_deployment';
 export const DOWNLOAD_FROM_DEPLOYMENT_SUFFIX = 'download_from_deployment';
 export const GET_DEPLOYMENT_TASK_STATUS_SUFFIX = 'get_deployment_task_status';
 
-/**
- * The enhance plugin's **file edit** tool name, as a suffix — same contract and
- * same reason for suffixes as {@link RUN_LIFECYCLE_SUFFIXES}.
- *
- * Keep in sync with `FileEditSchemas.kt` in the enhance repository.
- *
- * It is a tool of its own (not part of the run-lifecycle or deployment groups)
- * because it serves a different purpose: writing a file **through the IDE**, so
- * the IDE's in-memory copy and the file on disk are never two different things.
- */
-export const EDIT_FILE_SUFFIX = 'edit_file';
 
 /** All of them: look at the servers, upload, download, then poll a transfer. */
 export const DEPLOYMENT_SUFFIXES = [

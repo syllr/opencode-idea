@@ -431,7 +431,7 @@ describe('shipped skills', () => {
     expect(template).toContain('**run**');
     expect(template).toContain('rerun');
     // Usually empty, and ordered steps when not.
-    expect(template).toContain('多数应用写 `无`');
+    expect(tight(template)).toContain(tight('多数应用写 `无`'));
     expect(template).toContain('按顺序写清第 1 步、第 2 步、第 3 步');
     // `after run` carries what the run leaves behind — for a resident app that is
     // mostly "which port it listens on" (its own column) and nothing else, so the
@@ -571,18 +571,18 @@ describe('shipped skills', () => {
     expect(content).not.toContain('alwaysApply');
   });
 
-  it('sends a missing configuration to the manager skill, never to hand-written XML', () => {
-    // The missing configuration is not the model's to author, and the handoff is
-    // not a bare "ask the user" either: it names the one skill that owns
-    // create/delete/edit for run configurations, which the user invokes.
+  it('builds a missing configuration through the tool, after asking, never by hand', () => {
+    // A missing configuration is not the model's to author silently: it asks the
+    // user first (a run configuration is a durable project artefact), then builds
+    // it through the tool — never by writing the file itself.
     const content = readSkill('idea-standalone').content;
-    expect(content).toContain('**交给用户**');
-    expect(content).toContain('`idea-run-config-manager` skill');
+    expect(tight(content)).toContain(tight('先问用户要不要建'));
+    expect(tight(content)).toContain(tight('create_run_configuration'));
     expect(tight(content)).toContain(tight('不要自己写 `.run/*.run.xml`'));
 
     // The block written into a project's AGENTS.md routes the same way, so the
     // rule survives into the file an AI reads on its own next time.
-    expect(readTemplate()).toContain('`idea-run-config-manager` skill');
+    expect(tight(readTemplate())).toContain(tight('create_run_configuration'));
   });
 
   it('ships the skeleton as a template the skill must read first', () => {

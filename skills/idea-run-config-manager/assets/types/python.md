@@ -2,7 +2,7 @@
 
 **用途**:跑一个 Python 脚本 (通常是服务入口)。 **这个类型来自 Python 插件**(PyCharm 一定有,IDEA 装了 Python 插件也有)。
 
-## 模板
+## XML 形状
 
 ```xml
 
