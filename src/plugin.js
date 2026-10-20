@@ -151,16 +151,18 @@ const PLUGIN_TOOL_NAMES = new Set(['configure_ide_project']);
  *   it is the only way to read a file inside a jar (`<jar>!/<entry>`) or the
  *   JDK's `jrt://` image, so the guidance keeps it for exactly that and sends
  *   ordinary reads to the native tool.
- * - Plain file **write**: `apply_patch` / `create_new_file` are **kept**, and
- *   they are the ones the guidance sends writes to. The native `write` / `edit`
- *   write from **outside** the IDE, and the IDE keeps an in-memory copy of every
- *   file it has open — that copy is only re-read when the VFS refreshes, so
- *   between the write and the refresh the IDE still sees the OLD text. Measured
- *   against a real IDE: after an external write, `read_file` still returned the
- *   old content; after `apply_patch` it returned the new one immediately. That
- *   gap is not cosmetic — `reformat_file` formats the in-memory copy and
- *   **writes it back**, silently discarding whatever was just written. Writing
- *   through the IDE (`apply_patch`) keeps the two copies the same thing.
+ * - Plain file **write**: `apply_patch` / `create_new_file` are **hidden** too.
+ *   Writes go through the native `write` / `edit`: they are simpler, and the
+ *   IDE's patch tool is brittle in a way that costs real time — it matches hunks
+ *   by exact context text, so a quote or a corner bracket normalised somewhere
+ *   on the way in fails the whole hunk (`Hunk context not found`).
+ *   Measured against a real IDE, the stale-copy concern does not justify keeping
+ *   them: `reformat_file` re-reads from disk (append / delete / edit all survived
+ *   it), and `apply_patch` is not what made the in-memory copy fresh — only
+ *   `ide_read_file` lags behind an external write, and the guidance tells the
+ *   model to read ordinary files with the native `read` anyway.
+ *   `rename_refactoring` and `reformat_file` stay: both are capabilities the
+ *   native tools do not have.
  * - IDE terminal: `execute_terminal_command` does NOT inherit the project's
  *   environment. It was exposed on the assumption that it ran with the SDKs the
  *   user configured in the IDE (JDK, Node, Python, ...), but measured against a
@@ -232,11 +234,12 @@ export const HIDDEN_IDE_TOOL_SUFFIXES = [
     'search_text',
     'search_regex',
     'search_file',
-    // The companion plugin's own write tool. The IDE's built-in `apply_patch` /
-    // `create_new_file` already cover writing through the IDE, so this one is
-    // hidden: two tools for the same job is a worse answer than one. The plugin
-    // has dropped it as well — this line only hides the copies still served by
-    // the plugin version installed before that.
+    // File WRITE: the native `write` / `edit` do the job, and the IDE's patch
+    // tool matches hunks by exact context text (a normalised quote fails the
+    // hunk). `edit_file` is the companion plugin's own writer, dropped by the
+    // plugin itself — hiding it only covers the older installed copies.
+    'apply_patch',
+    'create_new_file',
     'edit_file',
 ];
 

@@ -55,7 +55,7 @@ function ideConfig(rootPath, { app = 'idea', children = [] } = {}) {
  * serves. Tests that need the companion plugin's extra tools extend this, so the
  * difference between "stock IDE" and "enhanced IDE" stays explicit.
  */
-const DEFAULT_IDE_TOOLS = ['ide_read_file', 'ide_apply_patch', 'ide_create_new_file'];
+const DEFAULT_IDE_TOOLS = ['ide_read_file'];
 
 /**
  * 部署那节的标题（模板里的字面量）。整节连标题一起受 `{{#if}}` 控制，所以
@@ -623,10 +623,12 @@ describe('plugin setup', () => {
       expect(request.tools).not.toHaveProperty(name);
     }
 
-    // Kept: writing through the IDE keeps the IDE's copy and the file on disk in
-    // step, which an out-of-process write does not.
-    expect(request.tools).toHaveProperty('ide_apply_patch');
-    expect(request.tools).toHaveProperty('ide_create_new_file');
+    // Hidden: file WRITE goes through the native `write` / `edit`. The IDE's
+    // patch tool matches hunks by exact context text, so a normalised quote
+    // fails the hunk; `reformat_file` re-reads from disk, so the stale-copy
+    // argument that used to keep them visible does not hold.
+    expect(request.tools).not.toHaveProperty('ide_apply_patch');
+    expect(request.tools).not.toHaveProperty('ide_create_new_file');
 
     // Kept: it is the only way to read inside a jar or the jrt:// image.
     expect(request.tools).toHaveProperty('ide_read_file');
@@ -942,7 +944,7 @@ describe('plugin setup', () => {
     state.tools = [];
 
     const event = {
-      tool: 'ide_apply_patch',
+      tool: 'ide_read_file',
       sessionID: 's1',
       status: 'error',
       error: { message: 'MCP server "ide" is not available' },
@@ -1003,7 +1005,7 @@ describe('plugin setup', () => {
     // The server still reports connected, so a failed call is a business error
     // (e.g. a bad path), not a dropped connection: leave it untouched.
     const event = {
-      tool: 'ide_apply_patch',
+      tool: 'ide_read_file',
       sessionID: 's1',
       status: 'error',
       error: { message: 'File not found: src/missing.kt' },

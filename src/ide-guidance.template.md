@@ -23,8 +23,14 @@
   也不要用 Code Mode 的 `search` 去找 (它们不在那份目录里,搜不到)。
 - **只有 IDE 才有的能力才用它们**:符号级检索、项目模型、检查与构建、重构与格式化、run configuration。
 - **读与搜索用原生工具**(`read` / `grep` / `glob`):不要为读一个文件、搜一段文本去绕 IDE 工具。
-- **改项目代码用 IDE 的编辑命令**(`<前缀>_apply_patch`,新建文件用 `<前缀>_create_new_file`),不要用原生 `write` / `edit` ——
-  那两个在进程外写,IDE 手里可能还是旧内容,紧接着的 IDE 侧工具会基于旧代码干活。项目目录之外的文件才用原生那两个。
+- **改文件一律用原生 `write` / `edit`** —— 不受补丁上下文匹配的限制(IDE 那个补丁工具按上下文精确匹配,标点被规范化就
+  整块对不上,已经收起不用)。IDE 侧的写操作只留 **重构**与**格式化**两件事。
+- **`reformat_file` 会从磁盘重读**,外部写完直接格式化是安全的(实测:新增 / 删除 / 改文本都不会被冲掉)。
+  **真正会丢内容的是编辑器里那份脏 buffer** —— 用户正在改的文件不要跑 formatter。
+- **`ide_read_file` 可能读到旧快照**:外部写完立刻读,看到的是改之前的内容;要它跟上就跑一次 `<前缀>_get_file_problems`。
+  普通文件本来就用原生 `read`,不受这条影响。
+- **文档类文件 (Markdown / 文档) 改完之后,用 `<前缀>_reformat_file` 过一遍** —— 表格对齐、换行宽度、缩进都交给 IDE
+  统一,别手搓空格。
 - **改完代码自己先查一遍**:用 `lint_files` / `build_project`,怎么挑见下面「校验」。
 - 某条功能下面没有你正要操作的那个项目的命令,就是那个项目没接上:提示用户执行 `/open-in-ide`,不要重试,也不要去别处找。
 
@@ -79,13 +85,8 @@
 - {{cmd_get_all_open_file_paths}} **用户在 IDE 里打开了哪些文件**(含当前激活的那个)。
 - {{cmd_open_file_in_editor}} **把文件在 IDE 里打开并激活**,给用户看。
 
-### 改代码 (编辑 · 重构 · 校验)
+### 改代码 (重构 · 格式化 · 校验)
 
-- {{cmd_apply_patch}} **走 IDE 改文件**:`input` 传补丁 (两种格式都行 —— Codex 的 `*** Begin Patch` /
-  `*** Update File: <路径>` / `@@` / `*** End Patch`,或 unified git diff)。一个补丁里可混着 **Add / Update / Delete**
-  多个操作,`Update` 还能带 `*** Move to: <新路径>` 改名; **按上下文匹配**,`@@` 不用写行号。返回
-  `N out of M operations applied`,对不上的 hunk 会报 `Hunk context not found`。路径必须在项目内。
-- {{cmd_create_new_file}} **新建文件**:`pathInProject` + `text`;父目录自动建,`overwrite` 默认关 (文件已存在会报错)。
 - {{cmd_rename_refactoring}} **按符号改名**,项目内的引用一并更新。
 - {{cmd_reformat_file}} **按 IDE 的代码风格重排**。
 - {{cmd_lint_files}} **批量检查**:`files` 传数组;只列有问题的文件。

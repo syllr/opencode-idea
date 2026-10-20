@@ -169,9 +169,11 @@ IDE MCP 可用时,插件通过 **系统提示注入**告诉模型 **哪些事该
           `ide_download_from_deployment` / `ide_get_deployment_task_status`
     - **读、找文本、找文件用原生工具**(`read` / `grep` / `glob`)—— 这几件事走 IDE 只是多一跳,
       所以映射表里 **不出现** `ide_search_text` / `ide_search_regex` / `ide_search_file`,也不再禁止它们的原生对应物。
-    - **写文件反过来走 IDE**(`ide_apply_patch` / `ide_create_new_file`):原生 `write` / `edit` 是 **进程外**写,
-      IDE 对编辑器里开着的文件留着一份内存副本,要等 VFS 刷新才重读 —— 这期间 IDE 侧工具读到的是旧内容,
-      `reformat_file` 还会把旧副本存回磁盘把刚写的代码冲掉。走 IDE 写,内存与磁盘才是同一份。
+    - **写文件一律用原生 `write` / `edit`**:IDE 的 `apply_patch` / `create_new_file` 已收起 —— 补丁工具按上下文精确匹配,
+      标点被规范化就整块对不上(`Hunk context not found`),而原生写没有这层限制。IDE 侧只留 **重构**与**格式化**。
+      **`ide_reformat_file` 会从磁盘重读**,所以外部写完直接格式化是安全的(实测:新增 / 删除 / 改文本都不会被旧副本
+      冲掉);会丢内容的只有 **用户在编辑器里正改着的那份脏 buffer**,别对它跑 formatter。
+      **读**是另一回事:`ide_read_file` 可能给出旧快照,要它跟上得先跑一次 `ide_get_file_problems`。
     - **唯一例外是 `ide_read_file`**:它是读 **包内文件**的唯一手段 (`<jar>!/<entry>` 的依赖 jar 内文件、`jrt://` 的
       JDK 镜像),引导只在这个用途上点名它,并写明普通文件一律用 `read`。
 
@@ -429,9 +431,8 @@ loader 读的是 OpenCode 文档里的那个嵌套写法 (它自己的读取器�
 `ShConfigurationType`
 (`<option>` 子元素)、`NodeJSConfigurationType`(全属性)三种写法并存,套错就是静默失效。
 
-**先过滤,再建档**:**服务化的配置不进这个块** —— 它们已经登记在 `AGENTS.md` 的 `idea-standalone` 块里 (端口 /
-热重载也写在那里),
-所以建档第一步是读那个块、把它登记过的名字记下来并排除, **剩下的**才是本块内容。
+**先过滤,再建档**:**服务化 / 常驻应用的配置一律不进这个块**(它们归 `idea-standalone`,端口与热重载写在那边的块里);
+有那个块时,再把它登记过的名字一并排除 —— **剩下的**才是本块内容。
 
 这个档案块 **以带前缀的工具为准**,不围绕 IDE 界面说话:各项目各有自己的前缀 (root 是 `ide`,子项目是它的目录名),枚举与执行都用
 **它自己那个前缀**的
@@ -442,20 +443,14 @@ loader 读的是 OpenCode 文档里的那个嵌套写法 (它自己的读取器�
 删除 / 修改**
 (无论谁做的:工具建的、用户自己建的、用户删掉的)都要在文档里同步 **加条目 / 删条目 / 改条目**,否则它就开始骗人。
 
-**别的文档都指向这里**:引导文本与 `idea-standalone` skill 碰到"要建 / 删 / 改一个配置",不再让用户自己去 IDE 里摸,而是让用户调本
-skill ——
-增 / 删 / 改的流程入口只有这一个,而它只由用户触发。
+**别的文档都指向这里**:引导文本碰到"要建 / 删 / 改一个配置",不再让模型现编流程,而是让它加载本 skill ——
+增 / 删 / 改的流程与档案规则只有这一处。
 
-**它绕着"新建配置"这件事写**(新建只有配套插件 `idea-mcp-enhance` 能做),但 **这不影响它出不出现** —— 两个 skill
-都在插件加载时注册,
-不缺任何工具也照样在列表里;缺工具时由正文把流程交回用户 (`idea-standalone` 只要 `rerun_run_configuration`,门更松)
-。这是刻意的:
-一个只教模型"去建配置"、却没给建配置工具的 skill,只会把用户拖进一次注定失败的调用。
+**两个 skill 都是模型可自取的**(frontmatter 不带 `metadata: opencode/autoinvoke: false`):模型判断到场景就加载。
+「该不该建」的判断留在引导文本里(它每次请求都在),skill 负责动手时的流程与写法。
 
-**而且只能用户调**:它的 frontmatter 带 `metadata: opencode/autoinvoke: false`,loader 翻成定义的 `autoinvoke: false` ——
-skill 照常注册,但 **不进模型的可选列表**,模型不会自己挑上它,只有用户显式指定 (`@idea-run-config-manager`)才会加载。
-理由是它 **直接动手改项目文件与项目资产**:运行配置与 `AGENTS.md` 都由用户自己按这个 skill 的流程来改,模型不主动挑上它。
-「该不该建」的时机判断仍在引导文本的判据里 (那是模型该管的事), **动手权**留给人。
+**它绕着"新建配置"这件事写**,但不影响它出不出现 —— 两个 skill 都在插件加载时注册,缺工具时由正文把流程交回用户
+(`idea-standalone` 只要 `rerun_run_configuration`,门更松)。
 
 ## Deployment 全套 (配套插件 `idea-mcp-enhance`)
 
@@ -667,19 +662,19 @@ export { default } from "/Users/yutao/Projects/opencode-idea/src/index.js";
   不存在 —— 用错会让 `ctx.skill.transform` 抛 `SchemaError`,而 **任何 transform 失败都会禁用整个插件**(0.0.6 就是这样丢了
   `/open-in-ide`)。同理,`Skill.Info` 的完整字段是 `id` / `name` / `description?` / `autoinvoke?` / `path` / `content`。
 - 需要项目环境的命令走 `ide_execute_run_configuration`(run configuration 要先在 IDEA 里配好),不用原生 shell。
-- 一批用不到的 IDE MCP 工具被硬编码隐藏 (`src/plugin.js` 的 `HIDDEN_IDE_TOOL_SUFFIXES`, **共 47 个后缀**):
+- 一批用不到的 IDE MCP 工具被硬编码隐藏 (`src/plugin.js` 的 `HIDDEN_IDE_TOOL_SUFFIXES`, **共 49 个后缀**):
   VCS (`git_status` / `get_repositories`,版本控制走原生 `git`)、Router 派发工具 (`execute_tool`,未启用 router-only
   时冗余)、
   Debugger (全部 `xdebug_*`)、Dev Kit MCP、Inspection KTS MCP、解释器环境 MCP、 **IDE 内置终端 (`execute_terminal_command`:
   实测不继承项目环境,对原生 shell 没有优势)**、 **整个 Database 组**(数据源由用户在
-  IDE 里配置,而 IDE 也不是本插件设想的数据库客户端),以及 **有原生对应的文件搜索**
-  (`search_text` / `search_regex` / `search_file` 分别对应 `grep` / `grep -E` / `glob`)。 **文件"写"(`apply_patch` /
-  `create_new_file`)刻意不隐藏** —— 走 IDE 写才有"内存与磁盘是同一份"这件事 (见上面
-  「写文件反过来走 IDE」);配套插件自带的那个写文件工具则隐藏,同一个活儿不摆两个工具。
+  IDE 里配置,而 IDE 也不是本插件设想的数据库客户端)、 **有原生对应的文件搜索**
+  (`search_text` / `search_regex` / `search_file` 分别对应 `grep` / `grep -E` / `glob`),以及 **文件写**
+  (`apply_patch` / `create_new_file`:原生 `write` / `edit` 就够,补丁工具的上下文精确匹配反而脆 —— 见上面
+  「写文件一律用原生」)。配套插件自带的那个写文件工具同样隐藏。
 
   存的是 **后缀**,清洗时按当前每个项目前缀 **各删一遍** —— 只处理 `ide_` 会让子项目那几份原样送到模型面前。
-  实测数字 (拿运行中的 IDE MCP 拉 `tools/list`,单个项目):IDE 暴露 **76** 个 → 隐藏 47 → **模型可见 29 个**,
-  而且这 29 个 **恰好等于引导里点名的 29 个** —— 没有"能看见但没人告诉它用途"的残留。多项目就是 N × 29:
+  实测数字 (拿运行中的 IDE MCP 拉 `tools/list`,单个项目):IDE 暴露 **76** 个 → 隐藏 49 → **模型可见 27 个**,
+  而且这 27 个 **恰好等于引导里点名的 27 个** —— 没有"能看见但没人告诉它用途"的残留。多项目就是 N × 29:
   暴露面完全由插件决定,不需要 OpenCode 提供任何白名单能力,也不需要惰性注册。
 
 - **部署工具只在 Ultimate 上出现**:`ide_list_deployment_servers` / `ide_upload_to_deployment` /
