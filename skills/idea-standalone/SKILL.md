@@ -49,7 +49,6 @@ description: "为项目生成/维护 standalone(启动收口只有 IDEA run conf
    只替换标记内内容、不动标记外 —— 尤其 **不要触碰**其他 skill 的标记块 (例如 `project-scaffold`)。
 4. **更新**(已有标记块):只替换 `<!-- idea-standalone:begin -->` 与 `<!-- idea-standalone:end -->` 之间的内容,块外一字不动。
 5. 改文件用 **IDE 的编辑命令** `<前缀>_apply_patch`(新建用 `<前缀>_create_new_file`),不要用原生 `write` / `edit`。
-   **不要整文件重写**。
-   **平台 / 环境变体不另起条目、也不另起表** —— 一张应用表,`run configuration` 列填 base;有哪些变体写进那一行的
+   **不要整文件重写**。 **平台 / 环境变体不另起条目** —— 一个应用一条,`run configuration` 填 base;有哪些变体写进那一条的
    `desc`。
 6. 复读并核对:标记块内逐段与模板一致,块外内容与改动前逐字一致,报告产物清单。

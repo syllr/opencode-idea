@@ -109,8 +109,8 @@ base 段 (配置本体)、env 段 (环境名,缺省 = 所有环境通用这一�
 本块的 **主要价值**就在 **desc** 与 **before run**:下次要办同类事情先在这里搜关键词,找得到就直接用,
 **不要再建一个重复的**。 **目录、端口这类"配置里本来就有"的字段不要抄进来** —— 它们会跟配置变旧而对不上;确实要交代依赖关系,就写进
 `desc` 或 `before run`。 **五项的名字与顺序不要改**(`when` / `before run` / `run` / `after run` / `desc`),并且 **与
-`idea-standalone` 应用表的列同名同序**(`before run` / `run` / `after run` / `desc` 这四项两边一致);本块多 `when`,那边多
-`app` / `run configuration` / `port`(服务化应用就是"改完代码要起它来测"的时候起,没有别的时机可写)。 **五项始终都在**:
+`idea-standalone` 那个块的项名同名同序**(`before run` / `run` / `after run` / `desc` 这四项两边一致);本块多 `when`,那边多
+`port` 与 `热重载`(服务化应用就是"改完代码要起它来测"的时候起,没有别的时机可写)。 **五项始终都在**:
 `before run` / `after run` 真没有内容就写 **`无`** —— 不省略,也不写 `-` / `N/A`。
 <!-- 生成提示:end -->
 

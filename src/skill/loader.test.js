@@ -346,7 +346,7 @@ describe('shipped skills', () => {
     expect(template).toContain('先过滤');
     expect(template).toContain('这些一律不进本块');
     expect(template).toContain('`idea-standalone` 的标记块');
-    // The app table (ports, hot reload) stays over there, and stays a table.
+    // 应用条目(端口、热重载)留在那边,本块不重复登记。
     expect(template).not.toContain('| 应用 | run configuration | 怎么跑 | 端口 |');
 
     // Configurations are addressed through the prefixed MCP tools, so the block
@@ -423,14 +423,12 @@ describe('shipped skills', () => {
     }
   });
 
-  it('gives every config table a how-to-run and a before-it column', () => {
+  it('gives every app entry a how-to-run and a before-it item', () => {
     // Some configurations assume something was done first (deps installed, built,
     // a dependency service up). That something is usually not itself a run
-    // configuration, so the only place to say it is prose in this column.
+    // configuration, so the only place to say it is prose in this item.
     const template = readTemplate();
-    expect(tight(template)).toContain(
-      tight('| app | run configuration | before run | run | port | after run | desc |'),
-    );
+    expect(tight(template)).toContain(tight('- {应用名}(项目 {前缀},{base 名})'));
     expect(template).toContain('**before run**');
     // A service is run, not just named: how it is run belongs in the table too,
     // or the reader has to go looking for the rule somewhere else.
@@ -438,83 +436,51 @@ describe('shipped skills', () => {
     expect(template).toContain('rerun');
     // Usually empty, and ordered steps when not.
     expect(tight(template)).toContain(tight('多数应用写 `无`'));
-    expect(template).toContain('按顺序写清第 1 步、第 2 步、第 3 步');
+    expect(tight(template)).toContain(tight('一条一步、按顺序排'));
     // `after run` carries what the run leaves behind — for a resident app that is
     // mostly "which port it listens on" (its own column) and nothing else, so the
     // rule says most rows leave it empty.
     expect(template).toContain('**after run**');
     expect(tight(template)).toContain(tight('多数写 `无`'));
-    // No "when" column here: a resident app is started when you want to test a
+    // No "when" item here: a resident app is started when you want to test a
     // change, so there is no other moment to name. (The archive keeps one — a
     // build or a migration does happen at a particular time.)
-    expect(template).not.toContain('| when |');
+    expect(template).not.toContain('when:');
+    // port 是本块独有的项(服务化应用一定有端口)。
+    expect(tight(template)).toContain(tight('- port:{固定 / 默认 / 被占用即启动失败}'));
   });
 
-  it('shares four item names with the app table', () => {
+  it('shares four item names with the archive block', () => {
     // Both blocks end up in the same shared `AGENTS.md` and answer the same core
-    // questions, so they use the same short keys — `run` / `before run` /
-    // `after run` / `desc`. Each block adds only what it alone has: the app table
-    // `app` / `run configuration` / `port`, the archive `when` (a resident app is
-    // started when you want to test a change, so there is no other moment to name).
-    // The SHAPES still differ on purpose — the app table stays a table, the manager
-    // block is a list of entries — so this is name/order equality, not width.
-    const rowOf = (text, startsWith) =>
-      text.split('\n').find((line) => line.startsWith(startsWith));
-    const cellsOf = (row) => row.split('|').slice(1, -1).map((cell) => cell.trim());
-    /** 条目项的项名（`  - before run:…` 的那一段）。 */
+    // questions, so they use the same short keys — `before run` / `run` /
+    // `after run` / `desc`. Each block adds only what it alone has: 应用块多
+    // `app` 与 `port`,档案块多 `when`(服务化应用就是"改完代码要起它来测"的时候起)。
+    const standaloneText = readTemplate();
+    const appSection = standaloneText.slice(standaloneText.indexOf('### 应用'));
+    /** 条目项的项名（`    - before run:…` 的那一段）。 */
     const itemNames = (text) =>
       text
         .split('\n')
-        .filter((line) => /^ {2}- [^:]+:/.test(line))
-        .map((line) => line.slice(4, line.indexOf(':')));
+        .filter((line) => /^\s+- [^:]+:/.test(line))
+        .map((line) => line.trim().slice(2, line.trim().indexOf(':')));
 
-    const standalone = cellsOf(
-      readTemplate()
-        .split('\n')
-        .find((line) => line.trim().startsWith('|') && cellsOf(line)[0] === 'app'),
-    );
-    expect(standalone[0]).toBe('app');
-    // A service has a port; a fixed flow is not a service and has no such field.
-    expect(standalone).toContain('port');
-    expect(standalone).not.toContain('when');
+    const standaloneFields = itemNames(appSection);
+    expect(standaloneFields).toEqual(['before run', 'run', 'port', '热重载', 'after run', 'desc']);
 
     const manager = managerTemplate();
     const managerFields = managerItemNames();
     expect(managerFields).toEqual(['when', 'before run', 'run', 'after run', 'desc']);
     expect(managerFields).not.toContain('port');
 
-    // The four shared names appear in both, in the same relative order — the app
-    // table's own columns may sit between them, which is why only these four line up.
+    // 四项同名同序 —— 两个块靠这四项对得上。
     const shared = ['before run', 'run', 'after run', 'desc'];
-    const positions = shared.map((name) => standalone.indexOf(name));
-    expect(positions).not.toContain(-1);
-    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    expect(standaloneFields.filter((name) => shared.includes(name))).toEqual(shared);
     expect(managerFields.filter((name) => shared.includes(name))).toEqual(shared);
 
     // Both templates say the same thing about the contract, so neither can drift
     // into "these blocks are unrelated" unnoticed.
-    for (const text of [manager, readTemplate()]) {
+    for (const text of [manager, standaloneText]) {
       expect(text).toContain('同名同序');
-    }
-
-    // Widths follow one convention inside that block (a CJK glyph is two wide,
-    // ASCII is one), so a separator cell always has exactly as many dashes as its
-    // header is wide. That is what keeps its two tables looking like one family
-    // without padding, and it is why an editor that normalises spaces cannot break
-    // the alignment.
-    const displayWidth = (text) =>
-      [...text].reduce((width, ch) => width + (/[⺀-￯]/.test(ch) ? 2 : 1), 0);
-    // 表头行按**首格**认,不按整行字面 —— 列宽会随内容变,行首不再恰好是 '| app |'。
-    const tablesOf = (text, firstCell) =>
-      text
-        .split('\n')
-        .map((line, index, lines) => [line, lines[index + 1]])
-        .filter(([line]) => line.trim().startsWith('|') && cellsOf(line)[0] === firstCell)
-        .map(([line, separator]) => [cellsOf(line), cellsOf(separator)]);
-    const tables = tablesOf(readTemplate(), 'app');
-    expect(tables.length, '应用表的表头后面没有分隔行').toBeGreaterThan(0);
-    for (const [header, separator] of tables) {
-      expect(separator.map((cell) => cell.length)).toEqual(header.map(displayWidth));
     }
   });
 
@@ -524,20 +490,21 @@ describe('shipped skills', () => {
     // 十几行,而它们其实是同一件事。
     const template = readTemplate();
     expect(squash(template)).toContain(squash('[os@]base[@env]'));
-    expect(squash(template)).toContain(squash('表里只登记 base'));
+    expect(squash(template)).toContain(squash('这里只登记 base'));
     // 名字怎么读、变种怎么选,各占一节,且**排在表前面** —— 规则先讲清楚,表才有意义。
-    expect(template).toContain('### run configuration 名字怎么读');
+    expect(template).toContain('### 怎么读配置名');
     expect(template).toContain('### 应用');
     expect(template).toContain('### 怎么选变体');
-    expect(template.indexOf('### run configuration 名字怎么读')).toBeLessThan(template.indexOf('### 应用'));
+    expect(template.indexOf('### 怎么读配置名')).toBeLessThan(template.indexOf('### 应用'));
     // 缺省:没有系统段 = macOS / Linux;没有环境段 = 所有环境通用这一套。
     expect(squash(template)).toContain(squash('缺省表示'));
     // 选变种的纪律:问一次就够,别反复打扰用户。
     expect(squash(template)).toContain(squash('启动前问一次用户走哪套'));
     expect(squash(template)).toContain(squash('本会话内默认走这一套'));
-    // Exactly one app table now — the variants are not rows of their own.
-    const header = '| app | run configuration | before run | run | port | after run | desc |';
-    expect(tight(template).split(tight(header))).toHaveLength(2);
+    // 产物里一个应用一条(变体不另起条目)—— 生成提示里的示例不算。
+    const productOnly = template.replace(/<!-- 生成提示:begin -->[\s\S]*?<!-- 生成提示:end -->/g, '');
+    expect(tight(productOnly)).toContain(tight('- {应用名}(项目 {前缀},{base 名})'));
+    expect(productOnly).not.toContain('- `console`(项目 ide,`console-web`)');
 
     // Same on the other side — a section instead of a table, and the entries are
     // base entries.
@@ -614,10 +581,9 @@ describe('shipped skills', () => {
       '# Standalone 模式纪律',
       '## 一、什么是 standalone 模式',
       '## 二、standalone 下启动哪些应用(必须经 IDEA run configuration)',
-      '### run configuration 名字怎么读',
+      '### 怎么读配置名',
+      '### 怎么选变体',
       '### 应用',
-      '### 怎么选变体(启动前必须做对)',
-      '## 三、热重载矩阵:改代码后要不要提醒重启',
     ].map((heading) => heading.replace(/\s+/g, '')));
 
     // Per-section guidance lives in the template, not in the skill.
