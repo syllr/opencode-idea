@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  ROOT_SERVER_NAME,
   IDE_PORTS,
+  ROOT_SERVER_NAME,
   listProjects,
   markKeyFor,
   parseIdeArgument,
@@ -28,32 +28,29 @@ function sampleConfig() {
   };
 }
 
-describe('markKeyFor', () => {
-  it('keys the mark by the root path', () => {
+describe('常量', () => {
+  it('keys the mark by the root path, and pins one fixed port per IDE', () => {
     expect(markKeyFor(ROOT)).toBe(`project/${ROOT}`);
-  });
-});
-
-describe('IDE_PORTS', () => {
-  it('pins one fixed port per IDE', () => {
-    // 端口是产品常量:IDEA 的内置 MCP 在 64342,PyCharm 在 64462。它们不随版本或项目
-    // 变化,所以插件不把它开放给用户配置(测试会把它们指到假端口,见 tests/plugin.test.js)。
+    // 端口是产品常量:IDEA 的内置 MCP 在 64342,PyCharm 在 64462。它们不随版本或项目变化,
+    // 所以插件不把它开放给用户配置(测试会把它们指到假端口,见 tests/plugin.test.js)。
     expect(IDE_PORTS).toEqual({ idea: 64342, pycharm: 64462 });
   });
 });
 
 describe('parseMark', () => {
+  it('round-trips through serializeMark', () => {
+    const config = sampleConfig();
+    expect(parseMark(serializeMark(config), ROOT)).toEqual(config);
+  });
+
   it('reads the legacy boolean as a v1 root-only config', () => {
     expect(parseMark(true, ROOT)).toEqual({ root: { path: ROOT, app: 'idea' }, children: [] });
   });
 
   it('returns undefined for anything that is not a config', () => {
-    expect(parseMark(undefined, ROOT)).toBeUndefined();
-    expect(parseMark(null, ROOT)).toBeUndefined();
-    expect(parseMark(false, ROOT)).toBeUndefined();
-    expect(parseMark('idea', ROOT)).toBeUndefined();
-    expect(parseMark({}, ROOT)).toBeUndefined();
-    expect(parseMark({ root: { path: ROOT } }, ROOT)).toBeUndefined();
+    for (const value of [undefined, null, false, 'idea', {}, { root: { path: ROOT } }]) {
+      expect(parseMark(value, ROOT)).toBeUndefined();
+    }
   });
 
   it('drops malformed children instead of failing the whole config', () => {
@@ -70,34 +67,21 @@ describe('parseMark', () => {
       children: [{ path: `${ROOT}/ok`, app: 'idea' }],
     });
   });
-
-  it('round-trips through serializeMark', () => {
-    const config = sampleConfig();
-    expect(parseMark(serializeMark(config), ROOT)).toEqual(config);
-  });
 });
 
-describe('serverNameFor', () => {
-  it('names the root `ide` regardless of which IDE opens it', () => {
+describe('项目与前缀', () => {
+  it('names the root `ide` and each child after its directory', () => {
     expect(serverNameFor(ROOT, ROOT)).toBe(ROOT_SERVER_NAME);
-  });
-
-  it('names a child after its directory', () => {
     expect(serverNameFor(`${ROOT}/modelserver`, ROOT)).toBe('modelserver');
     expect(serverNameFor(`${ROOT}/frontend/admin`, ROOT)).toBe('admin');
   });
-});
 
-describe('listProjects / toolPrefixes', () => {
-  it('lists the root first, then children in registration order', () => {
+  it('lists the root first, then children in registration order, with their prefixes', () => {
     expect(listProjects(sampleConfig())).toEqual([
       { path: ROOT, app: 'idea', server: 'ide', isRoot: true },
       { path: `${ROOT}/modelserver`, app: 'pycharm', server: 'modelserver', isRoot: false },
       { path: `${ROOT}/frontend/admin`, app: 'idea', server: 'admin', isRoot: false },
     ]);
-  });
-
-  it('derives the tool prefixes', () => {
     expect(toolPrefixes(sampleConfig())).toEqual(['ide_', 'modelserver_', 'admin_']);
   });
 });
@@ -107,36 +91,35 @@ describe('validateSubproject', () => {
     expect(validateSubproject(sampleConfig(), `${ROOT}/sync`)).toEqual({ ok: true });
   });
 
-  it('rejects a path outside the root', () => {
-    const verdict = validateSubproject(sampleConfig(), '/w/elsewhere/modelserver');
-    expect(verdict).toMatchObject({ ok: false, code: 'outside-root' });
+  it('rejects every bad path, each with its own reason', () => {
+    // 一条一条列出来,是为了让"为什么拒"看得见 —— 这些码是给用户看的。
+    const cases = [
+      ['a path outside the root', '/w/elsewhere/modelserver', 'outside-root'],
+      ['the reserved root prefix', `${ROOT}/ide`, 'reserved'],
+      ['a directory that is already registered', `${ROOT}/modelserver`, 'already-registered'],
+      ['two children that would share one prefix', `${ROOT}/refs/modelserver`, 'duplicate-prefix'],
+    ];
+    for (const [label, path, code] of cases) {
+      expect(validateSubproject(sampleConfig(), path), label).toMatchObject({ ok: false, code });
+    }
   });
 
-  it.each([
-    ['uppercase', 'ModelServer'],
-    ['a dot', 'modelserver.v2'],
-    ['a space', 'model server'],
-    ['non-ascii', '模型服务'],
-    ['a leading dash', '-modelserver'],
-    ['too long', 'a'.repeat(49)],
-  ])('rejects a directory name with %s', (_label, name) => {
-    const verdict = validateSubproject(sampleConfig(), `${ROOT}/${name}`);
-    expect(verdict).toMatchObject({ ok: false, code: 'invalid-name' });
-  });
-
-  it('rejects the reserved root prefix', () => {
-    const verdict = validateSubproject(sampleConfig(), `${ROOT}/ide`);
-    expect(verdict).toMatchObject({ ok: false, code: 'reserved' });
-  });
-
-  it('rejects a directory that is already registered', () => {
-    const verdict = validateSubproject(sampleConfig(), `${ROOT}/modelserver`);
-    expect(verdict).toMatchObject({ ok: false, code: 'already-registered' });
-  });
-
-  it('rejects two children that would share one prefix', () => {
-    const verdict = validateSubproject(sampleConfig(), `${ROOT}/refs/modelserver`);
-    expect(verdict).toMatchObject({ ok: false, code: 'duplicate-prefix' });
+  it('rejects every directory name that would not survive the prefix rule', () => {
+    // 目录名就是工具前缀,所以不给猜的余地:不合规的一律拒绝,由用户改。
+    const names = [
+      'ModelServer',
+      'modelserver.v2',
+      'model server',
+      '模型服务',
+      '-modelserver',
+      'a'.repeat(49),
+    ];
+    for (const name of names) {
+      expect(validateSubproject(sampleConfig(), `${ROOT}/${name}`), name).toMatchObject({
+        ok: false,
+        code: 'invalid-name',
+      });
+    }
   });
 });
 
@@ -151,31 +134,23 @@ describe('withSubproject', () => {
   });
 });
 
-describe('parseSubprojectArgument', () => {
+describe('命令参数', () => {
   it('reads the single path argument', () => {
     expect(parseSubprojectArgument('modelserver')).toEqual({ ok: true, path: 'modelserver' });
     expect(parseSubprojectArgument('  frontend/admin  ')).toEqual({ ok: true, path: 'frontend/admin' });
   });
 
   it('refuses an empty or multi-word argument', () => {
-    expect(parseSubprojectArgument('')).toMatchObject({ ok: false });
-    expect(parseSubprojectArgument(undefined)).toMatchObject({ ok: false });
-    expect(parseSubprojectArgument('modelserver pycharm')).toMatchObject({ ok: false });
+    for (const value of ['', undefined, 'modelserver pycharm']) {
+      expect(parseSubprojectArgument(value)).toMatchObject({ ok: false });
+    }
   });
-});
 
-describe('parseIdeArgument', () => {
-  it('treats an empty argument as "not given"', () => {
+  it('treats an empty IDE argument as "not given", and accepts a supported one', () => {
     expect(parseIdeArgument('')).toEqual({ ok: true, app: undefined });
     expect(parseIdeArgument(undefined)).toEqual({ ok: true, app: undefined });
-  });
-
-  it('accepts a supported IDE, case-insensitively', () => {
     expect(parseIdeArgument('idea')).toEqual({ ok: true, app: 'idea' });
     expect(parseIdeArgument('PyCharm')).toEqual({ ok: true, app: 'pycharm' });
-  });
-
-  it('rejects an unknown IDE', () => {
     expect(parseIdeArgument('vscode')).toMatchObject({ ok: false });
   });
 });

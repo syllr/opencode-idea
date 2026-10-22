@@ -11,34 +11,24 @@ import {
 const PREFIXES = ['ide_', 'modelserver_'];
 
 describe('applyIdeToolDefaults', () => {
-  it('forces rebuild when the caller passed nothing', () => {
-    const input = {};
-    expect(applyIdeToolDefaults('ide_build_project', input, PREFIXES)).toBe(true);
-    expect(input).toEqual({ rebuild: true });
-  });
+  it('forces rebuild to true, for every project prefix', () => {
+    // 同一个 IDE 工具会以每个项目的前缀各出现一次；漏掉任何一个，那个项目就还在用
+    // "可能出错"的增量构建回答。
+    for (const tool of ['ide_build_project', 'modelserver_build_project']) {
+      const empty = {};
+      expect(applyIdeToolDefaults(tool, empty, PREFIXES)).toBe(true);
+      expect(empty).toEqual({ rebuild: true });
 
-  it('applies to every project prefix, not just the root one', () => {
-    // 同一个 IDE 工具会以每个项目的前缀各出现一次；漏掉任何一个，那个项目就还在
-    // 用"可能出错"的增量构建回答。
-    const input = {};
-    expect(applyIdeToolDefaults('modelserver_build_project', input, PREFIXES)).toBe(true);
-    expect(input).toEqual({ rebuild: true });
-  });
+      // 调用方显式要了增量构建 —— 那正是"可能悄悄错"的答案,调用方从结果里分辨不出来。
+      const explicit = { rebuild: false };
+      expect(applyIdeToolDefaults(tool, explicit, PREFIXES)).toBe(true);
+      expect(explicit.rebuild).toBe(true);
 
-  it('overwrites an explicit incremental build request', () => {
-    // The whole point: `rebuild: false` is the answer that can be silently
-    // wrong, and the caller cannot tell that from the result.
-    const input = { rebuild: false };
-    expect(applyIdeToolDefaults('ide_build_project', input, PREFIXES)).toBe(true);
-    expect(input.rebuild).toBe(true);
-  });
-
-  it('leaves a matching request untouched and reports no change', () => {
-    // Not just an optimisation: a caller logging "we forced rebuild" must be
-    // able to tell the two cases apart.
-    const input = { rebuild: true };
-    expect(applyIdeToolDefaults('ide_build_project', input, PREFIXES)).toBe(false);
-    expect(input).toEqual({ rebuild: true });
+      // 已经是对的 → 不动,而且**报告没变**:调用方要能分清这两种情况。
+      const matching = { rebuild: true };
+      expect(applyIdeToolDefaults(tool, matching, PREFIXES)).toBe(false);
+      expect(matching).toEqual({ rebuild: true });
+    }
   });
 
   it('preserves every other argument', () => {
@@ -47,46 +37,35 @@ describe('applyIdeToolDefaults', () => {
     expect(input).toEqual({ rebuild: true, filesToRebuild: ['src/A.java'], timeout: 120000 });
   });
 
-  it('ignores every other tool', () => {
+  it('touches only the tool it owns', () => {
     for (const tool of [
       'ide_lint_files',
       'modelserver_read_file',
       'read',
       'shell',
-      undefined,
-      null,
-      42,
-    ]) {
-      const input = {};
-      expect(applyIdeToolDefaults(tool, input, PREFIXES)).toBe(false);
-      expect(input).toEqual({});
-    }
-  });
-
-  it('does not touch a name that merely looks similar', () => {
-    for (const tool of [
+      // 名字相近的也不能碰
       'build_project',
       'other_build_project',
       'ide_build_projects',
       'ide_build_project_x',
+      undefined,
+      null,
+      42,
     ]) {
       const input = { rebuild: false };
       expect(applyIdeToolDefaults(tool, input, PREFIXES)).toBe(false);
-      expect(input.rebuild).toBe(false);
+      expect(input).toEqual({ rebuild: false });
     }
   });
 
-  it('does nothing when no project is connected', () => {
-    const input = { rebuild: false };
-    expect(applyIdeToolDefaults('ide_build_project', input, [])).toBe(false);
-    expect(input.rebuild).toBe(false);
-  });
-
-  it('is safe on a missing or malformed draft', () => {
+  it('is safe on a missing or malformed draft, and on no connected project', () => {
     for (const input of [undefined, null, 'string', 7, true]) {
       expect(() => applyIdeToolDefaults('ide_build_project', input, PREFIXES)).not.toThrow();
       expect(applyIdeToolDefaults('ide_build_project', input, PREFIXES)).toBe(false);
     }
+    const input = { rebuild: false };
+    expect(applyIdeToolDefaults('ide_build_project', input, [])).toBe(false);
+    expect(input.rebuild).toBe(false);
   });
 
   it('is idempotent', () => {
@@ -100,9 +79,6 @@ describe('applyIdeToolDefaults', () => {
 describe('forcedToolNames', () => {
   it('composes one real tool name per prefix', () => {
     expect(forcedToolNames(PREFIXES)).toEqual(['ide_build_project', 'modelserver_build_project']);
-  });
-
-  it('is empty when no project is connected', () => {
     expect(forcedToolNames([])).toEqual([]);
   });
 });
@@ -119,16 +95,16 @@ describe('removeSchemaProperty', () => {
     additionalProperties: false,
   });
 
-  it('removes the property and its required entry', () => {
-    expect(removeSchemaProperty(schema(), 'rebuild')).toEqual({
+  it('removes the property and its required entry, without mutating the input', () => {
+    const input = schema();
+    const before = JSON.stringify(input);
+    expect(removeSchemaProperty(input, 'rebuild')).toEqual({
       type: 'object',
-      properties: {
-        filesToRebuild: { type: 'array' },
-        timeout: { type: 'integer' },
-      },
+      properties: { filesToRebuild: { type: 'array' }, timeout: { type: 'integer' } },
       required: ['timeout'],
       additionalProperties: false,
     });
+    expect(JSON.stringify(input)).toBe(before);
   });
 
   it('drops an emptied required array instead of leaving [] behind', () => {
@@ -139,18 +115,10 @@ describe('removeSchemaProperty', () => {
   });
 
   it('returns the same reference when there is nothing to remove', () => {
-    // Callers skip the edit on identity, so a needless rebuild of the schema
-    // must be observable.
+    // 调用方靠引用相同来跳过这次编辑,所以"多余的 schema 重建"必须是看得见的。
     const input = schema();
     expect(removeSchemaProperty(input, 'absent')).toBe(input);
     expect(removeSchemaProperty(input, 'timeout')).not.toBe(input);
-  });
-
-  it('never mutates the schema it was given', () => {
-    const input = schema();
-    const before = JSON.stringify(input);
-    removeSchemaProperty(input, 'rebuild');
-    expect(JSON.stringify(input)).toBe(before);
   });
 
   it('is safe on a malformed schema', () => {
@@ -206,16 +174,13 @@ describe('hideForcedArguments', () => {
     expect(tools.ide_lint_files).toEqual(untouched);
   });
 
-  it('does nothing while the tool is absent', () => {
-    // The IDE tools only appear once the MCP servers are registered; OpenCode
-    // replays the transform after every catalog refresh, so this must be a
-    // silent no-op rather than a throw.
-    const tools = {};
-    expect(() => hideForcedArguments(fakeEditor(tools), PREFIXES)).not.toThrow();
-    expect(tools).toEqual({});
-  });
+  it('is a silent no-op while the tool is absent, and is idempotent', () => {
+    // IDE 工具只在 MCP server 注册之后才出现,而 OpenCode 每次刷新目录都会重放这个 transform,
+    // 所以这里必须是静默的空操作,而不是抛异常。
+    const empty = {};
+    expect(() => hideForcedArguments(fakeEditor(empty), PREFIXES)).not.toThrow();
+    expect(empty).toEqual({});
 
-  it('is idempotent', () => {
     const tools = { ide_build_project: withRebuild() };
     const editor = fakeEditor(tools);
     hideForcedArguments(editor, PREFIXES);
@@ -227,10 +192,7 @@ describe('hideForcedArguments', () => {
 
 describe('FORCED_ARGUMENTS', () => {
   it('names the tool by suffix, so it cannot be tied to one project prefix', () => {
-    expect(FORCED_ARGUMENTS.map((rule) => rule.suffix)).toEqual(['build_project']);
-  });
-
-  it('forces boolean true for the one argument it owns', () => {
+    // 同一个 IDE 工具在每个项目下都有一份,所以表里只能按后缀写。
     expect(FORCED_ARGUMENTS).toEqual([{ suffix: 'build_project', argument: 'rebuild', value: true }]);
   });
 });

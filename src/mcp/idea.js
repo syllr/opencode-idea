@@ -127,7 +127,7 @@ export async function callTool(port, projectPath, name, args = {}, options = {})
       params: {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: 'opencode-idea', version: '0.0.27' },
+        clientInfo: { name: 'opencode-idea', version: '0.1.0' },
       },
     });
     // The IDE's Streamable-HTTP endpoint binds follow-up requests to the session
