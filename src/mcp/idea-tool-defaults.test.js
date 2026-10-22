@@ -4,6 +4,7 @@ import {
   applyIdeToolDefaults,
   forcedToolNames,
   hideForcedArguments,
+  raiseMinimumArguments,
   removeSchemaProperty,
 } from './idea-tool-defaults.js';
 
@@ -187,6 +188,57 @@ describe('hideForcedArguments', () => {
     const afterFirst = JSON.stringify(tools);
     hideForcedArguments(editor, PREFIXES);
     expect(JSON.stringify(tools)).toBe(afterFirst);
+  });
+});
+
+describe('raiseMinimumArguments', () => {
+  it('raises a missing or too-small maxDepth to the floor, for every prefix', () => {
+    for (const tool of ['ide_list_directory_tree', 'modelserver_list_directory_tree']) {
+      const missing = {};
+      expect(raiseMinimumArguments(tool, missing, PREFIXES)).toBe(true);
+      expect(missing).toEqual({ maxDepth: 50 });
+
+      // 显式要了浅树也抬:实际渲染比 maxDepth 少一层,浅值正是这次踩坑的地方。
+      const small = { maxDepth: 6 };
+      expect(raiseMinimumArguments(tool, small, PREFIXES)).toBe(true);
+      expect(small.maxDepth).toBe(50);
+
+      // 字符串不是可信的深度,按"没给"处理。
+      const stringy = { maxDepth: '6' };
+      expect(raiseMinimumArguments(tool, stringy, PREFIXES)).toBe(true);
+      expect(stringy.maxDepth).toBe(50);
+    }
+  });
+
+  it('keeps a larger value and never lowers it', () => {
+    const input = { maxDepth: 200 };
+    expect(raiseMinimumArguments('ide_list_directory_tree', input, PREFIXES)).toBe(false);
+    expect(input.maxDepth).toBe(200);
+  });
+
+  it('touches only the tool it owns, and is idempotent', () => {
+    for (const tool of [
+      'ide_build_project',
+      'ide_read_file',
+      'list_directory_tree',
+      'other_list_directory_tree',
+    ]) {
+      const input = { maxDepth: 3 };
+      expect(raiseMinimumArguments(tool, input, PREFIXES)).toBe(false);
+      expect(input.maxDepth).toBe(3);
+    }
+
+    const input = {};
+    expect(raiseMinimumArguments('ide_list_directory_tree', input, PREFIXES)).toBe(true);
+    expect(raiseMinimumArguments('ide_list_directory_tree', input, PREFIXES)).toBe(false);
+    expect(input).toEqual({ maxDepth: 50 });
+  });
+
+  it('is safe on a missing or malformed draft', () => {
+    for (const input of [undefined, null, 'string', 7, true]) {
+      expect(() => raiseMinimumArguments('ide_list_directory_tree', input, PREFIXES)).not.toThrow();
+      expect(raiseMinimumArguments('ide_list_directory_tree', input, PREFIXES)).toBe(false);
+    }
   });
 });
 

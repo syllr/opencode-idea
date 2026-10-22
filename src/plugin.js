@@ -55,7 +55,8 @@ import {existsSync} from 'node:fs';
 import {resolve} from 'node:path';
 
 import {callTool, serverConfig} from './mcp/idea.js';
-import {applyIdeToolDefaults, hideForcedArguments} from './mcp/idea-tool-defaults.js';
+import {applyIdeToolDefaults, hideForcedArguments, raiseMinimumArguments} from './mcp/idea-tool-defaults.js';
+import {appendDirectoryTreeTruncationNotice} from './mcp/idea-tool-output.js';
 import {currentProjectPath} from './project.js';
 import {
     appNameFor,
@@ -1431,6 +1432,8 @@ export default {
                 toolBeforeRegistration = await ctx.tool.hook('execute.before', (event) => {
                     if (typeof event?.tool !== 'string') return;
                     applyIdeToolDefaults(event.tool, event.input, prefixes());
+                    // 下限抬升与"固定值"是两件事:前者保留调用方更大的值,所以参数继续留在 schema 里。
+                    raiseMinimumArguments(event.tool, event.input, prefixes());
                 });
             }
 
@@ -1441,6 +1444,18 @@ export default {
             // "the project is not open in the IDE" do.
             if (typeof ctx.tool?.hook === 'function') {
                 toolRegistration = await ctx.tool.hook('execute.after', async (event) => {
+                    if (event?.status === 'completed') {
+                        // 输出侧:目录树顶到 maxDepth 边界时补一句看得见的截断提示
+                        // (静默截断正是模型把"被切"读成"空目录"的原因,见 `mcp/idea-tool-output.js`)。
+                        if (typeof event?.tool !== 'string' || !isIdeToolName(event.tool)) return;
+                        const next = appendDirectoryTreeTruncationNotice(event.result, {
+                            tool: event.tool,
+                            input: event.input,
+                            prefixes: prefixes(),
+                        });
+                        if (next !== event.result) event.result = next;
+                        return;
+                    }
                     if (event?.status !== 'error') return;
                     if (typeof event?.tool !== 'string' || !isIdeToolName(event.tool)) return;
                     if (!config) return;

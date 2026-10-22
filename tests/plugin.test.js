@@ -737,6 +737,48 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
+  it('raises the directory-tree depth and warns when the tree is cut at the boundary', async () => {
+    // 两个方向都不是"固定值":参数只抬下限(调用方给更大的值就照用),输出只追加一句提示。
+    // 起因是一次真实会话:maxDepth=6 把 Java 包树切在包目录那一层,而输出里没有任何标记,
+    // 模型把"被切"读成"空目录",整条查询链退回 shell。
+    const { ctx, state } = fakeCtx();
+    state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
+    const cleanup = await plugin.setup(ctx);
+
+    // 参数侧:没传、传得太小、传了字符串,都抬到下限。
+    const before = state.toolHooks['execute.before'];
+    for (const draft of [{ directoryPath: 'src' }, { maxDepth: 6 }, { maxDepth: '6' }]) {
+      const event = { tool: 'ide_list_directory_tree', input: draft };
+      await before(event);
+      expect(event.input.maxDepth).toBe(50);
+    }
+    // 调用方要更深的树 → 原样保留。
+    const deeper = { tool: 'ide_list_directory_tree', input: { maxDepth: 200 } };
+    await before(deeper);
+    expect(deeper.input.maxDepth).toBe(200);
+
+    // 输出侧:顶到边界 → 追加提示,原有内容不动。
+    const after = state.toolHooks['execute.after'];
+    const treeOf = (text, maxDepth) => ({
+      tool: 'ide_list_directory_tree',
+      status: 'completed',
+      input: { maxDepth },
+      result: { content: [{ type: 'text', text: JSON.stringify({ tree: text }) }] },
+    });
+    const cut = treeOf('    ├── a/\n    │   └── b/', 3);
+    await after(cut);
+    expect(cut.result.content).toHaveLength(2);
+    expect(cut.result.content[1].text).toContain('maxDepth=3');
+
+    // 没顶到边界 → 引用不变,结果原样。
+    const full = treeOf('    ├── a/', 9);
+    const before9 = full.result;
+    await after(full);
+    expect(full.result).toBe(before9);
+
+    await cleanup();
+  });
+
   it('reconnects and rewrites a dropped IDE tool error mid-turn', async () => {
     const fake = await startFakeIdeForProject();
     running = fake.server;

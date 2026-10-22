@@ -101,6 +101,56 @@ export function applyIdeToolDefaults(tool, input, prefixes) {
 }
 
 /**
+ * Arguments this plugin only ever RAISES to a floor, never pins.
+ *
+ * 和 [`FORCED_ARGUMENTS`] 的区别是**单向**:调用方给了更大的值就照用,只把"太小或没给"抬到下限。
+ * 所以参数必须继续留在 schema 里 —— 模型仍然需要它,`hideForcedArguments` 也不碰它。
+ *
+ * `list_directory_tree` 的 `maxDepth` 是**绝对深度上限**,但实际只展开到 `maxDepth-1` 层,省略时默认 5
+ * (只展开 4 层)。实测(2026-10,真实 MCP 调用):`maxDepth=6` 时 Java 包树正好断在包目录那一层,而输出里
+ * 没有任何截断标记 —— 一棵被切的树和一个空目录长得一模一样,模型据此判定"工具看不到这个目录",
+ * 整条查询链退回 `shell` 里的 `find` / `grep` / `sed`,从此丢掉 `.gitignore` 规则。抬到 50 是实测
+ * 无副作用的量级(同一目录 50 与 8 输出完全一致)。
+ *
+ * @type {ReadonlyArray<{ suffix: string, argument: string, minimum: number }>}
+ */
+export const RAISED_ARGUMENTS = [
+  {
+    suffix: 'list_directory_tree',
+    argument: 'maxDepth',
+    minimum: 50,
+  },
+];
+
+/**
+ * Raise a floor argument on one call. Never lowers, never pins.
+ *
+ * Mutates `input` in place and reports whether anything changed. A non-numeric
+ * value counts as "not given": this function cannot vouch for what a string
+ * `"6"` means, so it replaces it with the floor rather than trusting it.
+ *
+ * @param {unknown} tool Effective tool name for this call (`event.tool`).
+ * @param {unknown} input Mutable argument draft for this call (`event.input`).
+ * @param {readonly string[]} prefixes 本会话所有项目的工具前缀（`ide_` 等）。
+ * @returns {boolean} Whether `input` was modified.
+ */
+export function raiseMinimumArguments(tool, input, prefixes) {
+  if (typeof tool !== 'string') return false;
+  if (input === null || typeof input !== 'object') return false;
+
+  let changed = false;
+  for (const raised of RAISED_ARGUMENTS) {
+    const matches = prefixes.some((prefix) => tool === `${prefix}${raised.suffix}`);
+    if (!matches) continue;
+    const current = input[raised.argument];
+    if (typeof current === 'number' && Number.isFinite(current) && current >= raised.minimum) continue;
+    input[raised.argument] = raised.minimum;
+    changed = true;
+  }
+  return changed;
+}
+
+/**
  * Drop one property from a JSON schema, returning a new object.
  *
  * Returns the input unchanged (by reference) when there is nothing to remove, so
