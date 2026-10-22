@@ -560,7 +560,7 @@ describe('plugin setup', () => {
     const system = request.system;
     expect(system).toHaveLength(2);
     expect(system.every((part) => part.type === 'text')).toBe(true);
-    expect(system[1].text).toContain('只有 IDE 才有的能力才用');
+    expect(system[1].text).toContain('原生工具为主');
     expect(system[1].text).toContain(projectPath);
     expect(system[1].text).toContain('ide_search_symbol');
     expect(request.tools).toHaveProperty('edit');
@@ -623,12 +623,17 @@ describe('plugin setup', () => {
       expect(request.tools).not.toHaveProperty(name);
     }
 
-    // Hidden: file WRITE goes through the native `write` / `edit`. The IDE's
+    // Hidden: `create_new_file` goes through the native `write`. The IDE's
     // patch tool matches hunks by exact context text, so a normalised quote
     // fails the hunk; `reformat_file` re-reads from disk, so the stale-copy
     // argument that used to keep them visible does not hold.
-    expect(request.tools).not.toHaveProperty('ide_apply_patch');
     expect(request.tools).not.toHaveProperty('ide_create_new_file');
+
+    // Kept: `apply_patch` is the only multi-file writer on models that do not
+    // get OpenCode's own `patch` tool (that one is GPT-only). Hiding it left
+    // "same change across a dozen files" with no tool at all, and the model
+    // answered that gap by writing a script that rewrites whole files.
+    expect(request.tools).toHaveProperty('ide_apply_patch');
 
     // Kept: it is the only way to read inside a jar or the jrt:// image.
     expect(request.tools).toHaveProperty('ide_read_file');
@@ -692,7 +697,7 @@ describe('plugin setup', () => {
     const after = { system: [], tools: { ide_read_file: {} } };
     await state.sessionHook(after);
     expect(after.system).toHaveLength(2);
-    expect(after.system[1].text).toContain('只有 IDE 才有的能力才用');
+    expect(after.system[1].text).toContain('原生工具为主');
 
     await cleanup();
   });
@@ -743,7 +748,7 @@ describe('plugin setup', () => {
     expect(serving.tools).toHaveProperty('ide_read_file');
     expect(serving.tools).not.toHaveProperty('ide_git_status');
     expect(serving.system).toHaveLength(2);
-    expect(serving.system[1].text).toContain('只有 IDE 才有的能力才用');
+    expect(serving.system[1].text).toContain('原生工具为主');
 
     // Not serving after serving: OpenCode's registry has already dropped the IDEA
     // tools, so a request that carries none IS the "the bridge is gone" case —
@@ -1137,7 +1142,7 @@ describe('plugin setup', () => {
     await state.sessionHook(request);
     expect(request.tools).toHaveProperty('ide_read_file');
     expect(request.system).toHaveLength(2);
-    expect(request.system[1].text).toContain('只有 IDE 才有的能力才用');
+    expect(request.system[1].text).toContain('原生工具为主');
 
     await cleanup();
   });
@@ -1890,7 +1895,7 @@ describe('多项目接入（root + 子项目，各自用不同 IDE）', () => {
     expect(guidance).toContain('IntelliJ IDEA');
     expect(guidance).toContain('PyCharm');
     // 公共段只出一次。
-    expect(guidance.match(/# IDE MCP:只有非 IDE 不可的能力才走 IDE/g)).toHaveLength(1);
+    expect(guidance.match(/# IDE MCP:原生工具的补充/g)).toHaveLength(1);
 
     await cleanup();
   });

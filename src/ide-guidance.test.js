@@ -147,6 +147,7 @@ describe('工具清单(按功能,不按项目重复)', () => {
       'open_file_in_editor',
       'rename_refactoring',
       'reformat_file',
+      'apply_patch',
       'lint_files',
       'get_file_problems',
       'build_project',
@@ -180,10 +181,91 @@ describe('工具清单(按功能,不按项目重复)', () => {
 
   it('routes only IDE-only capabilities here; reading and searching stay native', () => {
     const text = stock();
-    expect(text).toContain('只有 IDE 才有的能力才用它们');
-    expect(text).toContain('读与搜索用原生工具');
+    // 原则改成"原生工具为主、IDE 补原生做不到的"——"只有 IDE 才有的能力"这条说法
+    // 在 apply_patch 放出来之后就不准了(OpenCode 自己也有多文件 patch,只是只给 GPT 模型)。
+    expect(text).toContain('原生工具为主');
+    expect(text).toContain('原生做不了、或者做得很差的,才用 IDE 工具');
     expect(text).not.toContain('## 例外');
     expect(text).not.toContain('版本控制用原生');
+  });
+
+  it('splits routing by whether the path is inside a project', () => {
+    // IDE 工具只在项目内有意义:路径必须落在某个已打开项目的目录树内,项目外的路径
+    // 两个 IDE 都会直接报错(实测)。这条前提不写清楚,模型会去拿 IDE 工具碰项目外的东西。
+    const text = stock();
+    expect(text).toContain('路由:先看路径在不在项目里');
+    expect(text).toContain('IDE 工具只在项目内有意义');
+    expect(text).toContain('某个已打开项目');
+    // 项目外:只有原生工具和 shell,IDE 工具不参与。
+    expect(text).toContain('项目外');
+    expect(text).toContain('只有原生工具和 `shell`');
+    // 项目内:原生为主 → IDE 补位 → 都不行才 shell(第三选择,不是第一选择)。
+    expect(text).toContain('两边都不顺手时,你自己判断用 `shell` 里的工具');
+    expect(text).toContain('那是第三选择,不是第一选择');
+  });
+
+  it('tells the native grep tool apart from the command-line one', () => {
+    // 实测失效:老文案只写"读与搜索用原生工具(read / grep / glob)",`grep` 是个裸词 ——
+    // 模型把工具名读成了命令行的 `grep`,于是自己去 shell 里跑 `grep -Rn`,把 node_modules
+    // 一起扫了(实测 1.6G 的 node_modules 下慢了近百倍,捞出来的还全是第三方噪音)。
+    // 所以必须点明"是工具,不是同名命令",并把被禁的那条替代路连理由一起写出来。
+    const text = stock();
+    expect(text).toContain('搜文本用原生 `grep` 工具,不是命令行的 `grep`');
+    expect(text).toContain('别用 `shell` 里的 `grep -R` / `rg`');
+    // 理由要能赢过"我自己跑一条更可控"的直觉:原生 grep 按 .gitignore 排除,范围用 path 收窄。
+    expect(text).toContain('`.gitignore`');
+    expect(text).toContain('`path` 参数');
+    expect(text).toContain('`node_modules`');
+    // 找文件同理:原生 glob,不是 shell 里的 find。
+    expect(text).toContain('原生 `glob`,不是 `shell` 里的 `find`');
+  });
+
+  it('keeps shell for running commands, not for searching code', () => {
+    // 「跑命令用原生 shell」单独看,等于默许"搜索也是条命令,扔 shell 里跑" ——
+    // 与搜索规则打架,模型两头都能挑。给它划清边界:shell 是跑命令的地方。
+    const text = stock();
+    expect(text).toContain('跑命令用原生 `shell`');
+    // 边界写在新版里:项目内 IDE 工具是补充,项目外 IDE 工具不参与。
+    expect(text).toContain('IDE 工具在这里不参与(会报错),别去试');
+  });
+
+  it('routes a multi-file change to apply_patch, and away from scripts', () => {
+    // 实测失效:原生 `edit` / `write` 都只管一个文件 —— 于是"十几个文件做同一个改动"
+    // 没有任何现成工具可用,模型就自己写 python 脚本整文件重写(实测截图里就是这么干的):
+    // 慢,而且把没让改的地方也重排了。`apply_patch` 正是补这个洞的:一个调用带多个
+    // `*** Update File:` 段落。
+    const text = stock();
+    expect(tight(text)).toContain(tight('一次改多个文件用 `<前缀>_apply_patch`'));
+    expect(text).toContain('别为此自己写脚本整文件重写');
+    // 命令名要按项目列出来,和别的工具一样。
+    expect(text).toContain('`ide_apply_patch`');
+    expect(text).toContain('`modelserver_apply_patch`');
+  });
+
+  it('never mentions a native patch tool the model may not have', () => {
+    // 引导是给**当前模型**看的,而 OpenCode 的原生 `patch` 只对 GPT 系模型暴露 ——
+    // 多数模型的工具表里根本没有它。在提示词里提它,模型要么去找一个不存在的工具,
+    // 要么把两边的参数混着传。IDE 的 `apply_patch` 与它是两件独立的事,各自说各自的。
+    const text = stock();
+    expect(text).not.toContain('原生 `patch`');
+    expect(text).not.toContain('patchText');
+    // 该说的还是说了:apply_patch 自己的参数与格式。
+    expect(text).toContain('`input` 传补丁正文');
+  });
+
+  it('explains apply_patch parameters and its partial-success semantics', () => {
+    // 参数与格式要写清(否则模型宁可去写脚本)。
+    const text = stock();
+    expect(text).toContain('`input` 传补丁正文');
+    expect(text).toContain('*** Update File:');
+    expect(text).toContain('unified git diff');
+    // 失败语义必须写明:失败的那个文件原样不动(模型才敢用),并且要点名是哪个文件。
+    expect(text).toContain('该文件原样不动');
+    expect(text).toContain('Hunk context not found');
+    // 多文件是逐个应用的,不是全成或全败 —— 模型要据此去读失败的那几个。
+    expect(text).toContain('N out of M operations applied');
+    // 落盘要自己确认,别只信返回里的成功数。
+    expect(text).toContain('确认落盘');
   });
 
   it('scopes read_file to what native cannot do', () => {
@@ -192,7 +274,11 @@ describe('工具清单(按功能,不按项目重复)', () => {
     expect(text).toContain('压缩包内的条目');
     expect(text).toContain('.jar!/');
     expect(text).toContain('反编译');
-    expect(flat(text)).toContain(flat('「符号」那条搜出来的路径原样传即可'));
+    // 「符号」那条搜出来的路径要交给它 —— 新版把这条合并进「读文件」一节,措辞跟着改了。
+    expect(flat(text)).toContain(flat('`search_symbol` 返回的路径'));
+    // 命令名必须给全 —— 只写 `<前缀>_read_file` 的话模型不知道实际叫什么(实测点名数会少一个)。
+    expect(text).toContain('`ide_read_file`');
+    expect(text).toContain('`modelserver_read_file`');
   });
 
   it('writes no caveats or edge cases', () => {

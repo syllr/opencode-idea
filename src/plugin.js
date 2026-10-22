@@ -151,16 +151,31 @@ const PLUGIN_TOOL_NAMES = new Set(['configure_ide_project']);
  *   it is the only way to read a file inside a jar (`<jar>!/<entry>`) or the
  *   JDK's `jrt://` image, so the guidance keeps it for exactly that and sends
  *   ordinary reads to the native tool.
- * - Plain file **write**: `apply_patch` / `create_new_file` are **hidden** too.
- *   Writes go through the native `write` / `edit`: they are simpler, and the
- *   IDE's patch tool is brittle in a way that costs real time — it matches hunks
- *   by exact context text, so a quote or a corner bracket normalised somewhere
- *   on the way in fails the whole hunk (`Hunk context not found`).
- *   Measured against a real IDE, the stale-copy concern does not justify keeping
- *   them: `reformat_file` re-reads from disk (append / delete / edit all survived
- *   it), and `apply_patch` is not what made the in-memory copy fresh — only
- *   `ide_read_file` lags behind an external write, and the guidance tells the
- *   model to read ordinary files with the native `read` anyway.
+ * - Plain file **write**: `create_new_file` is **hidden** — the native `write`
+ *   does the same job without the extra hop. `apply_patch` is **kept**, and the
+ *   reason it used to be hidden turned out to be wrong.
+ *   It was hidden because "the IDE's patch tool is brittle in a way that costs
+ *   real time — it matches hunks by exact context text, so a quote or a corner
+ *   bracket normalised somewhere on the way in fails the whole hunk
+ *   (`Hunk context not found`)". Measured against a real IDE (2026.2.3), that
+ *   brittleness is **contained, not destructive**: a hunk that does not match
+ *   fails on its own and leaves the file untouched, and the tool names the file
+ *   it failed on ("scratch/a.ts: Hunk context not found"). It is not a reason
+ *   to hide the tool.
+ *   What made it worth keeping is what it does that nothing else here does:
+ *   **one call patches many files** (Codex `*** Update File:` sections or a
+ *   unified git diff, both verified). The native `edit` / `write` are
+ *   single-file. OpenCode has a multi-file `patch` of its own — a DIFFERENT
+ *   tool, with a different parameter and a different patch dialect, and it is
+ *   only exposed to GPT models — so on any other model there is nothing for a
+ *   "same change across a dozen files" job. Measured, the model answered that
+ *   gap by writing a Python script that rewrites whole files: slower, and it
+ *   silently reformats the parts it was not asked to touch. `apply_patch`
+ *   touches only the lines it declares, reports how many hunks applied, and
+ *   names the ones that did not.
+ *   The guidance never mentions the native `patch`: most models do not have it
+ *   in their tool list, and naming a tool that is not there only makes the
+ *   model look for it (or mix the two parameter names up).
  *   `rename_refactoring` and `reformat_file` stay: both are capabilities the
  *   native tools do not have.
  * - IDE terminal: `execute_terminal_command` does NOT inherit the project's
@@ -234,11 +249,11 @@ export const HIDDEN_IDE_TOOL_SUFFIXES = [
     'search_text',
     'search_regex',
     'search_file',
-    // File WRITE: the native `write` / `edit` do the job, and the IDE's patch
-    // tool matches hunks by exact context text (a normalised quote fails the
-    // hunk). `edit_file` is the companion plugin's own writer, dropped by the
-    // plugin itself — hiding it only covers the older installed copies.
-    'apply_patch',
+    // File WRITE: `create_new_file` is dropped (the native `write` covers it),
+    // but `apply_patch` STAYS — it is the only multi-file writer on models that
+    // do not get OpenCode's own `patch` tool (a DIFFERENT tool, GPT-only).
+    // `edit_file` is the companion plugin's own writer, dropped by the plugin
+    // itself — hiding it only covers the older installed copies.
     'create_new_file',
     'edit_file',
 ];

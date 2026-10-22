@@ -11,8 +11,20 @@
 //   1. Per tool: what it does, its parameters, and the positive flow for using
 //      it. No caveats or edge cases, and nothing about languages or frameworks —
 //      the project's own setup decides that.
-//   2. Only IDE-only capability is routed here; reading, writing and searching
-//      stay on the native tools.
+//   2. What the NATIVE tools cannot do, or do badly, is what gets routed here;
+//      reading, writing and searching stay on the native tools.
+//
+//   Rule 2 used to read "only IDE-only capability" — but "IDE-only" is not a
+//   property of the tool, it is a property of the MODEL: OpenCode's own
+//   multi-file `patch` exists, it is just only exposed to GPT models, so on
+//   any other model `apply_patch` is the only multi-file writer there is. The
+//   question to ask is therefore not "does the native tool exist" but "can the
+//   native tool do this well here".
+//
+//   The document is organised by THAT question, and the first section answers
+//   it by scope: inside a project the native tools lead and the IDE tools fill
+//   the gaps; outside a project the IDE tools do not apply at all (the IDE
+//   only resolves paths inside an opened project and errors on anything else).
 //
 // 校验 (lint / build) is one place that also carries a *when*, because the tools
 // are not there to be offered — they are there to be used unprompted, and the
