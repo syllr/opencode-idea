@@ -235,11 +235,43 @@ describe('工具清单(按功能,不按项目重复)', () => {
     // 慢,而且把没让改的地方也重排了。`apply_patch` 正是补这个洞的:一个调用带多个
     // `*** Update File:` 段落。
     const text = stock();
-    expect(tight(text)).toContain(tight('一次改多个文件用 `<前缀>_apply_patch`'));
+    expect(tight(text)).toContain(tight('同一个改动铺到多个文件用 `<前缀>_apply_patch`'));
     expect(text).toContain('别为此自己写脚本整文件重写');
     // 命令名要按项目列出来,和别的工具一样。
     expect(text).toContain('`ide_apply_patch`');
     expect(text).toContain('`modelserver_apply_patch`');
+  });
+
+  it('sends a symbol rename to the refactoring tool, not to a text replacement', () => {
+    // 实测失效:全库 33231 次工具调用里 `ide_rename_refactoring` 只被用过 **1 次**(还是探针),
+    // 而"改一个符号铺到十几个文件"这类活,模型全靠 python 脚本 / sed 整文件重写。
+    // 根因不是工具有没有,而是引导只写了"按符号改名" —— 模型理解成"手动改一处",
+    // 没想到它能跨文件按语义更新所有引用,于是去找批量文本手段。
+    // 实测(Java / Python / Go / JS 探针):语义重构只改真引用,**注释和字符串字面量原样不动**;
+    // 文本替换分不清这些,把字符串一起改就是改了程序输出。
+    const text = stock();
+    expect(tight(text)).toContain(tight('改一个符号(变量 / 函数 / 类 / 字段 / 方法),哪怕它散落在几十个文件里,优先用它'));
+    expect(text).toContain('只改代码,不碰同名文本');
+    expect(text).toContain('字符串字面量');
+    expect(text).toContain('行为变更的 bug');
+    // 用量的含义也要写清:它是真引用数,少了就说明有引用没被解析到。
+    expect(text).toContain('with N usages');
+    // **不是硬规矩** —— 有的场景用文本工具才是对的(改的本来就是文字、要改的正是字符串、
+    // 那个文件 IDE 没索引到)。把判据给全,别让模型以为必须走重构。
+    expect(text).toContain('它不是硬规矩');
+    expect(text).toContain('什么时候用文本工具反而是对的');
+    expect(text).toContain('配置里的 key');
+    expect(text).toContain('你就是要改字符串');
+    expect(text).toContain('IDE 根本没索引');
+  });
+
+  it('teaches read offset/limit so sed line ranges stop being used', () => {
+    // 实测失效:全库 2512 次 `shell` 调的是 `sed -n '12,36p' <文件>` —— 也就是"读文件的某一段"。
+    // 根因:原生 `read` 的 `offset` / `limit` 引导一个字没提,模型只看见 `sed` 这条路。
+    const text = stock();
+    expect(tight(text)).toContain(tight('要读 **某一段**就传 `offset`(从第几行起)+ `limit`(读几行)'));
+    expect(text).toContain("sed -n '12,36p'");
+    expect(text).toContain('行号得自己数');
   });
 
   it('never mentions a native patch tool the model may not have', () => {
