@@ -9,10 +9,11 @@
    `<前缀>_build_project`。
 3. **要项目运行时环境的命令用项目终端**:{{cmd_project_sdk_terminal}};`git` / `ls` / `curl` / `docker` 这类与项目无关的
    仍走 `shell`。细则见「命令执行」与「终端」。
-4. **校验节奏**：改动过程中对改动的文件用 `lint_files` / `get_file_problems`；全仓 `pnpm typecheck` 在收尾跑一次。
+4. **校验节奏**：改一处只在收尾跑 `lint_files` (要细节再 `get_file_problems`);改一大片或动了接口 / 依赖就用
+   `build_project`;全仓检查只在收尾。
 5. **批量修改**：逐文件用 `edit`，或一次用 `<前缀>_apply_patch`。
 
-本会话接入了 {{projectCount}} 个 JetBrains 项目。**每个功能在所有项目下都各有一份工具**,命令名是
+本会话接入了 {{projectCount}} 个 JetBrains 项目。**每个 IDE 功能在所有项目下都各有一份工具**,命令名是
 `<项目前缀>_<工具名>`;下文写 `<前缀>` 就是指这一截。
 
 ## 本会话接入的项目与各自的 MCP 工具
@@ -25,8 +26,8 @@
 **规则:操作哪个目录下的文件/代码,就用那个目录对应的命令。** IDE 按项目解析 —— 用错前缀时,调用要么报错,
 要么作用在另一个项目的代码上。
 
-按需读文件:要了解某个子项目自己的约定,读它的 `<子项目目录>/AGENTS.md`(它不会自动进入本会话的上下文,
-本会话是 root 打开的那一个)。
+按需读文件:要了解某个子项目自己的约定,读它的 `<子项目目录>/AGENTS.md` —— 它不会自动进入本会话的上下文
+(这里加载的是 root 的那一份)。
 
 ## 路由:先看路径在不在项目里
 
@@ -43,7 +44,7 @@
 - **OpenCode 自带的工具直接调用** —— 工具列表里直接列出的那些(`read` / `grep` / `glob` / `edit` / `write` / `shell`),
   参数按各自 schema 传。它们就在当前工具表里,直接调用即可。
 - **读文件用 `read` 工具** —— 要读某一段就传 `offset`(从第几行起)+ `limit`(读几行),输出自带行号。
-- **搜文本用 `grep` 工具** —— 它按 `.gitignore` 排除,`node_modules` / `dist` 不进结果,范围用 `path` 收窄。
+- **搜文本用 `grep` 工具** —— 它按 `.gitignore` 排除,依赖目录 / 构建产物不进结果,范围用 `path` 收窄。
   要看命中行前后的大段上下文:先用它拿到**行号**,再用 `read` + `offset` / `limit` 读那一段。
 - **工具输出不够用时,按这个顺序调整**:① 调参数重试 → ② 缩小路径范围重试 → ③ 换工具。
   换用 `shell` 的判断依据是"这个工具确实没有这个能力"。
@@ -66,13 +67,13 @@
 - **常驻进程**(dev server / watch / 长时间跑的服务)有 run configuration 就用 `rerun` 起它;
   没有就用项目终端传 `timeoutMs: 0` 起在 tab 里,之后用 {{cmd_terminal_io}} 跟日志、回答提示。
 - **一次性的命令就地跑完,反复发生的流程才固化成 run configuration** —— 配置是**项目资产**,不是"跑命令"
-  的手段。判据只有一条: **这件事以后会不会以同样的形态再发生?** 会 (改表后同步 DDL、跑迁移、生成代码、打包、起 dev
-  server、往某个环境部署这类) 就 **主动提**一次要不要固化成配置,并把配置名 / 类型 / 命令 / 工作目录 / 为什么值得留摊开;
+  的手段。判据只有一条: **这件事以后会不会以同样的形态再发生?** 会 (构建 / 生成 / 迁移 / 起服务 / 部署这类)
+  就 **主动提**一次要不要固化成配置,并把配置名 / 类型 / 命令 / 工作目录 / 为什么值得留摊开;
   不会 (查条数据、看个日志、试一条命令) 就地跑完算。
 - **建 / 改 / 删运行配置,走 `idea-run-config-manager` skill**(服务化应用的配置归 `idea-standalone`):
   它落手用的就是「运行配置」里的那组工具 —— 配置文件由工具写入和删除。
 
-## 工具 (每条第一行是各项目的命令,接着是它的用法)
+## 工具 (每条先列各项目的命令名,再写用法)
 
 ### 符号 (只有 IDE 的语义索引能给)
 
@@ -84,11 +85,9 @@
   (类 / 接口 / 方法 / 函数 / 字段 / 类型 / 常量这类 **有名字的定义**)的**声明位置**,不是"哪段文本提到过它"(那是
   `grep` 工具的事);带上 `include_external` 才会连依赖库和标准库一起搜 —— 这是 `grep` / `glob` 工具够不着的地方。
     - **查某个库的 API**:代码里 import 的包名就是线索,直接「包名 + 符号名」当 `q` —— Java 用全限定名
-      (`com.nimbusds.jose.util.Base64`)、Go 用 `pkg.Symbol`(`gorm.DeletedAt`)、Python 给全模块路径
-      (`torch.nn.Module`)、Node/TS 用 import 的那层包名(`vue.Teleport`)。**调研一个库有哪些 API**:拿包名当 `q`
-      (`fastapi` → 入口文件就是导出清单),再读它的入口。
-    - **Node/TS 例外**:带 `-` 或 `@scope/` 的包名这么拼是 0 条(`element-plus`);改用 import 的符号名,并用 `paths` 圈到
-      那个 `node_modules`(`paths: ['frontend/user/**']` 就收敛到一处)。
+      (`<包名>.<类名>`)、Go 用 `pkg.Symbol`(`<包名>.<导出符号>`)、Python 给全模块路径
+      (`<模块>.<类>`)、Node/TS 用 import 的那层包名(`<包名>.<导出名>`)。**调研一个库有哪些 API**:拿包名当 `q`
+      (入口文件通常就是导出清单),再读它的入口。
     - **搜不到 = 依赖没进来**:先把它加进依赖,或改用 web 搜索 / GitHub 看源码。
     - **同名符号往往有多处定义**(标准库 / 依赖 / 测试各一份):按调用处的 import 与参数类型来选。
     - **它返回的路径原样交给同一个项目的 `<前缀>_read_file`** —— 那个路径的基准是**它所在的项目**,不是会话工作目录;
@@ -100,11 +99,10 @@
 
 ### 项目与编辑器
 
-- {{cmd_list_directory_tree}} **项目视角的目录树**(尊重内容根与排除项):`maxDepth` 控深度。
-  **它是绝对深度上限,实际只展开到 `maxDepth-1` 层;省略时默认 5(只展开 4 层)。** 要看全就传一个明显够大的值
-  (如 50),不会报错、也没有额外代价。**输出到边界就停,不带任何截断标记** —— 所以"某个目录后面没有子项"有两种
-  可能:真空目录,或者被你截断了。判据:树的深度正好顶到你传的值,或者**包目录 / 源码目录显示为空** —— 那就是被截断了。
-  **把 `maxDepth` 调大重试,或把 `directoryPath` 直接指到那个子目录再看一层。**
+- {{cmd_list_directory_tree}} **项目视角的目录树**(尊重内容根与排除项):`maxDepth` 控深度,是**绝对上限但只展开
+  `maxDepth-1` 层**(省略时默认 5,即 4 层);要看全就传明显够大的值(如 50),没有额外代价。**输出到边界就停,不带截断
+  标记** —— 目录显示为空也可能是被切了;判据是树深度顶到传入值,或**包 / 源码目录显示为空**。调大 `maxDepth`,或把
+  `directoryPath` 指到那个子目录再看一层。
 - {{cmd_get_project_modules}} **项目模块及类型**。
 - {{cmd_get_project_dependencies}} **项目直接声明的依赖**。
 - {{cmd_get_all_open_file_paths}} **用户在 IDE 里打开了哪些文件**(含当前激活的那个)。
@@ -125,40 +123,35 @@
   - 返回里 `with N usages` 的 N 是**真引用数**;比预期少,说明有引用没被解析到(文件没进 IDE 索引),
     这时**先确认索引到那个模块**,再处理剩下的引用。
   - 改的本来就是文字(配置 key、模板占位符、文档、SQL)、**就是要改那句字符串**、或者文件 IDE 没索引(生成物、
-    vendor 目录)时,用 `edit` / `write` / `apply_patch`。动手前先用 `grep` 工具确认命中范围。
+    第三方目录)时,用 `edit` / `write` / `apply_patch`。动手前先用 `grep` 工具确认命中范围。
 - {{cmd_reformat_file}} **按 IDE 的代码风格重排**。
 - {{cmd_apply_patch}} **一次改多个文件**:`input` 传补丁正文,Codex 格式(`*** Begin Patch` / `*** Update File: <路径>`
   / `@@` / `-` 旧行 / `+` 新行)与 unified git diff 都收。`edit` / `write` 工具都只管一个文件。
   - 它**按文本**改,适合同一段文字铺到多个文件;**改符号走上面那条**。
-  - 它**只碰补丁里写明的那几行**,其余内容保持原样。
-  - 上下文对不上时那一个 hunk 失败、**该文件原样不动**,返回里点名是哪个文件(`<路径>: Hunk context not found`)。
-  - 多个文件是**逐个应用**的:返回里 `N out of M operations applied`,失败的那些读一下再改;
-    改完用 `grep` 工具确认落盘。
+  - 只碰补丁里写明的那几行。上下文对不上时该文件**原样不动**(`<路径>: Hunk context not found`);多个文件按返回的
+    `N out of M operations applied` 逐个补,改完用 `grep` 工具确认落盘。
 - {{cmd_lint_files}} **批量检查**:`files` 传数组;只列有问题的文件。
 - {{cmd_get_file_problems}} **单文件检查**:`filePath`;结果在 `errors`。
 - {{cmd_build_project}} **构建校验**:`filesToRebuild` 可只构建指定文件;有问题返回在 `problems`,没返回即没问题。
 
 **改完代码,自己先查一遍再收尾。** 查一次很便宜,而问题一旦漏到用户看见、或留到构建 / 测试炸了才暴露,回头纠正的
-代价就高一个量级。 校验跟着改动范围走 —— 这一轮属于"改一大片"还是"改一处",见下面两条。
+代价就高一个量级。 校验跟着改动范围走 —— 这一轮属于"改一大片"还是"改一处",按下面两条判断。
 
-- **这次要改一大片**(多文件、跨模块、"顺手把这几处一起对齐")→ 全部改完再 `build_project` 一次,
-  在完整状态上检查。
-- **这次只改一处,或在同一个文件上反复微调** → 告一段落时,把这轮改过的文件一次 `lint_files` 掉;要看单个
-  文件的细节再上 `get_file_problems`。
-- **改了签名 / 接口 / import / 依赖**这类"别处会跟着坏"的地方 → 走 `build_project`;只动了文件内部的实现 →
-  lint 就够。
+- **改一大片**(多文件、跨模块、"顺手把这几处一起对齐"),或**动了签名 / 接口 / import / 依赖**这类"别处会跟着坏"的
+  地方 → 全部改完再 `build_project` 一次,在完整状态上检查。
+- **只改一处,或只在文件内部微调** → 告一段落时把这轮改过的文件跑一次 `lint_files`;要看单个文件的细节再上
+  `get_file_problems`。
 - 查出来的问题 **改掉,或说清为什么不改**。
-- 校验走上面这些工具;先调用一次,索引没同步或环境不对时它会明说。
-- **全仓类型检查是收尾动作,不是编辑循环**:同一任务只在最后跑一次 `pnpm typecheck`;过程中只对改动文件跑
-  `lint_files` / `get_file_problems`。局部检查用这两个工具,全仓 typecheck 留给收尾。
-- 只有改依赖清单、生成 Prisma Client、跑迁移这类必须执行命令的动作,才额外调用 `pnpm`;一个任务通常不超过两次。
+- 校验就用上面这些工具;索引没同步或环境不对时,第一次调用就会明说。
+- **全仓检查是收尾动作,不是编辑循环**:同一任务只在最后跑一次;过程中只对改动文件跑 `lint_files` /
+  `get_file_problems`。
 
 ### 运行配置
 
 - {{cmd_get_run_configurations}} **项目里有哪些运行配置**:传 `filePath` 可列该文件的运行入口。
   配置由 IDE 自己存储(通常在项目目录之外),用这个工具读。
-- {{cmd_execute_run_configuration}} **跑已有配置**:配置里的 `EXECUTE_IN_TERMINAL` 要是 `false`(共享出去的配置都这样)
-  ;覆盖参数 (`programArguments` / `workingDirectory` / `envs`)需配置支持 `supportsDynamicLaunchOverrides`,否则会直接报错。
+- {{cmd_execute_run_configuration}} **跑已有配置**:配置里的 `EXECUTE_IN_TERMINAL` 要是 `false`(共享出去的配置都这样);
+  覆盖参数 (`programArguments` / `workingDirectory` / `envs`) 需配置支持 `supportsDynamicLaunchOverrides`,否则会直接报错。
 - {{cmd_create_run_configuration}} **新建任意类型的项目级配置**:内容来源三选一 —— `cloneFrom`(复制一个现成的,最稳;
   字段名不确定时只走它)、`configurationXml`(模板里的 XML 片段)、平台模板 + `options` / `attributes` / `envs` 补丁。
   **建不建按上面那条判据**;怎么建、档案怎么记,全按 `idea-run-config-manager` skill 走。
@@ -189,7 +182,8 @@
 
 - {{cmd_project_sdk_terminal}} **在本项目 SDK 终端里跑一条命令,返回输出与 tab id**。`command` 必填;`timeoutMs` 默认
   10000(`0` = 发出去就返回,最长 12000);`workingDirectory` 默认项目根;`env` 最后覆盖自动注入的环境;`input` 在命令后
-  写一次(自带换行);`maxChars` 只保留最新输出。 **每次调用都新开一个 tab** —— 同一件事的后续别再调它。
+  写一次(自带换行);`maxChars` 只保留最新输出。 **每次调用都新开一个 tab** —— 同一件事的后续改用 `list_terminals` /
+  `terminal_io`,别再调它。
 - {{cmd_list_terminals}} **本项目的终端 tab 清单**:`kind`(`mcp_project_sdk` / `mcp_remote` / `user`)、`status`、
   `workingDirectory` / `currentDirectory`、`lastCommand`、`lastUsedAt`。 **只有 `tab` 非空且 `addressable: true` 的能交给
   `terminal_io`**;用户自己开的 tab 只用于认位置,不可控制;`title` 不是 id。
@@ -210,7 +204,6 @@
 ### 服务器文件同步
 
 往服务器传文件 / 从服务器取文件,走这一组 —— IDE 的连接、路径映射、排除规则都在它们后面,传的就是 IDE 在管的那一份。
-**在远程主机上执行命令走 `execute_in_remote_host`** —— 这一组只管文件。
 
 - {{cmd_list_server_deployments}} **本项目能用的服务器,以及每台服务器上的 deployment**。先分清两层:
   **Server 是连接目标,deployment 是挂在它上面的一条路径映射**;一台 Server 可以有 **0 个 deployment** —— 那样它仍能给
@@ -230,3 +223,6 @@
 上传 / 下载都在 IDE 后台跑,单次调用只等到 `waitMs`(默认 10 秒,上限 12 秒)为止。返回 `state: "in_progress"` 是 **正常**的,
 不是失败 (它可能以 error 结果回来) —— 拿 `handle` 调 `get_deployment_task_status` 接着看; **不要用重复调上传 / 下载来代替**
 (那样会再起一次传输)。到 `completed` 之后 `counters` 才可信,而且它数的是**操作次数**,不是文件数(删掉整个目录也只算 1)。
+
+**同步只是上半段**:传完之后在那台 Server 上继续操作(启动刚传上去的二进制、重启服务、看日志)—— 用
+`execute_in_remote_host`,`serverName` 取 `servers[].name`。
