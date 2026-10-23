@@ -56,7 +56,8 @@ base,变体不另起条目**:`{配置名}` 不带任何 `@` 段 —— 名字文
     - run:ide_execute_run_configuration
     - after run:
         - 产物 `middleware/seatunnel/connectors/connector-fileparse-<ST 版本>.jar`(78M,已 gitignore)
-        - 接着同步到部署机:`ide_upload_to_deployment`,`serverName` 传 `mbpmiddleware`、`mode` 传 `upload`(默认 `mirror`
+        - 接着同步到部署机:`ide_upload_to_deployment`,`deploymentName` 传 `list_server_deployments` 里这条映射的名字
+          (本地映射目录的最后一段,如 `.../mbpmiddleware` → `mbpmiddleware`)、`mode` 传 `upload`(默认 `mirror`
           会删远端多余文件,别用);`in_progress` 就按 handle 轮 `ide_get_deployment_task_status`
         - 同步完在部署机上 `docker compose restart seatunnel`
     - desc:

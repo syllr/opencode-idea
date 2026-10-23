@@ -59,9 +59,12 @@
 // which only exist when the user installed it. Nothing in the document says so:
 // which plugin a tool came from is this plugin's plumbing, not the model's
 // business — it either sees the tool or it does not. The deployment section is
-// gated on ONE of those flags (`canListDeploymentServers`) rather than on a flag of
+// gated on ONE of those flags (`canListServerDeployments`) rather than on a flag of
 // its own: the four tools are registered together, so one of them answers for the
-// section — heading included, which is why the gate wraps the `###` line too.
+// section — heading included, which is why the gate wraps the `###` line too. The
+// terminal section works the same way on `canProjectSdkTerminal`; only the remote
+// terminal gets its own gate, because it is the one tool in that section that a
+// Community IDE does not have.
 
 import { readFileSync } from 'node:fs';
 
@@ -69,9 +72,11 @@ import { IDE_LABELS } from './ide-projects.js';
 import {
   DEPLOYMENT_SUFFIXES,
   RUN_LIFECYCLE_SUFFIXES,
+  TERMINAL_SUFFIXES,
   deploymentCapabilities,
   runLifecycleCapabilities,
   servesTool,
+  terminalCapabilities,
 } from './mcp/enhance.js';
 import { renderTemplate } from './template.js';
 
@@ -82,15 +87,19 @@ const TEMPLATE_PATH = new URL('ide-guidance.template.md', import.meta.url);
 const TEMPLATE = readFileSync(TEMPLATE_PATH, 'utf8');
 
 /**
- * 配套插件那两组工具的后缀全集 —— 判据只有一条:**这张表里的工具按项目分别存在**。
+ * 配套插件那三组工具的后缀全集 —— 判据只有一条:**这张表里的工具按项目分别存在**。
  *
  * 表外(内置 MCP Server 自带的那批)是每个项目都有的,列命令名时不需要看快照;表内的必须
- * 逐项目核对(见 {@link commandVariables})。两组都收进来而不是只收部署那组:它们的
- * 存在性本来就按项目、按 IDE 不同 —— 启停工具取决于装没装配套插件,部署工具还多一道
- * "是不是 Ultimate"。把 run-lifecycle 留在表外,等于默认"一个项目装了、别的项目也装了",
- * 而那只是个默认,不是事实。
+ * 逐项目核对(见 {@link commandVariables})。三组都收进来而不是只收部署那组:它们的
+ * 存在性本来就按项目、按 IDE 不同 —— 启停工具取决于装没装配套插件,部署与远程终端还多一道
+ * "是不是 Ultimate",本地终端还要 Terminal 插件。把 run-lifecycle 留在表外,等于默认
+ * "一个项目装了、别的项目也装了",而那只是个默认,不是事实。
  */
-const ENHANCE_SUFFIXES = new Set([...RUN_LIFECYCLE_SUFFIXES, ...DEPLOYMENT_SUFFIXES]);
+const ENHANCE_SUFFIXES = new Set([
+  ...RUN_LIFECYCLE_SUFFIXES,
+  ...DEPLOYMENT_SUFFIXES,
+  ...TERMINAL_SUFFIXES,
+]);
 
 /**
  * 「本会话有哪些项目、各自用哪个 MCP 工具前缀」的清单。
@@ -176,11 +185,11 @@ function mergeRunLifecycle(projects, tools) {
 /**
  * 部署工具同理(见 `mergeRunLifecycle`):逐项目判断,任一项目提供即算存在。
  *
- * **整节的锚点就是 `canListDeploymentServers`**(模板里 `{{#if canListDeploymentServers}}` 直接包住标题):
+ * **整节的锚点就是 `canListServerDeployments`**(模板里 `{{#if canListServerDeployments}}` 直接包住标题):
  * 配套插件只要装了,IDE 的 MCP 工具表里就多出这一组(它们由同一道前提注册,同进同出),
  * 所以拿其中一个当判据就够了 —— 不需要再造一个"四个里任一个"的聚合标志。
  *
- * 不锚在那些"必须有工具才算"的地方也不成问题:一个都没有时 `canListDeploymentServers` 为 false,
+ * 不锚在那些"必须有工具才算"的地方也不成问题:一个都没有时 `canListServerDeployments` 为 false,
  * 标题与正文一起消失;而这一节和前一组不同 —— run-lifecycle 那节是内置工具
  * (`get_run_configurations` / `execute_run_configuration`)撑起来的**自己的**标题,缺配套插件时标题仍在。
  * 顺带一提,这一组还额外要求 `com.jetbrains.plugins.webDeployment`(**仅 Ultimate 有**),所以
@@ -192,10 +201,32 @@ function mergeRunLifecycle(projects, tools) {
 function mergeDeployment(projects, tools) {
   const all = projects.map((project) => deploymentCapabilities(tools, `${project.server}_`));
   return {
-    canListDeploymentServers: all.some((c) => c.canListDeploymentServers),
+    canListServerDeployments: all.some((c) => c.canListServerDeployments),
     canUploadToDeployment: all.some((c) => c.canUploadToDeployment),
     canDownloadFromDeployment: all.some((c) => c.canDownloadFromDeployment),
     canGetDeploymentTaskStatus: all.some((c) => c.canGetDeploymentTaskStatus),
+  };
+}
+
+/**
+ * 终端工具同理(见 `mergeRunLifecycle`):逐项目判断,任一项目提供即算存在。
+ *
+ * **整节的锚点是 `canProjectSdkTerminal`**(模板里 `{{#if canProjectSdkTerminal}}` 直接包住
+ * 「终端」的标题):本地那三个由同一个 provider 注册(Terminal 插件在就在),所以拿
+ * `project_sdk_terminal` 当判据就够。`execute_in_remote_host` 不在同一个 provider 里
+ * (还要 remote-run,仅 Ultimate),所以它**单独**一个 `{{#if canExecuteInRemoteHost}}`
+ * —— 本地终端有、远程终端没有是 Community 上的常态,不能跟着整节一起出现。
+ *
+ * @param {ReadonlyArray<{ server: string }>} projects
+ * @param {Record<string, unknown> | undefined} tools
+ */
+function mergeTerminal(projects, tools) {
+  const all = projects.map((project) => terminalCapabilities(tools, `${project.server}_`));
+  return {
+    canProjectSdkTerminal: all.some((c) => c.canProjectSdkTerminal),
+    canTerminalIo: all.some((c) => c.canTerminalIo),
+    canListTerminals: all.some((c) => c.canListTerminals),
+    canExecuteInRemoteHost: all.some((c) => c.canExecuteInRemoteHost),
   };
 }
 
@@ -207,7 +238,7 @@ function mergeDeployment(projects, tools) {
  *
  * @param {ReadonlyArray<{ path: string, server: string, app: string, label: string, isRoot: boolean }>} projects
  * @param {{ tools?: Record<string, unknown> }} [options] `tools` 是本次请求的工具快照
- *   （`event.tools`），用来判断配套插件（run-lifecycle / deployment）的工具在不在。
+ *   （`event.tools`），用来判断配套插件（run-lifecycle / deployment / terminal）的工具在不在。
  * @returns {string}
  */
 export function buildIdeGuidanceText(projects, options = {}) {
@@ -216,6 +247,7 @@ export function buildIdeGuidanceText(projects, options = {}) {
     routeTable: routeTableFor(projects),
     ...mergeRunLifecycle(projects, options.tools),
     ...mergeDeployment(projects, options.tools),
+    ...mergeTerminal(projects, options.tools),
     ...commandVariables(projects, options.tools),
   });
 }

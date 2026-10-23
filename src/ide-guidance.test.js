@@ -8,7 +8,7 @@ import {
   buildIdeGuidanceText,
 } from './ide-guidance.js';
 import { HIDDEN_IDE_TOOL_SUFFIXES } from './plugin.js';
-import { DEPLOYMENT_SUFFIXES, RUN_LIFECYCLE_SUFFIXES } from './mcp/enhance.js';
+import { DEPLOYMENT_SUFFIXES, RUN_LIFECYCLE_SUFFIXES, TERMINAL_SUFFIXES } from './mcp/enhance.js';
 
 const ROOT = {
   path: '/Users/me/project',
@@ -38,6 +38,7 @@ const VISIBLE = [
   'create_run_configuration',
   'delete_run_configuration',
   'download_from_deployment',
+  'execute_in_remote_host',
   'execute_run_configuration',
   'get_all_open_file_paths',
   'get_deployment_task_status',
@@ -48,16 +49,19 @@ const VISIBLE = [
   'get_symbol_info',
   'inspect_run_configuration',
   'lint_files',
-  'list_deployment_servers',
   'list_directory_tree',
   'list_running_configurations',
+  'list_server_deployments',
+  'list_terminals',
   'open_file_in_editor',
+  'project_sdk_terminal',
   'read_file',
   'reformat_file',
   'rename_refactoring',
   'rerun_run_configuration',
   'search_symbol',
   'stop_run_configuration',
+  'terminal_io',
   'update_run_configuration',
   'upload_to_deployment',
 ];
@@ -91,14 +95,27 @@ describe('引导的生成', () => {
   it('adds the companion plugin sections only when the tools are in the snapshot', () => {
     const stockText = stock();
     expect(stockText).not.toContain('### 服务器文件同步');
+    expect(stockText).not.toContain('### 终端');
     expect(stockText).not.toContain('ide_inspect_run_configuration');
 
     const full = buildIdeGuidanceText([ROOT], {
-      tools: served([...RUN_LIFECYCLE_SUFFIXES, ...DEPLOYMENT_SUFFIXES]),
+      tools: served([...RUN_LIFECYCLE_SUFFIXES, ...DEPLOYMENT_SUFFIXES, ...TERMINAL_SUFFIXES]),
     });
     expect(full).toContain('### 服务器文件同步');
+    expect(full).toContain('### 终端');
     expect(full).toContain('ide_inspect_run_configuration');
     expect(full).toContain('ide_upload_to_deployment');
+    expect(full).toContain('ide_project_sdk_terminal');
+  });
+
+  it('keeps the remote terminal out of a Community snapshot', () => {
+    // 本地三个随 Terminal 插件来,远程那个还要 remote-run(仅 Ultimate)。
+    const text = buildIdeGuidanceText([ROOT], {
+      tools: served(['project_sdk_terminal', 'terminal_io', 'list_terminals']),
+    });
+    expect(text).toContain('### 终端');
+    expect(text).toContain('ide_project_sdk_terminal');
+    expect(text).not.toContain('ide_execute_in_remote_host');
   });
 });
 

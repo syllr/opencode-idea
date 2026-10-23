@@ -9,19 +9,23 @@
 //   * plugin  -> this file      (present only if the user installed the plugin)
 //
 // The companion plugin (https://github.com/syllr/idea-mcp-enhance) fills gaps the
-// bundled server leaves in two places:
+// bundled server leaves in three places:
 //
 //   * run configuration — the bundled server can only START an existing
 //     configuration; it cannot create one, stop one, restart one, or say what is
 //     currently running;
 //   * deployment — the bundled server has nothing at all for the IDE's
-//     Deployment settings or for moving files to/from a server.
+//     Deployment settings or for moving files to/from a server;
+//   * terminal — the bundled server's `execute_terminal_command` does NOT inherit
+//     the project's configured SDKs, so this plugin replaces it with a real IDE
+//     terminal that does, plus an SSH terminal on a Deployment server.
 //
-// The two are kept as separate groups everywhere (here, in the capability
-// functions, and in the guidance), because they are NOT the same precondition:
-// deployment additionally needs `com.jetbrains.plugins.webDeployment`, which
-// exists only in Ultimate. One boolean covering both would let a deployment tool
-// answer "are the run-lifecycle tools here?".
+// The groups are kept separate everywhere (here, in the capability functions,
+// and in the guidance), because they do NOT share a precondition: deployment
+// additionally needs `com.jetbrains.plugins.webDeployment` (Ultimate only), and
+// the remote terminal needs `org.jetbrains.plugins.remote-run` on top of that.
+// One boolean covering several groups would let a deployment tool answer "are
+// the run-lifecycle tools here?".
 //
 // Consequence of the split, and the reason it matters: a stock IDE serves a
 // SHORTER catalog than an enhanced one. Nothing here may be assumed — every use
@@ -65,14 +69,16 @@ export const RUN_LIFECYCLE_SUFFIXES = [
  * The enhance plugin's **deployment** tool names, as suffixes — same contract and
  * same reason for suffixes as {@link RUN_LIFECYCLE_SUFFIXES}.
  *
- * Keep in sync with `DeploymentSchemas.kt` in the enhance repository.
+ * 与 `DeploymentSchemas.kt` 保持同步：列表工具是 server 视角，返回 `servers[]`，
+ * 每台 server 带 `deployments[]`。上传 / 下载用 `deployments[].name` 派生出的全局唯一
+ * `deploymentName`；只有远程终端用 `servers[].name`（`serverName`）。
  *
  * The four are gated together on one plugin (`com.jetbrains.plugins.webDeployment`,
  * Ultimate only) rather than on version drift, so they usually appear or vanish as
  * a set — the guidance still names them one by one, because "usually" is not
  * "always" and a named tool the model cannot call is only a failed call.
  */
-export const LIST_DEPLOYMENT_SERVERS_SUFFIX = 'list_deployment_servers';
+export const LIST_SERVER_DEPLOYMENTS_SUFFIX = 'list_server_deployments';
 export const UPLOAD_TO_DEPLOYMENT_SUFFIX = 'upload_to_deployment';
 export const DOWNLOAD_FROM_DEPLOYMENT_SUFFIX = 'download_from_deployment';
 export const GET_DEPLOYMENT_TASK_STATUS_SUFFIX = 'get_deployment_task_status';
@@ -80,10 +86,35 @@ export const GET_DEPLOYMENT_TASK_STATUS_SUFFIX = 'get_deployment_task_status';
 
 /** All of them: look at the servers, upload, download, then poll a transfer. */
 export const DEPLOYMENT_SUFFIXES = [
-  LIST_DEPLOYMENT_SERVERS_SUFFIX,
+  LIST_SERVER_DEPLOYMENTS_SUFFIX,
   UPLOAD_TO_DEPLOYMENT_SUFFIX,
   DOWNLOAD_FROM_DEPLOYMENT_SUFFIX,
   GET_DEPLOYMENT_TASK_STATUS_SUFFIX,
+];
+
+/**
+ * The enhance plugin's **terminal** tool names, as suffixes — same contract and
+ * same reason for suffixes as {@link RUN_LIFECYCLE_SUFFIXES}.
+ *
+ * Keep in sync with `TerminalSchemas.kt` in the enhance repository.
+ *
+ * 这一组内部还要再分两层前提：`project_sdk_terminal` / `terminal_io` /
+ * `list_terminals` 由同一个 provider 注册（`TerminalToolsProvider`，只要 Terminal 插件在，
+ * Community / Ultimate 都自带）；`execute_in_remote_host` 在另一个 provider 里，要求
+ * `org.jetbrains.plugins.remote-run`（仅 Ultimate，且挂在与 deployment 同一层
+ * `webDeployment` 之下）。所以能力探测逐个工具回答，不合并成"终端这一组在不在"。
+ */
+export const PROJECT_SDK_TERMINAL_SUFFIX = 'project_sdk_terminal';
+export const TERMINAL_IO_SUFFIX = 'terminal_io';
+export const LIST_TERMINALS_SUFFIX = 'list_terminals';
+export const EXECUTE_IN_REMOTE_HOST_SUFFIX = 'execute_in_remote_host';
+
+/** All of them: run in the project SDK, list tabs, continue a tab, run remotely. */
+export const TERMINAL_SUFFIXES = [
+  PROJECT_SDK_TERMINAL_SUFFIX,
+  TERMINAL_IO_SUFFIX,
+  LIST_TERMINALS_SUFFIX,
+  EXECUTE_IN_REMOTE_HOST_SUFFIX,
 ];
 
 /**
@@ -135,7 +166,7 @@ export function runLifecycleCapabilities(tools, prefix) {
  * {@link runLifecycleCapabilities}.
  *
  * The names repeat the tool's subject rather than the group (`canUploadToDeployment`,
- * not `canUpload`): the guidance is one document about two groups, and a flag whose
+ * not `canUpload`): the guidance is one document about several groups, and a flag whose
  * owner is unclear is how the wrong section gets the wrong text.
  *
  * @param {Record<string, unknown> | undefined} tools
@@ -143,9 +174,28 @@ export function runLifecycleCapabilities(tools, prefix) {
  */
 export function deploymentCapabilities(tools, prefix) {
   return {
-    canListDeploymentServers: servesTool(tools, prefix, LIST_DEPLOYMENT_SERVERS_SUFFIX),
+    canListServerDeployments: servesTool(tools, prefix, LIST_SERVER_DEPLOYMENTS_SUFFIX),
     canUploadToDeployment: servesTool(tools, prefix, UPLOAD_TO_DEPLOYMENT_SUFFIX),
     canDownloadFromDeployment: servesTool(tools, prefix, DOWNLOAD_FROM_DEPLOYMENT_SUFFIX),
     canGetDeploymentTaskStatus: servesTool(tools, prefix, GET_DEPLOYMENT_TASK_STATUS_SUFFIX),
+  };
+}
+
+/**
+ * Same question for the terminal group — see {@link runLifecycleCapabilities}.
+ *
+ * 逐个判断而不是"终端这组在不在"：远程那个的前提比本地三个多一层，Community 上
+ * 只有本地三个，Ultimate 上四个都在。合并成一个标志会让提示词在 Community 上点名
+ * `execute_in_remote_host`，而那是一次注定失败的调用。
+ *
+ * @param {Record<string, unknown> | undefined} tools
+ * @param {string} prefix 该项目的工具前缀（含下划线）。
+ */
+export function terminalCapabilities(tools, prefix) {
+  return {
+    canProjectSdkTerminal: servesTool(tools, prefix, PROJECT_SDK_TERMINAL_SUFFIX),
+    canTerminalIo: servesTool(tools, prefix, TERMINAL_IO_SUFFIX),
+    canListTerminals: servesTool(tools, prefix, LIST_TERMINALS_SUFFIX),
+    canExecuteInRemoteHost: servesTool(tools, prefix, EXECUTE_IN_REMOTE_HOST_SUFFIX),
   };
 }

@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   DEPLOYMENT_SUFFIXES,
   RUN_LIFECYCLE_SUFFIXES,
+  TERMINAL_SUFFIXES,
   UPLOAD_TO_DEPLOYMENT_SUFFIX,
   deploymentCapabilities,
   runLifecycleCapabilities,
   servesTool,
+  terminalCapabilities,
 } from './enhance.js';
 
 const NONE_LIFECYCLE = {
@@ -19,25 +21,33 @@ const NONE_LIFECYCLE = {
 };
 
 const NONE_DEPLOYMENT = {
-  canListDeploymentServers: false,
+  canListServerDeployments: false,
   canUploadToDeployment: false,
   canDownloadFromDeployment: false,
   canGetDeploymentTaskStatus: false,
 };
 
+const NONE_TERMINAL = {
+  canProjectSdkTerminal: false,
+  canTerminalIo: false,
+  canListTerminals: false,
+  canExecuteInRemoteHost: false,
+};
+
 describe('后缀表', () => {
-  it('holds bare suffixes, partitioned into the two groups', () => {
+  it('holds bare suffixes, partitioned by precondition', () => {
     // 工具名是 `<项目前缀><后缀>`(root 是 `ide_`,子项目是目录名),所以表里存的是后缀 ——
     // 存完整名字就只能匹配一个项目。
-    for (const suffix of [...RUN_LIFECYCLE_SUFFIXES, ...DEPLOYMENT_SUFFIXES]) {
+    for (const suffix of [...RUN_LIFECYCLE_SUFFIXES, ...DEPLOYMENT_SUFFIXES, ...TERMINAL_SUFFIXES]) {
       expect(suffix.startsWith('ide_')).toBe(false);
       expect(suffix.startsWith('idea_')).toBe(false);
     }
     // 每个后缀只属于一组:归错组就等于用错前提去判断"这段能不能写"。
-    const combined = [...RUN_LIFECYCLE_SUFFIXES, ...DEPLOYMENT_SUFFIXES];
+    const combined = [...RUN_LIFECYCLE_SUFFIXES, ...DEPLOYMENT_SUFFIXES, ...TERMINAL_SUFFIXES];
     expect(new Set(combined).size).toBe(combined.length);
     expect(RUN_LIFECYCLE_SUFFIXES).toHaveLength(7);
     expect(DEPLOYMENT_SUFFIXES).toHaveLength(4);
+    expect(TERMINAL_SUFFIXES).toHaveLength(4);
   });
 
   it('keeps the enhance tools out of the native tool surface', () => {
@@ -48,16 +58,16 @@ describe('后缀表', () => {
 });
 
 describe('能力探测', () => {
-  // 两组完全对称:都是「这次请求的工具快照里真的有它吗」,且都按项目前缀分别回答。
+  // 三组完全对称:都是「这次请求的工具快照里真的有它吗」,且都按项目前缀分别回答。
   const GROUPS = [
     {
       name: 'run-lifecycle',
       capabilities: runLifecycleCapabilities,
       none: NONE_LIFECYCLE,
       own: 'create_run_configuration',
-      other: 'list_deployment_servers',
+      other: 'list_server_deployments',
       present: { canCreateRunConfiguration: true },
-      otherPresent: { canListDeploymentServers: true },
+      otherPresent: { canListServerDeployments: true },
     },
     {
       name: 'deployment',
@@ -67,6 +77,15 @@ describe('能力探测', () => {
       other: 'create_run_configuration',
       present: { canUploadToDeployment: true },
       otherPresent: { canCreateRunConfiguration: true },
+    },
+    {
+      name: 'terminal',
+      capabilities: terminalCapabilities,
+      none: NONE_TERMINAL,
+      own: 'project_sdk_terminal',
+      other: 'list_server_deployments',
+      present: { canProjectSdkTerminal: true },
+      otherPresent: { canListServerDeployments: true },
     },
   ];
 
@@ -102,6 +121,15 @@ describe('能力探测', () => {
       expect(group.capabilities('ide_read_file', 'ide_')).toEqual(group.none);
     });
   }
+
+  it('terminal: keeps the remote terminal separate from the local ones', () => {
+    // 本地三个由 Terminal 插件注册(Community / Ultimate 都有),远程那个还要 remote-run(仅 Ultimate)
+    // —— 合成一个"终端这组在不在"的标志,会让 Community 上被点名一个调不到的工具。
+    expect(terminalCapabilities({ ide_execute_in_remote_host: {} }, 'ide_')).toEqual({
+      ...NONE_TERMINAL,
+      canExecuteInRemoteHost: true,
+    });
+  });
 });
 
 describe('servesTool', () => {

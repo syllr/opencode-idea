@@ -63,6 +63,9 @@ const DEFAULT_IDE_TOOLS = ['ide_read_file'];
  */
 const DEPLOYMENT_HEADING = '### 服务器文件同步';
 
+/** 终端那节的标题，同样的判据。 */
+const TERMINAL_HEADING = '### 终端';
+
 afterAll(() => rmSync(projectPath, { recursive: true, force: true }));
 
 let running;
@@ -642,6 +645,8 @@ describe('plugin setup', () => {
     // has to disappear along with its heading.
     expect(stock.system[1].text).not.toContain(DEPLOYMENT_HEADING);
     expect(stock.system[1].text).not.toContain('ide_upload_to_deployment');
+    expect(stock.system[1].text).not.toContain(TERMINAL_HEADING);
+    expect(stock.system[1].text).not.toContain('ide_project_sdk_terminal');
 
     // Same IDE plus the enhance plugin: its tools are in the snapshot, so the
     // sections go out with them.
@@ -654,10 +659,14 @@ describe('plugin setup', () => {
         ide_list_running_configurations: {},
         ide_stop_run_configuration: {},
         ide_rerun_run_configuration: {},
-        ide_list_deployment_servers: {},
+        ide_list_server_deployments: {},
         ide_upload_to_deployment: {},
         ide_download_from_deployment: {},
         ide_get_deployment_task_status: {},
+        ide_project_sdk_terminal: {},
+        ide_terminal_io: {},
+        ide_list_terminals: {},
+        ide_execute_in_remote_host: {},
       },
     };
     await state.sessionHook(enhanced);
@@ -665,14 +674,19 @@ describe('plugin setup', () => {
       'ide_list_running_configurations',
       'ide_stop_run_configuration',
       'ide_rerun_run_configuration',
-      'ide_list_deployment_servers',
+      'ide_list_server_deployments',
       'ide_upload_to_deployment',
       'ide_download_from_deployment',
       'ide_get_deployment_task_status',
+      'ide_project_sdk_terminal',
+      'ide_terminal_io',
+      'ide_list_terminals',
+      'ide_execute_in_remote_host',
     ]) {
       expect(enhanced.system[1].text).toContain(name);
     }
     expect(enhanced.system[1].text).toContain(DEPLOYMENT_HEADING);
+    expect(enhanced.system[1].text).toContain(TERMINAL_HEADING);
 
     // The two variants are different texts, so the second request does not get
     // deduplicated against the first one's guidance.

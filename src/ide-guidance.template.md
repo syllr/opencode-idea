@@ -7,7 +7,12 @@
 2. **IDE 工具补自带工具做不到的**：符号与定义用 `<前缀>_search_symbol` + `<前缀>_read_file`；改名用
    `<前缀>_rename_refactoring`；单文件检查用 `<前缀>_lint_files` / `<前缀>_get_file_problems`；跨模块构建用
    `<前缀>_build_project`。
+{{#if canProjectSdkTerminal}}
+3. **要项目运行时环境的命令用项目终端**:{{cmd_project_sdk_terminal}};`git` / `ls` / `curl` / `docker` 这类与项目无关的
+   仍走 `shell`。细则见「命令执行」与「终端」。
+{{else}}
 3. **`shell` 用于必须起进程的命令**：`pnpm` / `git` / `docker` / `curl` / `psql`、迁移与生成。
+{{/if}}
 4. **校验节奏**：改动过程中对改动的文件用 `lint_files` / `get_file_problems`；全仓 `pnpm typecheck` 在收尾跑一次。
 5. **批量修改**：逐文件用 `edit`，或一次用 `<前缀>_apply_patch`。
 
@@ -33,7 +38,7 @@
 项目外的路径(`/tmp`、别的仓库、用户主目录)不在 IDE 的解析范围内。
 
 - **项目内** —— **OpenCode 自带的工具为主**,它们更快。**它们做不了、或者做得很差的,才用 IDE 工具**:
-  符号检索、依赖实现、重构、格式化、校验、运行配置、跨文件补丁。
+  符号检索、依赖实现、重构、格式化、校验、运行配置、项目终端、跨文件补丁。
   **两边都不顺手时,你自己判断用 `shell` 里的命令** —— 那是第三选择,不是第一选择。
 - **项目外** —— 用 OpenCode 自带的工具;IDE 工具只对项目内路径生效。
 
@@ -48,7 +53,7 @@
   换用 `shell` 的判断依据是"这个工具确实没有这个能力"。
   典型:`<前缀>_list_directory_tree` 的输出到 `maxDepth` 边界就停 —— 调大 `maxDepth` 再试一次。
 - **改文件**:改一个符号用 `<前缀>_rename_refactoring`;改一段文字用 `edit` / `write` 工具;
-  同一段文字铺到多个文件用 `<前缀>_apply_patch`;跑命令用 `shell` 工具。
+  同一段文字铺到多个文件用 `<前缀>_apply_patch`。跑命令的路由见「命令执行」。
   改代码始终落在具体的那几行上,其余内容保持原样。
 - **改完代码自己先查一遍**:`lint_files` / `build_project`,怎么挑见「校验」。
 - **文档类文件 (Markdown / 文档) 改完之后,用 `<前缀>_reformat_file` 过一遍** —— 表格对齐、换行宽度、缩进交给 IDE
@@ -57,9 +62,22 @@
 
 ## 命令执行 (所有项目通用)
 
+{{#if canProjectSdkTerminal}}
+- **按"这条命令要不要项目运行时"分流**:
+  - **要**(IDE 里配好的 JDK / Node / Python / Maven / Go,以及依赖它们的构建、脚本、生成、迁移)→
+    {{cmd_project_sdk_terminal}}。它开的是 IDE 里真正的终端,自动带上项目 SDK 与 Maven / Node / Python 的路径;
+    `workingDirectory` 默认项目根,`env` 里的值最后覆盖。
+  - **不要**(`git` / `ls` / `cat` / `curl` / `docker` / `ps`)→ `shell` 工具。
+- **常驻进程**(dev server / watch / 长时间跑的服务)有 run configuration 就用 `rerun` 起它;
+  没有就用项目终端传 `timeoutMs: 0` 起在 tab 里,之后用 {{cmd_terminal_io}} 跟日志、回答提示。
+{{else}}
 - **跑命令用 `shell` 工具**;要项目环境的(IDE 里配好的 JDK / Node / Python 等)先看有没有现成的 run configuration ——
   有就跑它 (常驻用 `rerun`,跑完即退用 `execute`);没有、又只是一次性的,用 `shell` 工具并显式指定解释器。
-  一次性的命令留在 `shell` 里,配置留给会反复用到的流程。
+{{/if}}
+- **一次性的命令就地跑完,反复发生的流程才固化成 run configuration** —— 配置是**项目资产**,不是"跑命令"
+  的手段。判据只有一条: **这件事以后会不会以同样的形态再发生?** 会 (改表后同步 DDL、跑迁移、生成代码、打包、起 dev
+  server、往某个环境部署这类) 就 **主动提**一次要不要固化成配置,并把配置名 / 类型 / 命令 / 工作目录 / 为什么值得留摊开;
+  不会 (查条数据、看个日志、试一条命令) 就地跑完算。
 - **建 / 改 / 删运行配置,走 `idea-run-config-manager` skill**(服务化应用的配置归 `idea-standalone`):
   它落手用的就是「运行配置」里的那组工具 —— 配置文件由工具写入和删除。
 {{#if canCreateRunConfiguration}}
@@ -157,11 +175,7 @@
 {{#if canCreateRunConfiguration}}
 - {{cmd_create_run_configuration}} **新建任意类型的项目级配置**:内容来源三选一 —— `cloneFrom`(复制一个现成的,最稳;
   字段名不确定时只走它)、`configurationXml`(模板里的 XML 片段)、平台模板 + `options` / `attributes` / `envs` 补丁。
-  它是 **项目资产**,不是"跑命令"的手段 —— 只是要跑一条命令就用 `shell` 工具。
-  **要不要建、建什么、怎么建、档案怎么记,全按上面那个 skill 走。** 判据只有一条: **这件事以后会不会以同样的形态再发生?**
-  会 (改表后同步 DDL、跑迁移、生成代码、打包、起 dev server、往某个环境部署这类)就 **主动提**一次
-  "要不要固化成 run configuration",并把配置名 / 类型 / 命令 / 工作目录 / 为什么值得留摊开;不会 (查条数据、看个日志、
-  试一条命令)就用 `shell` 工具跑完算。
+  **建不建按上面那条判据**;怎么建、档案怎么记,全按 `idea-run-config-manager` skill 走。
   **改完同步档案**:新增 / 删除 / 改名之后按 skill 更新 `AGENTS.md` 里的档案块 —— 档案和项目里的配置对不上,比没有档案更糟。
 {{/if}}
 {{#if canInspectRunConfiguration}}
@@ -197,27 +211,67 @@
   变体、没有默认版的,就用它自己那个 —— "10 个服务"可以是"3 个 `@dev` + 7 个默认",不必逐条问。
 - 一条配置同时有 `base` 与 `base@<env>`、又没说走哪个环境 → **问一次走哪个环境**,选定后本会话默认走这套。
 - 一个环境怎么接上(启动参数 / 环境变量 / 配置文件)是项目自己的事:照现成的同类变体来,或问用户。
-{{#if canListDeploymentServers}}
+{{#if canProjectSdkTerminal}}
+
+### 终端 (项目环境 · 交互 · 远程)
+
+- {{cmd_project_sdk_terminal}} **在本项目 SDK 终端里跑一条命令,返回输出与 tab id**。`command` 必填;`timeoutMs` 默认
+  10000(`0` = 发出去就返回,最长 12000);`workingDirectory` 默认项目根;`env` 最后覆盖自动注入的环境;`input` 在命令后
+  写一次(自带换行);`maxChars` 只保留最新输出。 **每次调用都新开一个 tab** —— 同一件事的后续别再调它。
+{{#if canListTerminals}}
+- {{cmd_list_terminals}} **本项目的终端 tab 清单**:`kind`(`mcp_project_sdk` / `mcp_remote` / `user`)、`status`、
+  `workingDirectory` / `currentDirectory`、`lastCommand`、`lastUsedAt`。 **只有 `tab` 非空且 `addressable: true` 的能交给
+  `terminal_io`**;用户自己开的 tab 只用于认位置,不可控制;`title` 不是 id。
+{{/if}}
+{{#if canTerminalIo}}
+- {{cmd_terminal_io}} **对已有 tab 读 / 写**:`target` 取 `local`(`project_sdk_terminal` 建的)或 `remote`。
+  - `action: "read"` —— 默认读**上次之后的新输出**;`tail: N` 读最近 N 个命令段(本地还带每段的 `exitCode`);`full: true`
+    读整屏;`timeoutMs > 0` 先等输出稳定再读(最长 12000)。
+  - `action: "write"` —— `text` **原样**送进当前命令(自带换行),不是新开一条命令。
+{{/if}}
+{{#if canExecuteInRemoteHost}}
+- {{cmd_execute_in_remote_host}} **在远程主机的真实 SSH 终端里跑命令** —— 主机与凭据来自本项目的一台 Deployment
+  SFTP 服务器,名字传 `serverName`(那台**服务器**的名字,不是 deployment 名)。`loginShell` 默认 `true`(套
+  `zsh -lic` / `bash -lc`,PATH 与工具链才会加载);`strictHostKey` 默认 `false`(接受并记录新主机密钥)。
+  **远程命令一律走它,不要自己拼 `ssh` / `scp`** —— 凭据、代理、路径映射都在 IDE 这边。
+  远程没有"命令结束"信号:**`exitCode` 永远为 `null`,`running` 也可能为 `null`** —— 别等 `exitCode`,看输出,或接着用
+  `terminal_io` 读。
+{{/if}}
+
+**tab 只在这次 IDE 会话里有效**:tab 一关(报 `terminal_closed` / 找不到 tab)才重新开一个;用完不必主动关 —— 用户能看见,
+也能直接在 IDE 里接手。
+{{/if}}
+{{#if canListServerDeployments}}
 
 ### 服务器文件同步
 
 往服务器传文件 / 从服务器取文件,走这一组 —— IDE 的连接、路径映射、排除规则都在它们后面,传的就是 IDE 在管的那一份。
+{{#if canExecuteInRemoteHost}}
+**在远程主机上执行命令走 `execute_in_remote_host`,不要自己拼 `ssh`** —— 这一组只管文件。
+{{/if}}
 
-- {{cmd_list_deployment_servers}} **本项目能用的部署服务器**:名称 (后面几条用它当 `serverName`)
-  、项目级还是应用级、协议、host / port、在本项目里的路径映射,以及 **项目级**的部署选项与危险组合告警。 **只读 IDE
-  配置、不联网**;动手前先看 `warnings[]`。
+- {{cmd_list_server_deployments}} **本项目能用的服务器,以及每台服务器上的 deployment**。先分清两层:
+  **Server 是连接目标,deployment 是挂在它上面的一条路径映射**;一台 Server 可以有 **0 个 deployment** —— 那样它仍能给
+  `execute_in_remote_host` 用,但**上传 / 下载没有目标**。
+  - `servers[].name` → **远程终端**的 `serverName`;`servers[].deployments[].name` → **上传 / 下载**的 `deploymentName`
+    (由本地路径最后一段派生,**全局唯一**)。
+  - 每台 Server 还带 `level`(项目级 / 应用级)、`accessType`、`host` / `port`、`rootFolder`、`hasCredentials`、
+    `validationIssue`、`isDefault`;返回里另有**整个项目共用**的 `options` 与 `warnings[]`(**只读 IDE 配置、不联网**)。
+  - **`hasCredentials: false` 时不要连接** —— IDE 会弹模态登录框,MCP 调用会卡死;动手前先看 `warnings[]`。
 {{#if canUploadToDeployment}}
-- {{cmd_upload_to_deployment}} **把映射到的本地目录传到服务器**(等同 IDE 的 Upload to …)。`mode` 默认 `mirror` ——
+- {{cmd_upload_to_deployment}} **把一条 deployment(本地映射目录)传到服务器**(等同 IDE 的 Upload to …)。
+  `deploymentName` 传 `servers[].deployments[].name` —— **不是 `serverName`**。`mode` 默认 `mirror` ——
   **会删掉服务器上多出来的文件**,使两边一致;要留住它们就传 `upload`。 **破坏性操作**。
 {{/if}}
 {{#if canDownloadFromDeployment}}
-- {{cmd_download_from_deployment}} **把服务器上映射目录的内容拉回本地**(等同 IDE 的 Download from …), **以服务器为准**:
-  两边都有的文件会被远端覆盖 (内容相同则不写)。 **没有"保留我的版本"这个选项**。
+- {{cmd_download_from_deployment}} **把一条 deployment 从服务器拉回本地**(等同 IDE 的 Download from …), **以服务器为准**:
+  两边都有的文件会被远端覆盖 (内容相同则不写)。同样传 `deploymentName`。 **没有"保留我的版本"这个选项**。
 {{/if}}
 {{#if canGetDeploymentTaskStatus}}
 - {{cmd_get_deployment_task_status}} **查一次传输的状态**:`handle` 用上传 / 下载返回的那个 —— **它自己不启动任何传输**。
 {{/if}}
 
-上传 / 下载都在 IDE 后台跑,单次调用只等到 `waitMs`(默认 10 秒)为止;返回 `in_progress` 是 **正常**的,不是失败 —— 拿
-`handle` 去查进度;重复调用上传 / 下载会再起一次传输。
+上传 / 下载都在 IDE 后台跑,单次调用只等到 `waitMs`(默认 10 秒,上限 12 秒)为止。返回 `state: "in_progress"` 是 **正常**的,
+不是失败 (它可能以 error 结果回来) —— 拿 `handle` 调 `get_deployment_task_status` 接着看; **不要用重复调上传 / 下载来代替**
+(那样会再起一次传输)。到 `completed` 之后 `counters` 才可信,而且它数的是**操作次数**,不是文件数(删掉整个目录也只算 1)。
 {{/if}}

@@ -1377,7 +1377,7 @@ export default {
                 // they are actually in this request.
                 if (!serving) return;
                 // 逐项目注入：每个项目那一节只写它自己的前缀，模型不需要自己换算。
-                // 配套插件 `idea-mcp-enhance` 的两组工具（run-lifecycle / deployment）也按每个项目分别判断,
+                // 配套插件 `idea-mcp-enhance` 的三组工具（run-lifecycle / deployment / terminal）也按每个项目分别判断,
                 // 所以一个项目装了 enhance、另一个没装时，各节的内容本来就不一样。
                 appendIdeGuidance(event?.system, currentProjects(), {tools});
             });

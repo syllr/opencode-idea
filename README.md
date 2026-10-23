@@ -9,10 +9,10 @@ OpenCode 插件,面向 JetBrains 项目 (IntelliJ IDEA / PyCharm / WebStorm 等)
 2. **优先使用 IDE 工具** —— IDE 可用时,向模型注入 **逐项目**的引导:在哪个项目里工作,就用哪个项目前缀的工具;IDE 不可用时
    回退原生工具 (正常回退,无需声明)。
 
-> **需要项目环境的命令走 Run Configuration**:跑 `java` / `python` / `npm` 这类依赖项目配好的 JDK / Node / Python 版本的
-> 命令时,引导模型用 `ide_execute_run_configuration`(配置 **由用户**先在 IDE 里建好),而不是原生 shell;不需要项目
-> 环境的命令照常走原生 shell。 **IDE 内置终端 (`ide_execute_terminal_command`) 已被隐藏** —— 实测它并不继承项目环境,
-> 对原生 shell 没有任何优势。详见「Run Configuration 全套」。
+> **需要项目环境的命令走 IDE 终端 / Run Configuration**:跑 `java` / `python` / `npm` 这类依赖项目配好的 JDK / Node / Python 版本的
+> **一次性命令**,用配套插件提供的 `ide_project_sdk_terminal`(它带项目 SDK 环境);**反复发生的流程**仍固化成 Run Configuration。
+> **IDE 内置的 `ide_execute_terminal_command` 继续隐藏** —— 实测它不继承项目环境,已被 `project_sdk_terminal` 取代。
+> 详见「Run Configuration 全套」与「终端全套」。
 
 非 JetBrains 项目完全不受影响。 **手动接入**:插件启动不探测、不连接任何 IDE。三个命令管全部:
 
@@ -165,7 +165,8 @@ IDE MCP 可用时,插件通过 **系统提示注入**告诉模型 **哪些事该
    | 批量改文件 | `ide_apply_patch` |
    | 校验 | `ide_lint_files` / `ide_get_file_problems` / `ide_build_project` |
    | 运行配置 | `ide_get_run_configurations` / `ide_execute_run_configuration`(+ 配套插件的启停工具) |
-   | 部署 | `ide_list_deployment_servers` / `ide_upload_to_deployment` / `ide_download_from_deployment` / `ide_get_deployment_task_status`(**仅配套插件 + Ultimate**) |
+   | 终端 | `ide_project_sdk_terminal` / `ide_terminal_io` / `ide_list_terminals` / `ide_execute_in_remote_host`(**仅配套插件**;远程执行还要求 Ultimate + Deployment SFTP) |
+   | 部署 | `ide_list_server_deployments` / `ide_upload_to_deployment` / `ide_download_from_deployment` / `ide_get_deployment_task_status`(**仅配套插件 + Ultimate**) |
 
    **读、找文本、找文件、改单个文件一律用 OpenCode 自带的工具**(`read` / `grep` / `glob` / `write` / `edit`):
    这几件事走 IDE 只是多一跳,所以映射表里**不出现** `ide_search_text` / `ide_search_regex` / `ide_search_file`。
@@ -276,14 +277,15 @@ IDE 内置的 MCP Server 只能 **启动已有**的 run configuration (`execute_
 | `ide_stop_run_configuration`      | 停掉该配置的**全部**实例并等它们退出;没在跑也返回成功(幂等)                                                                                                                                                      |
 | `ide_rerun_run_configuration`     | 等同 IDE 的 **Rerun** 按钮:在跑就重启、没在跑就启动,读 `started` 判断是否真起来了                                                                                                                                |
 
-**需要项目环境的命令走 run configuration,不用原生 shell** —— 判据是这条命令 **依赖项目的运行时版本**
-(IDE 里配好的 JDK / Node / Python 等)。是 → run configuration;不是 (看文件、git、临时脚本)→ 原生 shell。
-run configuration 会继承开发时具体配的那套运行时,所以它就是个应用;配置必须 **先在 IDEA 里存在**(由用户建),
-没有就请用户建一个再跑。
+**需要项目环境的命令走 IDE 终端 / run configuration** —— 判据是这条命令 **依赖项目的运行时版本**
+(IDE 里配好的 JDK / Node / Python 等)。是 → **一次性命令**走配套插件的 `ide_project_sdk_terminal`;**会反复发生的流程 / 常驻
+服务**固化成 run configuration;不是 (看文件、git、临时脚本)→ 原生 shell。配置必须 **先在 IDEA 里存在**(由用户建),
+没有就请用户建一个再跑;要不要建、建什么,按 `idea-run-config-manager` skill 的判据走。
 
-> **为什么不再用 IDE 终端**:`ide_execute_terminal_command` 之前被当成"自动继承 IDE 项目环境"的通道而保留暴露,但实测
+> **为什么内置 IDE 终端仍然隐藏**:`ide_execute_terminal_command` 之前被当成"自动继承 IDE 项目环境"的通道而保留暴露,但实测
 > **它拿不到项目配好的 JDK / Node / Python 版本**,和原生 shell 没有区别。既然没有优势,就把它从模型可见的工具表里
-> 隐藏掉 (`HIDDEN_IDE_TOOL_SUFFIXES`),命令执行的路由改由 run configuration 承担。
+> 隐藏掉 (`HIDDEN_IDE_TOOL_SUFFIXES`)。配套插件的 `project_sdk_terminal` 走的是另一条路:**主动把项目 SDK / Maven /
+> Node / Python 的路径注入终端环境**,所以它才是"需要项目环境"的那条路由。
 
 配置名有自己的文法:**`[os@]base[@env]`** —— os 段 (`win` = Windows,缺省 = macOS / Linux)、base 段 (配置本体)、env 段 (环境名,
 缺省 = 默认环境 —— 起一批时逐条解析:有 `@<env>` 用它,没有就用默认)。`win@base` 与 `base@env` 都是同一个 base 的 **变体**,档案里只登记 base。解析 **交给工具**:
@@ -411,9 +413,9 @@ IDE 内置的 MCP Server **完全不碰部署** —— 既不报 IDE 里配了�
 
 | 工具 (OpenCode 里叫 `ide_*`)     | 作用                                                                                                                                                       |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ide_list_deployment_servers`    | 本项目可用的服务器(名称 / 项目级还是应用级 / 协议 / host / port / **本项目里的路径映射**),以及**项目级**的部署选项与危险组合告警。**只读 IDE 配置,不联网** |
-| `ide_upload_to_deployment`       | 把映射到的**本地目录**传到服务器(等同 IDE 的 Upload to …)。`mode` 默认 `mirror` —— **会删掉服务器上多出来的文件**;`upload` 则保留远端多余文件。**破坏性**  |
-| `ide_download_from_deployment`   | 把服务器上映射目录的内容拉回本地(等同 IDE 的 Download from …),**以服务器为准**:两边都有的文件被远端覆盖(相同则不写)。**没有"保留我的版本"这个选项**        |
+| `ide_list_server_deployments`    | 本项目可用的**服务器**,以及每台服务器上的 **deployment(路径映射)**。Server 是连接目标(`servers[].name` → 远程终端的 `serverName`),deployment 是挂在它上面的一条映射(`servers[].deployments[].name` → 上传 / 下载的 `deploymentName`,全局唯一)。server 可以 0 个 deployment,那样只能远程执行。另带 `level` / `accessType` / `host` / `port` / `rootFolder` / `hasCredentials` / `validationIssue` / `isDefault`、项目级 `options` 与 `warnings[]`。**只读 IDE 配置,不联网** |
+| `ide_upload_to_deployment`       | 把**一条 deployment**(本地映射目录)传到服务器(等同 IDE 的 Upload to …)。`deploymentName` 传 `servers[].deployments[].name`,**不是 `serverName`**。`mode` 默认 `mirror` —— **会删掉服务器上多出来的文件**;`upload` 则保留远端多余文件。**破坏性** |
+| `ide_download_from_deployment`   | 把**一条 deployment** 从服务器拉回本地(等同 IDE 的 Download from …),**以服务器为准**:两边都有的文件被远端覆盖(相同则不写)。同样传 `deploymentName`。**没有"保留我的版本"这个选项** |
 | `ide_get_deployment_task_status` | 用 `handle` 查一次传输的状态与计数;**永不启动任何传输**                                                                                                    |
 
 opencode-idea 对它做的是**同一套三件事**(透传 / 条件引导 / 工具名清单),差异只有两处:
@@ -421,7 +423,7 @@ opencode-idea 对它做的是**同一套三件事**(透传 / 条件引导 / 工�
 - **条件引导更严** —— 部署工具除了配套插件,还要求 `com.jetbrains.plugins.webDeployment`,而它只在 **Ultimate** 里存在,
   所以 Community IDE 上这一节永远不出现。而且 **这一节整节 (含标题) 都由配套插件提供**,一个工具都没有时它 **完全消失**
   —— 不能像「运行配置」那样留一个空标题 (那一节还有内置的 `get_run_configurations` / `execute_run_configuration` 撑着)。
-  整节**锚在一个工具上**(模板里 `{{#if canListDeploymentServers}}` 直接包住标题):这四个由同一道前提注册、同进同出,
+  整节**锚在一个工具上**(模板里 `{{#if canListServerDeployments}}` 直接包住标题):这四个由同一道前提注册、同进同出,
   拿其中一个当判据就够,不需要再造一个"四个里任一个"的聚合标志;
 - **工具名清单**在 `src/mcp/enhance.js` 的 `DEPLOYMENT_SUFFIXES` + `deploymentCapabilities`,与该仓库的
   `DeploymentSchemas.kt` 保持同步。
@@ -431,12 +433,43 @@ IDE 的连接、路径映射、排除规则都在它后面,自己拼的那份与
 `mirror` 是 **默认值**且 **会删远端文件**(而 MCP 路径上没有确认步骤),下载 **以远端为准**、没有"保留我的版本"。
 
 还有一个语义必须写明,否则模型会把正常的中间态当失败去重试:上传 / 下载都在 IDE 后台跑,单次调用只等到 `waitMs`
-(默认 10 秒)为止,返回 `state: "in_progress"` 是 **正常**的 —— 拿 `handle` 调 `get_deployment_task_status` 接着看,
-**不要用重复调上传 / 下载来代替**(那样拿不到进度)。
+(默认 10 秒,上限 12 秒)为止,返回 `state: "in_progress"` 是 **正常**的(它可能以 **error 结果**回来)—— 拿 `handle`
+调 `get_deployment_task_status` 接着看,**不要用重复调上传 / 下载来代替**(那样会再起一次传输)。`completed` 之后
+`counters` 才可信,而且数的是**操作次数**,不是文件数(删掉整个目录也只算 1)。
 
 > **这一组没有 skill,和 run configuration 不同。** run configuration 要 skill 是因为"某种类型怎么写"是一批得逐类型实测的
-> 模板 (`assets/types/`);部署没有这层知识 —— 四个工具的 schema 已经说清 `serverName` / `mode` 怎么填,而"该不该传、传给谁"
-> 是模型当场看 `list_deployment_servers` 的判断。再加一个 skill 只是把同一段话抄第二遍。
+> 模板 (`assets/types/`);部署没有这层知识 —— 四个工具的 schema 已经说清 `serverName` / `deploymentName` / `mode` 怎么填,
+> 而"该不该传、传给谁"是模型当场看 `list_server_deployments` 的判断。再加一个 skill 只是把同一段话抄第二遍。
+
+## 终端全套 (配套插件 `idea-mcp-enhance`)
+
+IDE 内置的 `execute_terminal_command` **不继承项目环境**(实测拿不到项目配好的 JDK / Node / Python),所以它被隐藏。配套插件
+补上的是一个**真正的 IDE 终端**,外加远程 SSH 终端和一套"接着用同一个 tab"的读写工具:
+
+| 工具 (OpenCode 里叫 `ide_*`) | 作用 |
+| --- | --- |
+| `ide_project_sdk_terminal` | 在本项目 SDK 终端里跑**一条**命令,返回输出 + `tab`。每次调用 **新开一个 tab**;`timeoutMs` 默认 10000(`0` = 发出去就返回,上限 12000)。终端环境由插件注入:项目 JDK(`PATH`)、Maven home、Node runtime / 包管理器、Go 的 `GOROOT` / `GOPATH` / `GOBIN`、Python SDK / venv(`PATH` + `VIRTUAL_ENV`),用户传的 `env` 最后覆盖 |
+| `ide_list_terminals` | 列出 `mcp_project_sdk` / `mcp_remote` / `user` 三类 tab(状态、当前目录、最后一条命令、`lastUsedAt`)。**只有 `tab` 非空且 `addressable: true` 的能交给 `terminal_io`**;用户手开的 tab 只能看 |
+| `ide_terminal_io` | 对已有 tab 读 / 写。`read`:默认读上次之后的增量,`tail: N` 读最近 N 个命令段(本地带每段 `exitCode`),`full: true` 读整屏,`timeoutMs > 0` 等输出稳定;`write`:原样写进当前命令(自带换行) |
+| `ide_execute_in_remote_host` | 通过本项目的一台 Deployment **SFTP** 服务器开真实 SSH 终端。`loginShell` 默认 `true`(套 `zsh -lic` / `bash -lc`),`strictHostKey` 默认 `false`(accept-new) |
+
+路由:引导里写的是 **"这条命令要不要项目运行时"** 一刀切 —— 要(IDE 里配好的 JDK / Node / Python / Maven / Go)走
+`ide_project_sdk_terminal`,不要(`git` / `ls` / `curl` / `docker` / `ps`)仍走原生 `shell`。**常驻进程**(dev server / watch)
+有 run configuration 就用它;没有就在终端里以 `timeoutMs: 0` 起,之后用 `terminal_io` 跟日志、回答提示。
+
+三条容易读错的语义,引导里都点名了:
+
+- **每次调用都新开 tab** —— 同一件事的后续(看日志、回答提示、再敲一条)必须 `list_terminals` → `terminal_io`,不能反复
+  `project_sdk_terminal` 把 tab 堆起来;
+- **远程没有"命令结束"信号** —— `exitCode` 永远 `null`,`running` 也可能 `null`;别等退出码,按输出判断或继续 `terminal_io` 读;
+- **tab 只在这次 IDE 会话里有效** —— 关掉就失效(报 `terminal_closed` / 找不到),这时才重开一个;没有"关闭 tab"的工具,
+  用完不必主动关,用户可以直接在 IDE 里接手。
+
+opencode-idea 对它做的仍是**三件事**(透传 / 条件引导 / 工具名清单),差异在**分层前提**:本地三个随 Terminal 插件来
+(Community / Ultimate 都有),`execute_in_remote_host` 还要 `remote-run`(仅 Ultimate),所以能力探测是**四个独立标志**
+(`canProjectSdkTerminal` / `canTerminalIo` / `canListTerminals` / `canExecuteInRemoteHost`),「终端」整节锚在
+`canProjectSdkTerminal`,远程那条单独一个 `{{#if canExecuteInRemoteHost}}` —— 否则 Community 上会点名一个调不到的远程工具。
+清单在 `src/mcp/enhance.js` 的 `TERMINAL_SUFFIXES` + `terminalCapabilities`,与该仓库的 `TerminalSchemas.kt` 保持同步。
 
 ## 前置条件
 
@@ -573,7 +606,8 @@ export { default } from "/Users/yutao/IdeaProjects/opencode-idea/src/index.js";
   (0.0.6 就是这样丢了 `/open-in-ide`)。完整字段是 `id` / `name` / `description?` / `autoinvoke?` / `path` / `content`。
 - 一批用不到的 IDE MCP 工具被硬编码隐藏(`src/plugin.js` 的 `HIDDEN_IDE_TOOL_SUFFIXES`,**共 48 个后缀**):
   VCS(`git_status` / `get_repositories`)、Router 派发工具(`execute_tool`)、Debugger(全部 `xdebug_*`)、Dev Kit MCP、
-  Inspection KTS MCP、解释器环境 MCP、**IDE 内置终端**(`execute_terminal_command`:实测不继承项目环境)、
+  Inspection KTS MCP、解释器环境 MCP、**IDE 内置终端**(`execute_terminal_command`:实测不继承项目环境,已由配套插件的
+  `project_sdk_terminal` 取代)、
   **整个 Database 组**(数据源由用户在 IDE 里配置)、**有原生对应的文件搜索**(`search_text` / `search_regex` / `search_file`)、
   以及**建文件**(`create_new_file`)。配套插件自带的那个写文件工具同样隐藏。**`apply_patch` 不在隐藏列表里**。
   存的是**后缀**,清洗时按当前每个项目前缀**各删一遍** —— 只处理 `ide_` 会让子项目那几份原样送到模型面前。
