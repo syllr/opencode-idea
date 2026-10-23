@@ -12,7 +12,6 @@
     "src/ide-guidance.template.md",
     "src/ide-projects.js",
     "src/mcp/idea.js",
-    "src/mcp/enhance.js",
     "src/mcp/idea-tool-defaults.js",
     "src/mcp/idea-tool-output.js",
     "src/project.js",

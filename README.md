@@ -142,15 +142,18 @@ IDE MCP 可用时,插件通过 **系统提示注入**告诉模型 **哪些事该
 (只做减法:从 schema 里删掉一个参数),不修改任何工具 (原生或 IDEA) 的定义、描述或可用性:
 
 1. **系统提示注入**:通过 `ctx.session.hook("context", …)` 往每次请求的 system 里追加一段引导。
-   **文本本身在 `src/ide-guidance.template.md`** —— 它是一份要给人 review 的提示词文档,条件直接用 `{{#if …}}`
-   写在那几行外面,所以打开模板就能看到最终渲染成什么样;`src/template.js` 是渲染器(支持 `{{var}}` / `{{#if}}` /
-   `{{else}}`,**不做 HTML 转义** —— 输出是 Markdown,`<jar>!/<entry>` 和反引号必须原样过)。
+   **文本本身在 `src/ide-guidance.template.md`** —— 它是一份要给人 review 的提示词文档,纯 Markdown,只有每条工具后面的
+   命令名(`{{cmd_xxx}}`)由代码填;`src/template.js` 是渲染器(支持 `{{var}}`,`{{#if}}` 仍在实现里但引导模板不再使用;
+   **不做 HTML 转义** —— 输出是 Markdown,`<jar>!/<entry>` 和反引号必须原样过)。
    含工具名(`<项目前缀>_<name>`;root 是 `ide_*`,子项目是 `<目录名>_*`)与关键参数名。
+
+   > **配套插件 `idea-mcp-enhance` 是硬前提**:引导默认它一定装了,所以配套插件的工具 (运行配置启停 / 部署 / 终端)
+   > **不做"有没有装 / 有没有这个工具"的判断**,直接写进引导。
 
    **路由总纲** —— 整个引导的第一条,按「路径在不在项目里」分路:
 
    - **项目内** —— **OpenCode 自带的工具为主**,它们更快。**它们做不了、或者做得很差的,才用 IDE 工具**:
-     符号检索、依赖实现、重构、格式化、校验、运行配置、跨文件补丁。
+     符号检索、依赖实现、重构、格式化、校验、运行配置、项目终端、跨文件补丁。
      **两边都不顺手时,你自己判断用 `shell` 里的命令** —— 那是**第三选择,不是第一选择**。
    - **项目外** —— **只有 OpenCode 自带的工具**,IDE 工具不参与。这不是保守,是硬事实:**请求的路径必须落在某个
      已打开项目的目录树内,IDE 才会去解析它**;项目外的路径(`/tmp`、别的仓库、用户主目录)两个 IDE 都会直接报错。
@@ -165,8 +168,8 @@ IDE MCP 可用时,插件通过 **系统提示注入**告诉模型 **哪些事该
    | 批量改文件 | `ide_apply_patch` |
    | 校验 | `ide_lint_files` / `ide_get_file_problems` / `ide_build_project` |
    | 运行配置 | `ide_get_run_configurations` / `ide_execute_run_configuration`(+ 配套插件的启停工具) |
-   | 终端 | `ide_project_sdk_terminal` / `ide_terminal_io` / `ide_list_terminals` / `ide_execute_in_remote_host`(**仅配套插件**;远程执行还要求 Ultimate + Deployment SFTP) |
-   | 部署 | `ide_list_server_deployments` / `ide_upload_to_deployment` / `ide_download_from_deployment` / `ide_get_deployment_task_status`(**仅配套插件 + Ultimate**) |
+   | 终端 | `ide_project_sdk_terminal` / `ide_terminal_io` / `ide_list_terminals` / `ide_execute_in_remote_host`(远程执行还要求 Ultimate + Deployment SFTP) |
+   | 部署 | `ide_list_server_deployments` / `ide_upload_to_deployment` / `ide_download_from_deployment` / `ide_get_deployment_task_status`(要求 Ultimate) |
 
    **读、找文本、找文件、改单个文件一律用 OpenCode 自带的工具**(`read` / `grep` / `glob` / `write` / `edit`):
    这几件事走 IDE 只是多一跳,所以映射表里**不出现** `ide_search_text` / `ide_search_regex` / `ide_search_file`。
@@ -264,7 +267,7 @@ IDE MCP 可用时,插件通过 **系统提示注入**告诉模型 **哪些事该
 ## Run Configuration 全套 (配套插件 `idea-mcp-enhance`)
 
 IDE 内置的 MCP Server 只能 **启动已有**的 run configuration (`execute_run_configuration`), **不能新建、不能停止、不能重启、
-也查不到运行状态**。配套的 IDEA 插件 [`idea-mcp-enhance`](https://github.com/syllr/idea-mcp-enhance)(IDEA 2026.2+,另装)
+也查不到运行状态**。配套的 IDEA 插件 [`idea-mcp-enhance`](https://github.com/syllr/idea-mcp-enhance)(IDEA 2026.2+,必须安装)
 补齐这一族 —— 「定义态 (查 / 建 / 改 / 删)」加「运行态 (看 / 停 / 重启)」:
 
 | 工具 (OpenCode 里叫 `ide_*`)      | 作用                                                                                                                                                                                                             |
@@ -292,20 +295,16 @@ IDE 内置的 MCP Server 只能 **启动已有**的 run configuration (`execute_
 `ide_inspect_run_configuration` 的 `naming` 字段把名字拆成 platform / base / env,规则是从两头往中间收 (末段是环境;首段只有
 恰好是 `win` 才算平台,不是就并进 base),所以 `a@b@c` 会解析成 base=`a@b`、env=`c`,不会丢段。
 
-opencode-idea 对这一组工具做三件事:
+opencode-idea 对这一组工具做两件事:
 
 1. **透传**:IDE MCP server 以 `codemode: false` 注册,工具目录整体转发,所以这七个工具自动以 `ide_*` 出现在模型的
-   工具表里 —— 插件侧不需要单独声明 (也因此 **装不装这个 IDEA 插件,插件侧的代码都不用改**);
-2. **条件引导**:只有这次请求的工具快照里真的有它们,才在「运行配置」节里逐个点名。**没装插件时整节连同标题一起消失**,
-   引导不会提到一个调不到的工具。其中一条值得单独说:**启动 / 重启常驻进程就用 `ide_rerun_run_configuration`,
-   不要用 `pkill` / `kill` / shell** —— 这正是它要解决的问题:外部杀掉的进程 IDE 并不知道,Run 窗口仍显示运行中,
-   下次启动就会撞端口;
-3. **工具名清单**写在 `src/mcp/enhance.js`(与原生 IDE 的 `src/mcp/idea.js` 分开放:原生走原生,插件的走插件的),
-   与该仓库的 `RunLifecycleSchemas.kt` 保持同步。工具按 **存在的子集**逐个点名 (而不是「有就全写」),这样旧版本的配套
-   插件少给一两个工具时,引导也不会提到它们。同理, **每条命令名只列真的提供它的项目**(逐项目核对,见「条件注入」)——
-   一个项目装了配套插件、另一个没装是可能的。
+   工具表里 —— 插件侧不需要单独声明,也不需要判断它们在不在;
+2. **无条件引导**:这七个工具**默认都在**(配套插件是硬前提),「运行配置」节直接逐个点名。其中一条值得单独说:
+   **启动 / 重启常驻进程就用 `ide_rerun_run_configuration`,不要用 `pkill` / `kill` / shell** —— 这正是它要解决的问题:
+   外部杀掉的进程 IDE 并不知道,Run 窗口仍显示运行中,下次启动就会撞端口。
 
-> 没装 `idea-mcp-enhance` 的 IDE 一切照旧:工具不存在,引导也不提,模型继续按原来的方式工作。
+> **前提**:配套插件 `idea-mcp-enhance` 必须装在每个接入的 IDE 上。没装时引导仍会点名这些工具、调用会失败 —— 这是
+> 刻意选择的硬前提,不做兼容判断。
 
 ## Run Configuration:文件由工具写,档案由 skill 写
 
@@ -409,7 +408,7 @@ opencode-idea 对这一组工具做三件事:
 ## Deployment 全套 (配套插件 `idea-mcp-enhance`)
 
 IDE 内置的 MCP Server **完全不碰部署** —— 既不报 IDE 里配了哪些 Deployment 服务器,也不能把文件传上去 / 拉下来。
-配套插件 [`idea-mcp-enhance`](https://github.com/syllr/idea-mcp-enhance)(IDEA 2026.2+,另装)补齐这四个:
+配套插件 [`idea-mcp-enhance`](https://github.com/syllr/idea-mcp-enhance)(IDEA 2026.2+,必须安装)补齐这四个:
 
 | 工具 (OpenCode 里叫 `ide_*`)     | 作用                                                                                                                                                       |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -418,15 +417,11 @@ IDE 内置的 MCP Server **完全不碰部署** —— 既不报 IDE 里配了�
 | `ide_download_from_deployment`   | 把**一条 deployment** 从服务器拉回本地(等同 IDE 的 Download from …),**以服务器为准**:两边都有的文件被远端覆盖(相同则不写)。同样传 `deploymentName`。**没有"保留我的版本"这个选项** |
 | `ide_get_deployment_task_status` | 用 `handle` 查一次传输的状态与计数;**永不启动任何传输**                                                                                                    |
 
-opencode-idea 对它做的是**同一套三件事**(透传 / 条件引导 / 工具名清单),差异只有两处:
+opencode-idea 对它做的是**同一套两件事**(透传 / 无条件引导),不再按工具快照裁剪文本:
 
-- **条件引导更严** —— 部署工具除了配套插件,还要求 `com.jetbrains.plugins.webDeployment`,而它只在 **Ultimate** 里存在,
-  所以 Community IDE 上这一节永远不出现。而且 **这一节整节 (含标题) 都由配套插件提供**,一个工具都没有时它 **完全消失**
-  —— 不能像「运行配置」那样留一个空标题 (那一节还有内置的 `get_run_configurations` / `execute_run_configuration` 撑着)。
-  整节**锚在一个工具上**(模板里 `{{#if canListServerDeployments}}` 直接包住标题):这四个由同一道前提注册、同进同出,
-  拿其中一个当判据就够,不需要再造一个"四个里任一个"的聚合标志;
-- **工具名清单**在 `src/mcp/enhance.js` 的 `DEPLOYMENT_SUFFIXES` + `deploymentCapabilities`,与该仓库的
-  `DeploymentSchemas.kt` 保持同步。
+- **前提**:部署工具除配套插件外,还要求 `com.jetbrains.plugins.webDeployment`(**仅 Ultimate**)。引导默认它在,
+  所以「服务器文件同步」节始终出现;Community 上调用这些工具会失败 —— 这属于配套环境没装全,不做兼容判断;
+- **契约**:`DeploymentSchemas.kt` 就是这组工具的对外形状(参数名、返回字段),引导按它写,不再单独维护工具名清单。
 
 这节存在的理由是 **一条路由规则**:往服务器传 / 取文件要走这些工具, **不要自己拼 `ssh` / `rsync` / `scp`** ——
 IDE 的连接、路径映射、排除规则都在它后面,自己拼的那份与 IDE 看到、管理的不是同一份。文案里同时点明两件容易读错的事:
@@ -465,14 +460,14 @@ IDE 内置的 `execute_terminal_command` **不继承项目环境**(实测拿不�
 - **tab 只在这次 IDE 会话里有效** —— 关掉就失效(报 `terminal_closed` / 找不到),这时才重开一个;没有"关闭 tab"的工具,
   用完不必主动关,用户可以直接在 IDE 里接手。
 
-opencode-idea 对它做的仍是**三件事**(透传 / 条件引导 / 工具名清单),差异在**分层前提**:本地三个随 Terminal 插件来
-(Community / Ultimate 都有),`execute_in_remote_host` 还要 `remote-run`(仅 Ultimate),所以能力探测是**四个独立标志**
-(`canProjectSdkTerminal` / `canTerminalIo` / `canListTerminals` / `canExecuteInRemoteHost`),「终端」整节锚在
-`canProjectSdkTerminal`,远程那条单独一个 `{{#if canExecuteInRemoteHost}}` —— 否则 Community 上会点名一个调不到的远程工具。
-清单在 `src/mcp/enhance.js` 的 `TERMINAL_SUFFIXES` + `terminalCapabilities`,与该仓库的 `TerminalSchemas.kt` 保持同步。
+opencode-idea 对它做的仍是**同一套两件事**(透传 / 无条件引导):本地三个工具(Terminal 插件在就有)和
+`execute_in_remote_host`(还要 `remote-run`,仅 Ultimate)都**默认齐全**,引导直接点名,不再按工具快照裁剪。
+契约以该仓库的 `TerminalSchemas.kt` 为准。
 
 ## 前置条件
 
+- **必须安装配套插件 [`idea-mcp-enhance`](https://github.com/syllr/idea-mcp-enhance)(IDEA 2026.2+)**。引导默认它的工具都在
+  (运行配置启停 / 部署 / 终端),**不做"装没装 / 有没有这个工具"的判断**;部署与远程终端还要求 Ultimate。
 - JetBrains IDE 已开启 MCP 服务 (IDE 设置里的 MCP Server / AI Assistant MCP),版本需 **2026.2+**(提供 Streamable HTTP 端点
   `/stream`);若关闭,`/open-in-ide` 会立即提示如何重新开启。
 - IDE 侧需开启 **Brave Mode**(否则需要确认的 MCP 工具调用会停下来等用户确认);MCP 未就绪时通知会同时提醒开启它。

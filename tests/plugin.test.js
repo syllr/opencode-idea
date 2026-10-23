@@ -52,18 +52,17 @@ function ideConfig(rootPath, { app = 'idea', children = [] } = {}) {
 
 /**
  * What the IDE's bundled MCP server exposes — the catalog every supported IDE
- * serves. Tests that need the companion plugin's extra tools extend this, so the
- * difference between "stock IDE" and "enhanced IDE" stays explicit.
+ * serves. The companion plugin's tools are assumed present and are named by the
+ * guidance unconditionally, so tests do not need to extend this for them.
  */
 const DEFAULT_IDE_TOOLS = ['ide_read_file'];
 
 /**
- * 部署那节的标题（模板里的字面量）。整节连标题一起受 `{{#if}}` 控制，所以
- * "这一节在不在"就认它 —— 写在一处，改标题时不会漏。
+ * 部署 / 终端那两节的标题（模板里的字面量）。整节不再受 `{{#if}}` 控制，
+ * "这一节在不在"只是结构断言，写在一处，改标题时不会漏。
  */
 const DEPLOYMENT_HEADING = '### 服务器文件同步';
 
-/** 终端那节的标题，同样的判据。 */
 const TERMINAL_HEADING = '### 终端';
 
 afterAll(() => rmSync(projectPath, { recursive: true, force: true }));
@@ -623,7 +622,7 @@ describe('plugin setup', () => {
     await cleanupDisabled();
   });
 
-  it('names the companion plugin tools only when the IDE actually serves them', async () => {
+  it('always names the companion plugin tools once the IDE is serving', async () => {
     const fake = await startFakeIdeForProject();
     running = fake.server;
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
@@ -631,66 +630,25 @@ describe('plugin setup', () => {
 
     await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
-    // A stock IDE: the bundled MCP server only. The companion plugin
-    // `idea-mcp-enhance` is not installed, so its tools are absent and the
-    // guidance must not name them — a named tool the model cannot call is only a
-    // failed call.
-    const stock = { system: [], tools: { read: {}, ide_read_file: {}, ide_build_project: {} } };
-    await state.sessionHook(stock);
-    expect(stock.system[1].text).toContain('ide_get_run_configurations');
-    expect(stock.system[1].text).not.toContain('ide_rerun_run_configuration');
-    // The deployment section needs the companion plugin AND
-    // `com.jetbrains.plugins.webDeployment` (Ultimate only). Unlike the
-    // run-configuration section, which the bundled server keeps alive, this one
-    // has to disappear along with its heading.
-    expect(stock.system[1].text).not.toContain(DEPLOYMENT_HEADING);
-    expect(stock.system[1].text).not.toContain('ide_upload_to_deployment');
-    expect(stock.system[1].text).not.toContain(TERMINAL_HEADING);
-    expect(stock.system[1].text).not.toContain('ide_project_sdk_terminal');
-
-    // Same IDE plus the enhance plugin: its tools are in the snapshot, so the
-    // sections go out with them.
-    const enhanced = {
-      system: [],
-      tools: {
-        read: {},
-        ide_read_file: {},
-        ide_execute_run_configuration: {},
-        ide_list_running_configurations: {},
-        ide_stop_run_configuration: {},
-        ide_rerun_run_configuration: {},
-        ide_list_server_deployments: {},
-        ide_upload_to_deployment: {},
-        ide_download_from_deployment: {},
-        ide_get_deployment_task_status: {},
-        ide_project_sdk_terminal: {},
-        ide_terminal_io: {},
-        ide_list_terminals: {},
-        ide_execute_in_remote_host: {},
-      },
-    };
-    await state.sessionHook(enhanced);
+    // The companion plugin `idea-mcp-enhance` is a hard prerequisite, so the
+    // guidance names its tools unconditionally — no tool-presence check, even
+    // when this request's snapshot looks like the bundled catalog only.
+    const request = { system: [], tools: { read: {}, ide_read_file: {}, ide_build_project: {} } };
+    await state.sessionHook(request);
     for (const name of [
-      'ide_list_running_configurations',
-      'ide_stop_run_configuration',
+      'ide_get_run_configurations',
       'ide_rerun_run_configuration',
       'ide_list_server_deployments',
       'ide_upload_to_deployment',
-      'ide_download_from_deployment',
-      'ide_get_deployment_task_status',
       'ide_project_sdk_terminal',
       'ide_terminal_io',
       'ide_list_terminals',
       'ide_execute_in_remote_host',
     ]) {
-      expect(enhanced.system[1].text).toContain(name);
+      expect(request.system[1].text).toContain(name);
     }
-    expect(enhanced.system[1].text).toContain(DEPLOYMENT_HEADING);
-    expect(enhanced.system[1].text).toContain(TERMINAL_HEADING);
-
-    // The two variants are different texts, so the second request does not get
-    // deduplicated against the first one's guidance.
-    expect(enhanced.system[1].text).not.toBe(stock.system[1].text);
+    expect(request.system[1].text).toContain(DEPLOYMENT_HEADING);
+    expect(request.system[1].text).toContain(TERMINAL_HEADING);
 
     await cleanup();
   });

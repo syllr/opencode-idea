@@ -1,11 +1,13 @@
 // Arguments this plugin OWNS on the IDE's own MCP tools.
 //
-// Three files, three different subjects — kept apart on purpose:
+// Two files, two different subjects — kept apart on purpose:
 //
 //   * `idea.js`             the IDE's bundled MCP server: endpoint, transport, probe
 //   * `idea-tool-defaults`  (this file) that server's TOOL CATALOG, and the
 //                           arguments on it that this plugin controls
-//   * `enhance.js`          a companion plugin's tools, which may not be installed
+//
+// The companion plugin's own tools are not managed here at all: they are a hard
+// prerequisite, passed through untouched.
 //
 // ## Why an argument can be owned at all
 //

@@ -1,8 +1,8 @@
 // IDE MCP routing guidance injected into the model's system prompt.
 //
 // The TEXT lives in `ide-guidance.template.md`, not here. It is a prompt document
-// a human has to review as a document — with the conditionals visible as
-// `{{#if …}}` around the lines they control — and building it by concatenating
+// a human has to review as a document — plain Markdown, with only the per-project
+// command lists (`{{cmd_xxx}}`) generated — and building it by concatenating
 // arrays made the result impossible to read without running the code. The
 // template renders byte-for-byte to what the model receives; see `src/template.js`
 // for why the renderer is 60 lines here rather than an engine dependency.
@@ -55,29 +55,18 @@
 // 这样模型同时拿到"这条功能是什么"和"这个项目里它叫什么",不需要自己拼前缀 —— 少一层
 // 推理,就少一类"拿错项目工具"的失败;而且文本不会随项目数成倍增长。
 //
-// The `{{#if can…}}` blocks gate the companion plugin's tools (`mcp/enhance.js`),
-// which only exist when the user installed it. Nothing in the document says so:
-// which plugin a tool came from is this plugin's plumbing, not the model's
-// business — it either sees the tool or it does not. The deployment section is
-// gated on ONE of those flags (`canListServerDeployments`) rather than on a flag of
-// its own: the four tools are registered together, so one of them answers for the
-// section — heading included, which is why the gate wraps the `###` line too. The
-// terminal section works the same way on `canProjectSdkTerminal`; only the remote
-// terminal gets its own gate, because it is the one tool in that section that a
-// Community IDE does not have.
+// The guidance describes the companion plugin's tools (`idea-mcp-enhance`)
+// unconditionally: that plugin is a hard prerequisite, not an optional extra, so
+// there is nothing to detect here. A tool named in the guidance is expected to be
+// in the request; if it is not, the installation is wrong, and hiding the text
+// would only make that harder to notice.
+//
+// The template is therefore plain Markdown with no `{{#if …}}` blocks at all —
+// only the per-project command lists (`{{cmd_xxx}}`) are generated.
 
 import { readFileSync } from 'node:fs';
 
 import { IDE_LABELS } from './ide-projects.js';
-import {
-  DEPLOYMENT_SUFFIXES,
-  RUN_LIFECYCLE_SUFFIXES,
-  TERMINAL_SUFFIXES,
-  deploymentCapabilities,
-  runLifecycleCapabilities,
-  servesTool,
-  terminalCapabilities,
-} from './mcp/enhance.js';
 import { renderTemplate } from './template.js';
 
 /** The prompt document, next to this module so it ships with it. */
@@ -85,21 +74,6 @@ const TEMPLATE_PATH = new URL('ide-guidance.template.md', import.meta.url);
 
 /** Read once: the file is fixed for the life of the process, and this runs per request. */
 const TEMPLATE = readFileSync(TEMPLATE_PATH, 'utf8');
-
-/**
- * 配套插件那三组工具的后缀全集 —— 判据只有一条:**这张表里的工具按项目分别存在**。
- *
- * 表外(内置 MCP Server 自带的那批)是每个项目都有的,列命令名时不需要看快照;表内的必须
- * 逐项目核对(见 {@link commandVariables})。三组都收进来而不是只收部署那组:它们的
- * 存在性本来就按项目、按 IDE 不同 —— 启停工具取决于装没装配套插件,部署与远程终端还多一道
- * "是不是 Ultimate",本地终端还要 Terminal 插件。把 run-lifecycle 留在表外,等于默认
- * "一个项目装了、别的项目也装了",而那只是个默认,不是事实。
- */
-const ENHANCE_SUFFIXES = new Set([
-  ...RUN_LIFECYCLE_SUFFIXES,
-  ...DEPLOYMENT_SUFFIXES,
-  ...TERMINAL_SUFFIXES,
-]);
 
 /**
  * 「本会话有哪些项目、各自用哪个 MCP 工具前缀」的清单。
@@ -134,100 +108,24 @@ function routeTableFor(projects) {
  * `` `根项目 ide_search_symbol` ｜ `modelserver modelserver_search_symbol` ``。
  * 所以模板增删一条工具不需要动这里的代码，也不会出现"模板里写了、代码忘了给值"的空行。
  *
- * **配套插件那条线要逐项目过滤**（见 {@link ENHANCE_SUFFIXES}）：内置工具每个项目都有,列全即可;
- * 而 `idea-mcp-enhance` 的工具是**按项目分别存在**的(装了插件的那个 IDE 有,另一个可能没有;
- * 部署那组还要求 Ultimate)。它常常同进同出,但"通常"不是"总是" —— 一旦不一致,列全就会在
- * 缺工具的那个项目下点名一个模型调不到的命令,而那正是这整个模块要防的失败。
- * 过滤不会产生空行:每条 bullet 的 `{{#if}}` 用的是**并集**判断(任一项目有即渲染),
- * 并集为真 ⇒ 至少一个项目通过过滤。
+ * 每个项目都列:配套插件是硬前提,每个接入的 IDE 都装了它,所以不需要再按工具快照逐项目
+ * 过滤"这个项目有没有这个工具"。
  *
  * @param {ReadonlyArray<{ label: string, server: string, isRoot: boolean }>} projects
- * @param {Record<string, unknown> | undefined} tools 本次请求的工具快照
  */
-function commandVariables(projects, tools) {
+function commandVariables(projects) {
   /** @type {Record<string, string>} */
   const variables = {};
   for (const match of TEMPLATE.matchAll(/\{\{\s*(cmd_[A-Za-z0-9_]+)\s*\}\}/g)) {
     const name = match[1];
     const suffix = name.slice('cmd_'.length);
+    // 每条都写清"哪个项目 → 哪个命令"：根项目直接用它的角色名,子项目用目录名。
+    // 不写 `.`/目录名这种需要回看清单才能解读的代号 —— 模型读每条功能时不必回头查表。
     variables[name] = projects
-      .filter((project) => !ENHANCE_SUFFIXES.has(suffix) || servesTool(tools, `${project.server}_`, suffix))
-      // 每条都写清"哪个项目 → 哪个命令"：根项目直接用它的角色名,子项目用目录名。
-      // 不写 `.`/目录名这种需要回看清单才能解读的代号 —— 模型读每条功能时不必回头查表。
       .map((project) => `${project.isRoot ? '根项目' : project.label} \`${project.server}_${suffix}\``)
       .join(' ｜ ');
   }
   return variables;
-}
-
-/**
- * 本会话里这些 run-lifecycle 能力可不可用。
- *
- * 提示词只有一份，所以这里要回答的是"这套能力在本次会话里存不存在" —— 任一项目提供即算存在。
- * 同一个人的几个 IDE 装不装配套插件通常是一致的；万一不一致，模板里那句"没装就交给用户"兜住。
- *
- * @param {ReadonlyArray<{ server: string }>} projects
- * @param {Record<string, unknown> | undefined} tools
- */
-function mergeRunLifecycle(projects, tools) {
-  const all = projects.map((project) => runLifecycleCapabilities(tools, `${project.server}_`));
-  return {
-    canCreateRunConfiguration: all.some((c) => c.canCreateRunConfiguration),
-    canInspectRunConfiguration: all.some((c) => c.canInspectRunConfiguration),
-    canUpdateRunConfiguration: all.some((c) => c.canUpdateRunConfiguration),
-    canDeleteRunConfiguration: all.some((c) => c.canDeleteRunConfiguration),
-    canListRunningConfigurations: all.some((c) => c.canListRunningConfigurations),
-    canStopRunConfiguration: all.some((c) => c.canStopRunConfiguration),
-    canRerunRunConfiguration: all.some((c) => c.canRerunRunConfiguration),
-  };
-}
-
-/**
- * 部署工具同理(见 `mergeRunLifecycle`):逐项目判断,任一项目提供即算存在。
- *
- * **整节的锚点就是 `canListServerDeployments`**(模板里 `{{#if canListServerDeployments}}` 直接包住标题):
- * 配套插件只要装了,IDE 的 MCP 工具表里就多出这一组(它们由同一道前提注册,同进同出),
- * 所以拿其中一个当判据就够了 —— 不需要再造一个"四个里任一个"的聚合标志。
- *
- * 不锚在那些"必须有工具才算"的地方也不成问题:一个都没有时 `canListServerDeployments` 为 false,
- * 标题与正文一起消失;而这一节和前一组不同 —— run-lifecycle 那节是内置工具
- * (`get_run_configurations` / `execute_run_configuration`)撑起来的**自己的**标题,缺配套插件时标题仍在。
- * 顺带一提,这一组还额外要求 `com.jetbrains.plugins.webDeployment`(**仅 Ultimate 有**),所以
- * "整节不出现"是常态而非边角。
- *
- * @param {ReadonlyArray<{ server: string }>} projects
- * @param {Record<string, unknown> | undefined} tools
- */
-function mergeDeployment(projects, tools) {
-  const all = projects.map((project) => deploymentCapabilities(tools, `${project.server}_`));
-  return {
-    canListServerDeployments: all.some((c) => c.canListServerDeployments),
-    canUploadToDeployment: all.some((c) => c.canUploadToDeployment),
-    canDownloadFromDeployment: all.some((c) => c.canDownloadFromDeployment),
-    canGetDeploymentTaskStatus: all.some((c) => c.canGetDeploymentTaskStatus),
-  };
-}
-
-/**
- * 终端工具同理(见 `mergeRunLifecycle`):逐项目判断,任一项目提供即算存在。
- *
- * **整节的锚点是 `canProjectSdkTerminal`**(模板里 `{{#if canProjectSdkTerminal}}` 直接包住
- * 「终端」的标题):本地那三个由同一个 provider 注册(Terminal 插件在就在),所以拿
- * `project_sdk_terminal` 当判据就够。`execute_in_remote_host` 不在同一个 provider 里
- * (还要 remote-run,仅 Ultimate),所以它**单独**一个 `{{#if canExecuteInRemoteHost}}`
- * —— 本地终端有、远程终端没有是 Community 上的常态,不能跟着整节一起出现。
- *
- * @param {ReadonlyArray<{ server: string }>} projects
- * @param {Record<string, unknown> | undefined} tools
- */
-function mergeTerminal(projects, tools) {
-  const all = projects.map((project) => terminalCapabilities(tools, `${project.server}_`));
-  return {
-    canProjectSdkTerminal: all.some((c) => c.canProjectSdkTerminal),
-    canTerminalIo: all.some((c) => c.canTerminalIo),
-    canListTerminals: all.some((c) => c.canListTerminals),
-    canExecuteInRemoteHost: all.some((c) => c.canExecuteInRemoteHost),
-  };
 }
 
 /**
@@ -237,18 +135,13 @@ function mergeTerminal(projects, tools) {
  * 列出各项目的命令名(`cmd_*` 变量),而不是把整份工具清单按前缀抄 N 遍。
  *
  * @param {ReadonlyArray<{ path: string, server: string, app: string, label: string, isRoot: boolean }>} projects
- * @param {{ tools?: Record<string, unknown> }} [options] `tools` 是本次请求的工具快照
- *   （`event.tools`），用来判断配套插件（run-lifecycle / deployment / terminal）的工具在不在。
  * @returns {string}
  */
-export function buildIdeGuidanceText(projects, options = {}) {
+export function buildIdeGuidanceText(projects) {
   return renderTemplate(TEMPLATE, {
     projectCount: projects.length,
     routeTable: routeTableFor(projects),
-    ...mergeRunLifecycle(projects, options.tools),
-    ...mergeDeployment(projects, options.tools),
-    ...mergeTerminal(projects, options.tools),
-    ...commandVariables(projects, options.tools),
+    ...commandVariables(projects),
   });
 }
 
@@ -284,18 +177,16 @@ export const MCP_RECOVERY_GUIDANCE_RECONNECTING = [
  * Push the guidance onto a session `system` array. Called for every primary
  * model request, so it stays idempotent per request.
  *
- * The text depends on which projects are connected and which run-lifecycle tools
- * this request carries, so the idempotence check compares the built text rather
- * than assuming one variant.
+ * The text depends only on which projects are connected, and the idempotence check
+ * compares the built text rather than assuming one variant.
  *
  * @param {unknown} system
  * @param {ReadonlyArray<{ path: string, server: string, app: string, label: string, isRoot: boolean }>} projects
- * @param {{ tools?: Record<string, unknown> }} [options]
  */
-export function appendIdeGuidance(system, projects, options = {}) {
+export function appendIdeGuidance(system, projects) {
   if (!Array.isArray(system)) return;
   if (!Array.isArray(projects) || projects.length === 0) return;
-  const text = buildIdeGuidanceText(projects, options);
+  const text = buildIdeGuidanceText(projects);
   if (system.some((part) => part?.text === text)) return;
   system.push({ type: 'text', text });
 }

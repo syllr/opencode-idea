@@ -8,7 +8,6 @@ import {
   buildIdeGuidanceText,
 } from './ide-guidance.js';
 import { HIDDEN_IDE_TOOL_SUFFIXES } from './plugin.js';
-import { DEPLOYMENT_SUFFIXES, RUN_LIFECYCLE_SUFFIXES, TERMINAL_SUFFIXES } from './mcp/enhance.js';
 
 const ROOT = {
   path: '/Users/me/project',
@@ -26,10 +25,11 @@ const CHILD = {
 };
 
 /**
- * IDE 提供了、且插件没有藏起来的工具 —— 引导必须**逐个点名**。
+ * 引导必须**逐个点名**的工具 —— 内置 MCP Server 的 + 配套插件 `idea-mcp-enhance` 的。
  *
  * 这是引导最重要的一条结构契约:模型看得见却没人告诉它用途的工具,它不会用;
- * 引导点名了却调不到的工具,那是一次注定失败的调用。藏起来的那些反过来。
+ * 引导点名了却调不到的工具,那是一次注定失败的调用。配套插件是硬前提,所以它那部分
+ * 不按工具快照做条件渲染。藏起来的那些反过来。
  */
 const VISIBLE = [
   'analyze_calls',
@@ -66,15 +66,12 @@ const VISIBLE = [
   'upload_to_deployment',
 ];
 
-/** 一次会话里 IDE 实际提供的全部工具(可见的 + 被藏起来的)。 */
-const served = (suffixes) => Object.fromEntries(suffixes.map((s) => [`ide_${s}`, {}]));
-
-/** 两个项目的会话,IDE 只提供内置工具（没装配套插件）。 */
-const stock = () => buildIdeGuidanceText([ROOT, CHILD], { tools: {} });
+/** 两个项目的会话。 */
+const guidance = () => buildIdeGuidanceText([ROOT, CHILD]);
 
 describe('引导的生成', () => {
   it('gives every project its own tool prefix', () => {
-    const text = stock();
+    const text = guidance();
     expect(text).toContain('`ide_search_symbol`');
     expect(text).toContain('`modelserver_search_symbol`');
   });
@@ -82,8 +79,7 @@ describe('引导的生成', () => {
   it('names every tool the IDE serves and none of the hidden ones', () => {
     // 一次把"可见 = 点名"钉住:模型看得见却没人告诉它用途的工具,它不会用;
     // 点名了却调不到的工具,那是一次注定失败的调用。
-    const all = [...VISIBLE, ...HIDDEN_IDE_TOOL_SUFFIXES];
-    const text = buildIdeGuidanceText([ROOT], { tools: served(all) });
+    const text = guidance();
     for (const suffix of VISIBLE) {
       expect(text).toContain(`ide_${suffix}`);
     }
@@ -92,43 +88,28 @@ describe('引导的生成', () => {
     }
   });
 
-  it('adds the companion plugin sections only when the tools are in the snapshot', () => {
-    const stockText = stock();
-    expect(stockText).not.toContain('### 服务器文件同步');
-    expect(stockText).not.toContain('### 终端');
-    expect(stockText).not.toContain('ide_inspect_run_configuration');
-
-    const full = buildIdeGuidanceText([ROOT], {
-      tools: served([...RUN_LIFECYCLE_SUFFIXES, ...DEPLOYMENT_SUFFIXES, ...TERMINAL_SUFFIXES]),
-    });
-    expect(full).toContain('### 服务器文件同步');
-    expect(full).toContain('### 终端');
-    expect(full).toContain('ide_inspect_run_configuration');
-    expect(full).toContain('ide_upload_to_deployment');
-    expect(full).toContain('ide_project_sdk_terminal');
-  });
-
-  it('keeps the remote terminal out of a Community snapshot', () => {
-    // 本地三个随 Terminal 插件来,远程那个还要 remote-run(仅 Ultimate)。
-    const text = buildIdeGuidanceText([ROOT], {
-      tools: served(['project_sdk_terminal', 'terminal_io', 'list_terminals']),
-    });
+  it('always describes the companion plugin tools', () => {
+    // 配套插件是硬前提 —— 不检测它装没装,也不按工具快照决定写不写。
+    const text = guidance();
+    expect(text).toContain('### 服务器文件同步');
     expect(text).toContain('### 终端');
+    expect(text).toContain('ide_inspect_run_configuration');
+    expect(text).toContain('ide_upload_to_deployment');
     expect(text).toContain('ide_project_sdk_terminal');
-    expect(text).not.toContain('ide_execute_in_remote_host');
+    expect(text).toContain('ide_execute_in_remote_host');
   });
 });
 
 describe('注入与恢复提示', () => {
   it('appends the guidance once and is idempotent per request', () => {
     const system = [];
-    appendIdeGuidance(system, [ROOT], { tools: {} });
-    appendIdeGuidance(system, [ROOT], { tools: {} });
+    appendIdeGuidance(system, [ROOT]);
+    appendIdeGuidance(system, [ROOT]);
     expect(system).toHaveLength(1);
     expect(system[0].type).toBe('text');
     // 没有项目 / 没有 system 数组时什么都不做
     const other = [];
-    appendIdeGuidance(other, [], { tools: {} });
+    appendIdeGuidance(other, []);
     appendIdeRecoveryGuidance(undefined, { marked: false, serving: true });
     expect(other).toHaveLength(0);
   });
