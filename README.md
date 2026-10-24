@@ -168,7 +168,7 @@ IDE MCP 可用时,插件通过 **系统提示注入**告诉模型 **哪些事该
    | 批量改文件 | `ide_apply_patch` |
    | 校验 | `ide_lint_files` / `ide_get_file_problems` / `ide_build_project` |
    | 运行配置 | `ide_get_run_configurations` / `ide_execute_run_configuration`(+ 配套插件的启停工具) |
-   | 终端 | `ide_project_sdk_terminal` / `ide_terminal_io` / `ide_list_terminals` / `ide_execute_in_remote_host`(远程执行还要求 Ultimate + Deployment SFTP) |
+   | 终端 | `ide_project_sdk_terminal` / `ide_terminal_read` / `ide_terminal_interrupt` / `ide_list_terminals` / `ide_execute_in_remote_host`(远程执行还要求 Ultimate + Deployment SFTP) |
    | 部署 | `ide_list_server_deployments` / `ide_upload_to_deployment` / `ide_download_from_deployment` / `ide_get_deployment_task_status`(要求 Ultimate) |
 
    **读、找文本、找文件、改单个文件一律用 OpenCode 自带的工具**(`read` / `grep` / `glob` / `write` / `edit`):
@@ -423,8 +423,8 @@ opencode-idea 对它做的是**同一套两件事**(透传 / 无条件引导),�
   所以「服务器文件同步」节始终出现;Community 上调用这些工具会失败 —— 这属于配套环境没装全,不做兼容判断;
 - **契约**:`DeploymentSchemas.kt` 就是这组工具的对外形状(参数名、返回字段),引导按它写,不再单独维护工具名清单。
 
-这节存在的理由是 **一条路由规则**:往服务器传 / 取文件要走这些工具, **不要自己拼 `ssh` / `rsync` / `scp`** ——
-IDE 的连接、路径映射、排除规则都在它后面,自己拼的那份与 IDE 看到、管理的不是同一份。文案里同时点明两件容易读错的事:
+这节存在的理由是 **一条路由规则**:往服务器传 / 取文件要走这些工具 —— IDE 的连接、路径映射、排除规则都在它后面,
+手工拼的那份与 IDE 看到、管理的不是同一份。文案里同时点明两件容易读错的事:
 `mirror` 是 **默认值**且 **会删远端文件**(而 MCP 路径上没有确认步骤),下载 **以远端为准**、没有"保留我的版本"。
 
 **同步只是上半段**:每条 deployment 都属于某台 Server,传完之后在那台 Server 上启动刚传上去的二进制、重启服务、看日志,
@@ -432,10 +432,11 @@ IDE 的连接、路径映射、排除规则都在它后面,自己拼的那份与
 手工顶替** —— 手工那条路既没有 IDE 的路径映射,也常常根本没有权限(实测过一次:模型拿到服务器名之后转去读
 `~/.ssh/config`、逐个试用户名,失败后回头找用户要密码,而 `execute_in_remote_host` 一直都在工具表里)。
 
-还有一个语义必须写明,否则模型会把正常的中间态当失败去重试:上传 / 下载都在 IDE 后台跑,单次调用只等到 `waitMs`
-(默认 10 秒,上限 12 秒)为止,返回 `state: "in_progress"` 是 **正常**的(它可能以 **error 结果**回来)—— 拿 `handle`
-调 `get_deployment_task_status` 接着看,**不要用重复调上传 / 下载来代替**(那样会再起一次传输)。`completed` 之后
-`counters` 才可信,而且数的是**操作次数**,不是文件数(删掉整个目录也只算 1)。
+还有一个语义必须写明,否则模型会把正常的中间态当失败去重试:上传 / 下载默认**同步等结果**,传完立刻返回
+`state: "completed"`;只有超过 300 秒等待窗口还没传完,才返回 `state: "in_progress"` + `handle`,这是 **正常**的
+(它也可能以 **error 结果**回来)—— 拿 `handle` 调 `get_deployment_task_status` 接着看,**不要用重复调上传 / 下载
+来代替**(那样会再起一次传输)。`completed` 之后 `counters` 才可信,而且数的是**操作次数**,不是文件数
+(删掉整个目录也只算 1)。
 
 > **这一组没有 skill,和 run configuration 不同。** run configuration 要 skill 是因为"某种类型怎么写"是一批得逐类型实测的
 > 模板 (`assets/types/`);部署没有这层知识 —— 四个工具的 schema 已经说清 `serverName` / `deploymentName` / `mode` 怎么填,
@@ -448,28 +449,33 @@ IDE 内置的 `execute_terminal_command` **不继承项目环境**(实测拿不�
 
 | 工具 (OpenCode 里叫 `ide_*`) | 作用 |
 | --- | --- |
-| `ide_project_sdk_terminal` | 在本项目 SDK 终端里跑**一条**命令,返回输出 + `tab`。每次调用 **新开一个 tab**;`timeoutMs` 默认 10000(`0` = 发出去就返回,上限 12000)。终端环境由插件注入:项目 JDK(`PATH`)、Maven home、Node runtime / 包管理器、Go 的 `GOROOT` / `GOPATH` / `GOBIN`、Python SDK / venv(`PATH` + `VIRTUAL_ENV`),用户传的 `env` 最后覆盖 |
-| `ide_list_terminals` | 列出 `mcp_project_sdk` / `mcp_remote` / `user` 三类 tab(状态、当前目录、最后一条命令、`lastUsedAt`)。**只有 `tab` 非空且 `addressable: true` 的能交给 `terminal_io`**;用户手开的 tab 只能看 |
-| `ide_terminal_io` | 对已有 tab 读 / 写。`read`:默认读上次之后的增量,`tail: N` 读最近 N 个命令段(本地带每段 `exitCode`),`full: true` 读整屏,`timeoutMs > 0` 等输出稳定;`write`:原样写进当前命令(自带换行) |
-| `ide_execute_in_remote_host` | 通过本项目的一台 Deployment **SFTP** 服务器开真实 SSH 终端。`serverName` 取 `servers[].name`。**每次调用新开一个远程 tab**,所以一条任务只调一次,后续命令走 `terminal_io`(`target: "remote"`)。`loginShell` 默认 `true`(套 `zsh -lic` / `bash -lc`),`strictHostKey` 默认 `false`(accept-new) |
+| `ide_project_sdk_terminal` | 在本项目 SDK 终端里跑**一条**命令,返回输出 + `tab`。**默认复用**本项目的默认 tab(第一次调用创建,`list_terminals` 该组的 `default` 就是它);传 `tab` 指定、传 `newTab: true` 新开(不抢默认)、带 `env` 时强制新开(`env` 只在 shell 启动时生效)。命令跑得久时先返回 `running: true`(同一个 `tab`,命令继续跑),之后用 `ide_terminal_read` 接着看。终端环境由插件注入:项目 JDK(`PATH`)、Maven home、Node runtime / 包管理器、Go 的 `GOROOT` / `GOPATH` / `GOBIN`、Python SDK / venv(`PATH` + `VIRTUAL_ENV`),用户传的 `env` 最后覆盖 |
+| `ide_list_terminals` | 按来源分组列出 MCP tab:`mcp_project_sdk` 一组、每台远程服务器各一组;每组带一个组级 `default`(该来源的默认 tab)和组内 `tabs` 数组。用户手开的 tab 不出现 |
+| `ide_terminal_read` | 读已有 tab,**立即返回、不等待**:默认读上次之后的增量,`tail: N` 读最近 N 个命令段(本地带每段 `exitCode`),`full: true` 读整屏,`running` 表示命令还在不在跑 |
+| `ide_terminal_interrupt` | 往已有 tab 发**一次 Ctrl-C**。只在命令卡住时用 —— 执行工具会等 shell 空闲,卡住的命令会把它们一直挡住;它不接受任何文本,只能打断,不能拿来跑命令 |
+| `ide_execute_in_remote_host` | 通过本项目的一台 Deployment **SFTP** 服务器开真实 SSH 终端。`serverName` 取 `servers[].name`。**默认复用这台服务器的默认 tab**(第一次调用创建,`list_terminals` 该组的 `default` 就是它),传 `tab` 指定 / `newTab: true` 换干净 shell;新 tab 命名 `mcp-<服务器名>-<序号>`(如 `mcp-mbpmiddleware-1`)。`loginShell` 默认 `true`(套 `zsh -lic` / `bash -lc`),`strictHostKey` 默认 `false`(accept-new) |
 
 路由:引导里写的是 **"这条命令在哪台机器上、要不要项目运行时"** 两刀切 —— 远程机器(部署机 / 开发机 / 用户点名的主机)
 走 `ide_execute_in_remote_host`(服务器名不确定先 `ide_list_server_deployments`);本机 + 要运行时(IDE 里配好的
 JDK / Node / Python / Maven / Go)走 `ide_project_sdk_terminal`;本机 + 不要运行时(`git` / `ls` / `curl` / `docker` /
-`ps`)仍走原生 `shell`。**常驻进程**(dev server / watch)有 run configuration 就用它;没有就在终端里以 `timeoutMs: 0`
-起,之后用 `terminal_io` 跟日志、回答提示。
+`ps`)仍走原生 `shell`。**常驻进程**(dev server / watch)有 run configuration 就用它;没有就用终端起在 tab 里,
+跑满等待窗口还没结束会返回 `running: true`,之后用 `ide_terminal_read` 跟日志。
 
-**终端是复用的**:一趟任务只起一个 tab —— 第一条命令用 `project_sdk_terminal` / `execute_in_remote_host` 起,之后同一台
-机器上的命令都用 `terminal_io` 的 `write` 打进那个 tab(`cd` / `export` / 后台进程都还在,不必每条重贴 `cd ... &&` 前缀),
-结果用 `read` 看。换机器、换项目或 tab 真没了(`terminal_closed`)才新开。这条规则在「命令执行」和「终端」两处都写了,
-因为它最容易被绕成"每条命令一个 tab"。
+**等太久会转成异步**:命令跑得久,这次调用先返回 `running: true` + 同一个 tab,命令继续跑;之后用 `ide_terminal_read`
+每隔几秒看一眼进度,直到 `running` 变 false —— 不要因为没拿到结果就重跑一遍。超时不是调用方能设的参数,它是工具自身的
+行为(也没有"主动异步"选项)。引导里也明写了**禁止用 `shell` 的 `sleep` 干等**(实测会话里出现过 `sleep 60` /
+`sleep 120` / `sleep 1500`,全是旧版 12 秒上限逼出来的)。
+
+**终端默认复用**:同一台机器上的连续命令落在同一个 tab —— `cd` / `export` / 后台进程都还在,不必每条重贴 `cd ... &&`,
+也不用自己记 tab 号;要干净 shell 传 `newTab: true`,要指定某条传 `tab`。`ide_terminal_read` / `ide_terminal_interrupt`
+管的是"接着看 / 打断",不是"再跑一条"的替代。这条规则在「命令执行」和「终端」两处都写了,因为它最容易被绕成"每条命令一个 tab"。
 
 三条容易读错的语义,引导里都点名了:
 
-- **两个起 tab 的工具每次调用都新开** —— `project_sdk_terminal` 与 `execute_in_remote_host` 都是,所以它们只用于起 tab;
-  同一件事的后续(看日志、回答提示、再敲一条)必须 `list_terminals` → `terminal_io`(`target` 取 `local` / `remote`),
-  不能反复调起 tab 的工具把 tab 堆起来;
-- **远程没有"命令结束"信号** —— `exitCode` 永远 `null`,`running` 也可能 `null`;别等退出码,按输出判断或继续 `terminal_io` 读;
+- **每种来源一条默认 tab** —— 本地一条、每台服务器各一条,第一次调用自动创建,`list_terminals` 在该组的 `default` 字段里报出它;
+  不传 `tab` 就永远落在它上面(不会随使用历史漂移),默认 tab 被关掉后下次调用重建一条;一条命令要独立环境就传
+  `newTab: true` / `env`。跨服务器复用会被直接拒绝(`tab_server_mismatch`);
+- **远程没有"命令结束"信号** —— `exitCode` 永远 `null`,`running` 也可能 `null`;别等退出码,按输出判断或继续 `ide_terminal_read` 读;
 - **tab 只在这次 IDE 会话里有效** —— 关掉就失效(报 `terminal_closed` / 找不到),这时才重开一个;没有"关闭 tab"的工具,
   用完不必主动关,用户可以直接在 IDE 里接手。
 

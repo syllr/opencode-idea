@@ -61,7 +61,8 @@ const VISIBLE = [
   'rerun_run_configuration',
   'search_symbol',
   'stop_run_configuration',
-  'terminal_io',
+  'terminal_interrupt',
+  'terminal_read',
   'update_run_configuration',
   'upload_to_deployment',
 ];

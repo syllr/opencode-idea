@@ -641,7 +641,8 @@ describe('plugin setup', () => {
       'ide_list_server_deployments',
       'ide_upload_to_deployment',
       'ide_project_sdk_terminal',
-      'ide_terminal_io',
+      'ide_terminal_read',
+      'ide_terminal_interrupt',
       'ide_list_terminals',
       'ide_execute_in_remote_host',
     ]) {
