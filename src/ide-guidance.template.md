@@ -7,11 +7,16 @@
 2. **IDE 工具补自带工具做不到的**：符号与定义用 `<前缀>_search_symbol` + `<前缀>_read_file`；改名用
    `<前缀>_rename_refactoring`；单文件检查用 `<前缀>_lint_files` / `<前缀>_get_file_problems`；跨模块构建用
    `<前缀>_build_project`。
-3. **要项目运行时环境的命令用项目终端**:{{cmd_project_sdk_terminal}};`git` / `ls` / `curl` / `docker` 这类与项目无关的
-   仍走 `shell`。细则见「命令执行」与「终端」。
-4. **校验节奏**：改一处只在收尾跑 `lint_files` (要细节再 `get_file_problems`);改一大片或动了接口 / 依赖就用
+3. **要项目运行时环境的命令用项目终端**:{{cmd_project_sdk_terminal}};本机上 `git` / `ls` / `curl` / `docker` 这类与项目
+   无关的仍走 `shell`。远程机器不是这条 —— 见第 4 条。细则见「命令执行」与「终端」。
+4. **远程机器上的命令走 `<前缀>_execute_in_remote_host`**：用户说"去 xxx 上执行""部署机上跑一下""连某台机器看看",
+   先 `<前缀>_list_server_deployments` 拿服务器名,再用它在那台机器上跑 —— **不要自己拼 `ssh` / `scp`,也不要用别的
+   SSH CLI / skill 顶替**。凭据、代理、路径映射都在 IDE 的那台 Server 后面,自己拼的那条路往往根本没有权限。
+5. **终端是复用的，不是一次性的**:一趟任务里,第一条命令起 tab,之后的命令都接着用 `<前缀>_terminal_io` 打进同一个
+   tab —— 别每条命令都新开一个。细则见「终端」的复用规则。
+6. **校验节奏**：改一处只在收尾跑 `lint_files` (要细节再 `get_file_problems`);改一大片或动了接口 / 依赖就用
    `build_project`;全仓检查只在收尾。
-5. **批量修改**：逐文件用 `edit`，或一次用 `<前缀>_apply_patch`。
+7. **批量修改**：逐文件用 `edit`，或一次用 `<前缀>_apply_patch`。
 
 本会话接入了 {{projectCount}} 个 JetBrains 项目。**每个 IDE 功能在所有项目下都各有一份工具**,命令名是
 `<项目前缀>_<工具名>`;下文写 `<前缀>` 就是指这一截。
@@ -37,7 +42,10 @@
 - **项目内** —— **OpenCode 自带的工具为主**,它们更快。**它们做不了、或者做得很差的,才用 IDE 工具**:
   符号检索、依赖实现、重构、格式化、校验、运行配置、项目终端、跨文件补丁。
   **两边都不顺手时,你自己判断用 `shell` 里的命令** —— 那是第三选择,不是第一选择。
-- **项目外** —— 用 OpenCode 自带的工具;IDE 工具只对项目内路径生效。
+- **项目外、但还在本机** —— 用 OpenCode 自带的工具;IDE 工具只对项目内路径生效。
+- **远程机器(部署机 / 开发机 / 用户点名的那台主机)** —— **不属于上面两类,别按"项目外"处理**。它是 IDE 里配好的
+  一台 Deployment Server:跑命令走 `<前缀>_execute_in_remote_host`,传文件走 `<前缀>_upload_to_deployment` /
+  `<前缀>_download_from_deployment`。**不要因为在项目外就退化成 `shell` 里拼 `ssh`** —— 那是这条规则最常被绕开的地方。
 
 ## 总则 (所有项目通用)
 
@@ -59,11 +67,16 @@
 
 ## 命令执行 (所有项目通用)
 
-- **按"这条命令要不要项目运行时"分流**:
-  - **要**(IDE 里配好的 JDK / Node / Python / Maven / Go,以及依赖它们的构建、脚本、生成、迁移)→
+- **按"这条命令在哪台机器上、要不要项目运行时"分流**:
+  - **远程机器**(部署机 / 开发机 / 用户说了"去 xxx 上"的那台)→ {{cmd_execute_in_remote_host}}。服务器名字不确定,
+    就先 {{cmd_list_server_deployments}} —— **它的返回就是"能直接跑命令的机器"清单**,`servers[].name` 直接用。
+  - **本机 + 要项目运行时**(IDE 里配好的 JDK / Node / Python / Maven / Go,以及依赖它们的构建、脚本、生成、迁移)→
     {{cmd_project_sdk_terminal}}。它开的是 IDE 里真正的终端,自动带上项目 SDK 与 Maven / Node / Python 的路径;
     `workingDirectory` 默认项目根,`env` 里的值最后覆盖。
-  - **不要**(`git` / `ls` / `cat` / `curl` / `docker` / `ps`)→ `shell` 工具。
+  - **本机 + 不要项目运行时**(`git` / `ls` / `cat` / `curl` / `docker` / `ps`)→ `shell` 工具。
+- **一台机器一个 tab,整趟任务复用**:第一条命令起 tab (`project_sdk_terminal` / `execute_in_remote_host`),之后就
+  {{cmd_terminal_io}} `write` 打进**同一个** tab —— `cd` / `export` / 变量都留在那个 shell 里,不必每条命令重贴
+  `cd ... &&` 前缀。看结果用 `read`,**不要靠"再调一次起 tab 的工具"来看输出**。
 - **常驻进程**(dev server / watch / 长时间跑的服务)有 run configuration 就用 `rerun` 起它;
   没有就用项目终端传 `timeoutMs: 0` 起在 tab 里,之后用 {{cmd_terminal_io}} 跟日志、回答提示。
 - **一次性的命令就地跑完,反复发生的流程才固化成 run configuration** —— 配置是**项目资产**,不是"跑命令"
@@ -178,25 +191,45 @@
 - 一条配置同时有 `base` 与 `base@<env>`、又没说走哪个环境 → **问一次走哪个环境**,选定后本会话默认走这套。
 - 一个环境怎么接上(启动参数 / 环境变量 / 配置文件)是项目自己的事:照现成的同类变体来,或问用户。
 
-### 终端 (项目环境 · 交互 · 远程)
+### 终端 (本机环境 · 远程主机 · 复用同一个 tab)
 
 - {{cmd_project_sdk_terminal}} **在本项目 SDK 终端里跑一条命令,返回输出与 tab id**。`command` 必填;`timeoutMs` 默认
   10000(`0` = 发出去就返回,最长 12000);`workingDirectory` 默认项目根;`env` 最后覆盖自动注入的环境;`input` 在命令后
-  写一次(自带换行);`maxChars` 只保留最新输出。 **每次调用都新开一个 tab** —— 同一件事的后续改用 `list_terminals` /
-  `terminal_io`,别再调它。
+  写一次(自带换行);`maxChars` 只保留最新输出。 **每次调用都新开一个 tab** —— 所以它只用来起第一个 tab,同一件事的
+  后续全走 `terminal_io`。
 - {{cmd_list_terminals}} **本项目的终端 tab 清单**:`kind`(`mcp_project_sdk` / `mcp_remote` / `user`)、`status`、
   `workingDirectory` / `currentDirectory`、`lastCommand`、`lastUsedAt`。 **只有 `tab` 非空且 `addressable: true` 的能交给
   `terminal_io`**;用户自己开的 tab 只用于认位置,不可控制;`title` 不是 id。
-- {{cmd_terminal_io}} **对已有 tab 读 / 写**:`target` 取 `local`(`project_sdk_terminal` 建的)或 `remote`。
+- {{cmd_terminal_io}} **对已有 tab 读 / 写**:`target` 取 `local`(`project_sdk_terminal` 建的)或 `remote`
+  (`execute_in_remote_host` 建的)。
   - `action: "read"` —— 默认读**上次之后的新输出**;`tail: N` 读最近 N 个命令段(本地还带每段的 `exitCode`);`full: true`
     读整屏;`timeoutMs > 0` 先等输出稳定再读(最长 12000)。
-  - `action: "write"` —— `text` **原样**送进当前命令(自带换行),不是新开一条命令。
+  - `action: "write"` —— `text` **原样**敲进那个 tab(自带换行):shell 已经回到提示符时它就是**在同一个 tab 里跑下一条
+    命令**(`cd` / `export` / 后台进程都还在),这就是复用 tab 的正常用法;上一条还在跑时它才是喂给那条命令的输入,所以先
+    `read` 确认。它**不返回输出** —— 写完再 `read` 一次看结果。
 - {{cmd_execute_in_remote_host}} **在远程主机的真实 SSH 终端里跑命令** —— 主机与凭据来自本项目的一台 Deployment
   SFTP 服务器,名字传 `serverName`(那台**服务器**的名字,不是 deployment 名)。`loginShell` 默认 `true`(套
   `zsh -lic` / `bash -lc`,PATH 与工具链才会加载);`strictHostKey` 默认 `false`(接受并记录新主机密钥)。
-  **远程命令一律走它,不要自己拼 `ssh` / `scp`** —— 凭据、代理、路径映射都在 IDE 这边。
+  **远程命令一律走它,不要自己拼 `ssh` / `scp`,也别退回别的 SSH CLI / skill** —— 凭据、代理、路径映射都在 IDE 这边。
+  **每调一次就新开一个远程 tab** —— 一趟任务里它只该出现一次,之后同一台机器上的命令走 `terminal_io`
+  (`target: "remote"`,`tab` 用它返回的那个)。
   远程没有"命令结束"信号:**`exitCode` 永远为 `null`,`running` 也可能为 `null`** —— 别等 `exitCode`,看输出,或接着用
   `terminal_io` 读。
+- **`list_server_deployments` 报出来的服务器,就是能直接跑命令的机器。** 拿到名字之后,要在这台机器上执行就**立即**
+  `execute_in_remote_host` —— 不要再去 `~/.ssh/config` 里找主机、不要试用户名 / 密钥 / 端口、也不要因为"连不上"回头
+  找用户要 SSH 密码:那条路本身就不该走。真要做的是这台机器上的文件传输(`upload` / `download`)就换那组工具。
+  `hasCredentials` / `validationIssue` 有问题时,把它报给用户,不要自己去试登录。
+
+**复用规则 (本地 / 远程一套):一趟任务只起一个 tab。**
+
+1. 第一条命令用 `project_sdk_terminal`(本机)或 `execute_in_remote_host`(远程)起 tab,记住返回的 `tab` id。
+2. 之后的**每一条**命令都用 `terminal_io` `action: "write"` 打进那个 tab。这样 `cd` 进去的目录、`export` 的环境变量、
+   起的后台进程都还在原地 —— 这正是复用的意义,也是不必每条命令重贴 `cd ... &&` 前缀的原因。
+3. 看结果用 `terminal_io` `action: "read"`(`tail: N` 看最近几段)。**判据是"上一条回到提示符了",不是"我再开一个 tab
+   看看"**。
+4. 换机器、换项目、或 tab 真没了(`terminal_closed` / 找不到 tab)才新开一个。忘了 tab id 就 `list_terminals`:
+   优先 `lastUsedAt` 最近、`kind` / `serverName` / `workingDirectory` 对得上的那个。
+5. 本地 tab 只跑本机命令,远程 tab 只跑那台机器上的命令 —— 别拿本地 tab 敲远程命令(反之亦然)。
 
 **tab 只在这次 IDE 会话里有效**:tab 一关(报 `terminal_closed` / 找不到 tab)才重新开一个;用完不必主动关 —— 用户能看见,
 也能直接在 IDE 里接手。
@@ -225,4 +258,5 @@
 (那样会再起一次传输)。到 `completed` 之后 `counters` 才可信,而且它数的是**操作次数**,不是文件数(删掉整个目录也只算 1)。
 
 **同步只是上半段**:传完之后在那台 Server 上继续操作(启动刚传上去的二进制、重启服务、看日志)—— 用
-`execute_in_remote_host`,`serverName` 取 `servers[].name`。
+`execute_in_remote_host`,`serverName` 取 `servers[].name`。**别用 `scp` / `rsync` / `ssh` 手工顶替这两步**:
+上传下载与远程执行走的是同一台 Server、同一套凭据,手工那条路既没有 IDE 的路径映射,也常常根本没有权限。

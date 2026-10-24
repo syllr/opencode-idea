@@ -428,7 +428,9 @@ IDE 的连接、路径映射、排除规则都在它后面,自己拼的那份与
 `mirror` 是 **默认值**且 **会删远端文件**(而 MCP 路径上没有确认步骤),下载 **以远端为准**、没有"保留我的版本"。
 
 **同步只是上半段**:每条 deployment 都属于某台 Server,传完之后在那台 Server 上启动刚传上去的二进制、重启服务、看日志,
-走 `execute_in_remote_host`(`serverName` 用服务器名,不是 deployment 名)。
+走 `execute_in_remote_host`(`serverName` 用服务器名,不是 deployment 名)。**这两步都不要用 `scp` / `rsync` / `ssh`
+手工顶替** —— 手工那条路既没有 IDE 的路径映射,也常常根本没有权限(实测过一次:模型拿到服务器名之后转去读
+`~/.ssh/config`、逐个试用户名,失败后回头找用户要密码,而 `execute_in_remote_host` 一直都在工具表里)。
 
 还有一个语义必须写明,否则模型会把正常的中间态当失败去重试:上传 / 下载都在 IDE 后台跑,单次调用只等到 `waitMs`
 (默认 10 秒,上限 12 秒)为止,返回 `state: "in_progress"` 是 **正常**的(它可能以 **error 结果**回来)—— 拿 `handle`
@@ -449,16 +451,24 @@ IDE 内置的 `execute_terminal_command` **不继承项目环境**(实测拿不�
 | `ide_project_sdk_terminal` | 在本项目 SDK 终端里跑**一条**命令,返回输出 + `tab`。每次调用 **新开一个 tab**;`timeoutMs` 默认 10000(`0` = 发出去就返回,上限 12000)。终端环境由插件注入:项目 JDK(`PATH`)、Maven home、Node runtime / 包管理器、Go 的 `GOROOT` / `GOPATH` / `GOBIN`、Python SDK / venv(`PATH` + `VIRTUAL_ENV`),用户传的 `env` 最后覆盖 |
 | `ide_list_terminals` | 列出 `mcp_project_sdk` / `mcp_remote` / `user` 三类 tab(状态、当前目录、最后一条命令、`lastUsedAt`)。**只有 `tab` 非空且 `addressable: true` 的能交给 `terminal_io`**;用户手开的 tab 只能看 |
 | `ide_terminal_io` | 对已有 tab 读 / 写。`read`:默认读上次之后的增量,`tail: N` 读最近 N 个命令段(本地带每段 `exitCode`),`full: true` 读整屏,`timeoutMs > 0` 等输出稳定;`write`:原样写进当前命令(自带换行) |
-| `ide_execute_in_remote_host` | 通过本项目的一台 Deployment **SFTP** 服务器开真实 SSH 终端。`loginShell` 默认 `true`(套 `zsh -lic` / `bash -lc`),`strictHostKey` 默认 `false`(accept-new) |
+| `ide_execute_in_remote_host` | 通过本项目的一台 Deployment **SFTP** 服务器开真实 SSH 终端。`serverName` 取 `servers[].name`。**每次调用新开一个远程 tab**,所以一条任务只调一次,后续命令走 `terminal_io`(`target: "remote"`)。`loginShell` 默认 `true`(套 `zsh -lic` / `bash -lc`),`strictHostKey` 默认 `false`(accept-new) |
 
-路由:引导里写的是 **"这条命令要不要项目运行时"** 一刀切 —— 要(IDE 里配好的 JDK / Node / Python / Maven / Go)走
-`ide_project_sdk_terminal`,不要(`git` / `ls` / `curl` / `docker` / `ps`)仍走原生 `shell`。**常驻进程**(dev server / watch)
-有 run configuration 就用它;没有就在终端里以 `timeoutMs: 0` 起,之后用 `terminal_io` 跟日志、回答提示。
+路由:引导里写的是 **"这条命令在哪台机器上、要不要项目运行时"** 两刀切 —— 远程机器(部署机 / 开发机 / 用户点名的主机)
+走 `ide_execute_in_remote_host`(服务器名不确定先 `ide_list_server_deployments`);本机 + 要运行时(IDE 里配好的
+JDK / Node / Python / Maven / Go)走 `ide_project_sdk_terminal`;本机 + 不要运行时(`git` / `ls` / `curl` / `docker` /
+`ps`)仍走原生 `shell`。**常驻进程**(dev server / watch)有 run configuration 就用它;没有就在终端里以 `timeoutMs: 0`
+起,之后用 `terminal_io` 跟日志、回答提示。
+
+**终端是复用的**:一趟任务只起一个 tab —— 第一条命令用 `project_sdk_terminal` / `execute_in_remote_host` 起,之后同一台
+机器上的命令都用 `terminal_io` 的 `write` 打进那个 tab(`cd` / `export` / 后台进程都还在,不必每条重贴 `cd ... &&` 前缀),
+结果用 `read` 看。换机器、换项目或 tab 真没了(`terminal_closed`)才新开。这条规则在「命令执行」和「终端」两处都写了,
+因为它最容易被绕成"每条命令一个 tab"。
 
 三条容易读错的语义,引导里都点名了:
 
-- **每次调用都新开 tab** —— 同一件事的后续(看日志、回答提示、再敲一条)必须 `list_terminals` → `terminal_io`,不能反复
-  `project_sdk_terminal` 把 tab 堆起来;
+- **两个起 tab 的工具每次调用都新开** —— `project_sdk_terminal` 与 `execute_in_remote_host` 都是,所以它们只用于起 tab;
+  同一件事的后续(看日志、回答提示、再敲一条)必须 `list_terminals` → `terminal_io`(`target` 取 `local` / `remote`),
+  不能反复调起 tab 的工具把 tab 堆起来;
 - **远程没有"命令结束"信号** —— `exitCode` 永远 `null`,`running` 也可能 `null`;别等退出码,按输出判断或继续 `terminal_io` 读;
 - **tab 只在这次 IDE 会话里有效** —— 关掉就失效(报 `terminal_closed` / 找不到),这时才重开一个;没有"关闭 tab"的工具,
   用完不必主动关,用户可以直接在 IDE 里接手。
