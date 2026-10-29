@@ -37,11 +37,8 @@ const VISIBLE = [
   'build_project',
   'create_run_configuration',
   'delete_run_configuration',
-  'download_from_deployment',
-  'execute_in_remote_host',
   'execute_run_configuration',
   'get_all_open_file_paths',
-  'get_deployment_task_status',
   'get_file_problems',
   'get_project_dependencies',
   'get_project_modules',
@@ -51,20 +48,13 @@ const VISIBLE = [
   'lint_files',
   'list_directory_tree',
   'list_running_configurations',
-  'list_server_deployments',
-  'list_terminals',
   'open_file_in_editor',
-  'project_sdk_terminal',
   'read_file',
   'reformat_file',
   'rename_refactoring',
   'rerun_run_configuration',
   'search_symbol',
-  'stop_run_configuration',
-  'terminal_interrupt',
-  'terminal_read',
   'update_run_configuration',
-  'upload_to_deployment',
 ];
 
 /** 两个项目的会话。 */
@@ -92,12 +82,12 @@ describe('引导的生成', () => {
   it('always describes the companion plugin tools', () => {
     // 配套插件是硬前提 —— 不检测它装没装,也不按工具快照决定写不写。
     const text = guidance();
-    expect(text).toContain('### 服务器文件同步');
-    expect(text).toContain('### 终端');
+    expect(text).toContain('### 远程执行与文件同步');
     expect(text).toContain('ide_inspect_run_configuration');
-    expect(text).toContain('ide_upload_to_deployment');
-    expect(text).toContain('ide_project_sdk_terminal');
-    expect(text).toContain('ide_execute_in_remote_host');
+    expect(text).toContain('`remote_upload`');
+    expect(text).toContain('`remote_download`');
+    expect(text).toContain('`remote_exec`');
+    expect(text).toContain('`remote_list_servers`');
   });
 });
 

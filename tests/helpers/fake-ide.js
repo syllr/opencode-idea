@@ -24,6 +24,9 @@ export function startFakeIde(port = 0) {
   return new Promise((resolve) => {
     let streamRequests = 0;
     const openProjects = new Set();
+    // 按工具名给不同的 text 结果；没登记的走默认的模块清单。`get_project_env` 这类
+    // 有自己输出契约的工具靠它返回真实形状。
+    const toolResults = new Map();
     const server = createServer((req, res) => {
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname !== '/stream' || req.method !== 'POST') {
@@ -73,11 +76,12 @@ export function startFakeIde(port = 0) {
             return;
           }
           res.writeHead(200, { 'Content-Type': 'application/json' });
+          const text = toolResults.get(message.params?.name) ?? '{"modules":[]}';
           res.end(
             JSON.stringify({
               jsonrpc: '2.0',
               id: message.id,
-              result: { content: [{ type: 'text', text: '{"modules":[]}' }], isError: false },
+              result: { content: [{ type: 'text', text }], isError: false },
             }),
           );
           return;
@@ -95,6 +99,11 @@ export function startFakeIde(port = 0) {
           if (typeof path === 'string' && open) openProjects.add(path);
           else if (typeof path === 'string') openProjects.delete(path);
           else openProjects.clear();
+        },
+        /** Answer one tool name with a fixed text payload (e.g. `get_project_env`). */
+        setToolResult: (name, text) => {
+          if (typeof text === 'string') toolResults.set(name, text);
+          else toolResults.delete(name);
         },
       }),
     );

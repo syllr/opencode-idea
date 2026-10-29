@@ -17,6 +17,7 @@
     "src/project.js",
     "src/ide-launcher.js",
     "src/ide-guidance.js",
+    "src/remote/",
     "src/skill/loader.js",
     "skills",
     "README.md"
@@ -52,5 +53,8 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "ssh2": "^1.17.0"
   }
 }

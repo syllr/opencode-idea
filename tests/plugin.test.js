@@ -31,7 +31,7 @@ vi.mock('../src/ide-launcher.js', async (importOriginal) => {
   };
 });
 
-import plugin, { ideFeedback } from '../src/plugin.js';
+import plugin, { ideFeedback, ideServersFromResult, projectEnvFromResult } from '../src/plugin.js';
 import { IDE_PORTS } from '../src/ide-projects.js';
 import { startFakeIde } from './helpers/fake-ide.js';
 
@@ -61,9 +61,9 @@ const DEFAULT_IDE_TOOLS = ['ide_read_file'];
  * 部署 / 终端那两节的标题（模板里的字面量）。整节不再受 `{{#if}}` 控制，
  * "这一节在不在"只是结构断言，写在一处，改标题时不会漏。
  */
-const DEPLOYMENT_HEADING = '### 服务器文件同步';
+const DEPLOYMENT_HEADING = '### 远程执行与文件同步';
 
-const TERMINAL_HEADING = '### 终端';
+const TERMINAL_HEADING = DEPLOYMENT_HEADING;
 
 afterAll(() => rmSync(projectPath, { recursive: true, force: true }));
 
@@ -131,6 +131,7 @@ function fakeCtx(options = {}) {
     tools: [],
     sessionHook: undefined,
     sessionHooks: {},
+    shellHooks: {},
     toolHook: undefined,
     toolHooks: {},
     toolDefinitions: {},
@@ -217,6 +218,7 @@ function fakeCtx(options = {}) {
       },
       shell: {
         hook: async (name, callback) => {
+          state.shellHooks[name] = callback;
           return { dispose: () => {} };
         },
       },
@@ -269,6 +271,80 @@ function fakeCtx(options = {}) {
   };
 }
 
+describe('projectEnvFromResult', () => {
+  it('reads the structured payload first and falls back to the text body', () => {
+    expect(projectEnvFromResult({ structuredContent: { PATH: '/a', variables: { GOPATH: '/g' } } })).toEqual({
+      PATH: '/a',
+      variables: { GOPATH: '/g' },
+    });
+    expect(
+      projectEnvFromResult({
+        content: [{ type: 'text', text: JSON.stringify({ PATH: '/b', variables: {} }) }],
+      }),
+    ).toEqual({ PATH: '/b', variables: {} });
+  });
+
+  it('rejects a result that is not an environment', () => {
+    expect(projectEnvFromResult(undefined)).toBeUndefined();
+    expect(
+      projectEnvFromResult({ isError: true, content: [{ type: 'text', text: '{"PATH":"/a"}' }] }),
+    ).toBeUndefined();
+    // 其它 IDE 工具也会回 JSON；没有 PATH / variables 就不是环境
+    expect(projectEnvFromResult({ content: [{ type: 'text', text: '{"modules":[]}' }] })).toBeUndefined();
+  });
+
+  it('drops non-string variable values', () => {
+    const env = projectEnvFromResult({ structuredContent: { PATH: '/a', variables: { A: 'x', B: 1 } } });
+    expect(env.variables).toEqual({ A: 'x' });
+  });
+});
+
+describe('ideServersFromResult', () => {
+  const server = {
+    name: 'aidata-middleware',
+    sshConfigName: 'mbp',
+    host: '10.0.0.1',
+    port: 2222,
+    username: 'u',
+    authType: 'PASSWORD',
+    password: 'p',
+    passphrase: null,
+    privateKeyPath: null,
+    rootFolder: '/r',
+    deployments: [{ name: 'app', localPath: '/local/app', deployPath: '/srv/app' }],
+  };
+
+  it('解析 structuredContent 与 text，缺 name/host 的条目丢掉', () => {
+    expect(ideServersFromResult({ structuredContent: { servers: [server] } })).toEqual([
+      {
+        name: 'mbp',
+        host: '10.0.0.1',
+        port: 2222,
+        username: 'u',
+        password: 'p',
+        passphrase: undefined,
+        privateKeyPath: undefined,
+        deployments: [{ name: 'app', localPath: '/local/app', deployPath: '/srv/app' }],
+        source: 'ide',
+      },
+    ]);
+    expect(
+      ideServersFromResult({ content: [{ type: 'text', text: JSON.stringify({ servers: [server] }) }] }),
+    ).toHaveLength(1);
+    // 旧版插件没有 sshConfigName：回落到 Deployment（WebServer）名。
+    expect(
+      ideServersFromResult({ structuredContent: { servers: [{ ...server, sshConfigName: '' }] } })[0].name,
+    ).toBe('aidata-middleware');
+    expect(ideServersFromResult({ structuredContent: { servers: [{ name: 'x' }] } })).toEqual([]);
+  });
+
+  it('错误结果与空载荷返回空数组', () => {
+    expect(ideServersFromResult({ isError: true, structuredContent: { servers: [server] } })).toEqual([]);
+    expect(ideServersFromResult(undefined)).toEqual([]);
+    expect(ideServersFromResult({ content: [{ type: 'text', text: '{}' }] })).toEqual([]);
+  });
+});
+
 describe('plugin setup', () => {
   it('gives an actionable MCP/Brave Mode notice when the endpoint is unavailable', () => {
     const opened = ideFeedback({ status: 'mcp-unavailable', opened: true });
@@ -289,6 +365,9 @@ describe('plugin setup', () => {
     expect(state.mcp).toBe(0);
     expect(state.commands.has('open-in-ide')).toBe(true);
     expect(state.commands.has('delete-in-ide')).toBe(true);
+    expect(state.commands.has('persist-remote-config')).toBe(true);
+    expect(state.commands.has('remote-shell')).toBe(true);
+    expect(state.commands.has('remote-deployment')).toBe(true);
     // The skills are static knowledge and go in as soon as the plugin loads.
     expect([...state.skills.keys()].sort()).toEqual(['idea-run-config-manager', 'idea-standalone']);
 
@@ -470,6 +549,55 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
+  it('pulls the project environment and injects it into every new shell', async () => {
+    const fake = await startFakeIdeForProject();
+    running = fake.server;
+    fake.setToolResult(
+      'get_project_env',
+      JSON.stringify({
+        PATH: '/jdk/bin:/node/bin',
+        variables: { GOROOT: '/go', VIRTUAL_ENV: '/venv' },
+      }),
+    );
+    const { ctx, state } = fakeCtx({ ports: [fake.port] });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    expect(state.prompts.map((entry) => entry?.metadata?.displayText ?? '').join('\n')).toContain('已连接并接入');
+
+    const event = { command: 'java -version', cwd: projectPath, env: { PATH: '/usr/bin' } };
+    await state.shellHooks['create.before'](event);
+
+    // IDE 的目录前置，OpenCode 原有的 PATH 接在后面；标量变量直接覆盖。
+    expect(event.env.PATH).toBe('/jdk/bin:/node/bin:/usr/bin');
+    expect(event.env.GOROOT).toBe('/go');
+    expect(event.env.VIRTUAL_ENV).toBe('/venv');
+
+    await cleanup();
+  });
+
+  it('does not claim connected when the project environment cannot be read', async () => {
+    // 假 IDE 对未登记的工具回 `{"modules":[]}` —— 没有 PATH / variables，
+    // 不能算"环境已就绪"。
+    const fake = await startFakeIdeForProject();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port] });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+
+    const feedback = state.prompts.map((entry) => entry?.text ?? '').join('\n');
+    expect(feedback).toContain('项目环境变量没取到');
+    expect(feedback).not.toContain('并接入');
+
+    // 连接没做完，就没得注入：一条没拿到环境变量的 shell 必须保持原样。
+    const event = { command: 'java -version', cwd: projectPath, env: { PATH: '/usr/bin' } };
+    await state.shellHooks['create.before'](event);
+    expect(event.env).toEqual({ PATH: '/usr/bin' });
+
+    await cleanup();
+  });
+
   it('injects the guidance and strips the hidden tools from every request', async () => {
     const fake = await startFakeIdeForProject();
     running = fake.server;
@@ -638,18 +766,14 @@ describe('plugin setup', () => {
     for (const name of [
       'ide_get_run_configurations',
       'ide_rerun_run_configuration',
-      'ide_list_server_deployments',
-      'ide_upload_to_deployment',
-      'ide_project_sdk_terminal',
-      'ide_terminal_read',
-      'ide_terminal_interrupt',
-      'ide_list_terminals',
-      'ide_execute_in_remote_host',
     ]) {
       expect(request.system[1].text).toContain(name);
     }
     expect(request.system[1].text).toContain(DEPLOYMENT_HEADING);
     expect(request.system[1].text).toContain(TERMINAL_HEADING);
+    // 远程执行是本插件自己的工具，不带 ide_ 前缀
+    expect(request.system[1].text).toContain('`remote_exec`');
+    expect(request.system[1].text).toContain('`remote_list_servers`');
 
     await cleanup();
   });
@@ -1540,6 +1664,56 @@ describe('多项目接入（root + 子项目，各自用不同 IDE）', () => {
     expect(state.storage.has(`project/${projectPath}`)).toBe(false);
     expect(state.prompts.at(-1).metadata.displayText).toContain('已删除本项目的 IDE 配置');
 
+    await cleanup();
+  });
+});
+
+describe('远程命令', () => {
+  it('remote-shell 把用户要求原样注入提示词', async () => {
+    const { ctx, state } = fakeCtx({});
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('remote-shell').execute({
+      sessionID: 's1',
+      prompt: { text: 'mbp 看下磁盘' },
+      delivery: 'steer',
+    });
+
+    expect(state.prompts).toHaveLength(1);
+    expect(state.prompts[0].text).toContain('用户本次的要求：mbp 看下磁盘');
+    expect(state.prompts[0].text).toContain('remote_exec');
+    // 用户输入必须出现在气泡里，不能被固定文案吞掉
+    expect(state.prompts[0].metadata.displayText).toContain('mbp 看下磁盘');
+    await cleanup();
+  });
+
+  it('remote-deployment 把用户要求原样注入提示词', async () => {
+    const { ctx, state } = fakeCtx({});
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('remote-deployment').execute({
+      sessionID: 's1',
+      prompt: { text: 'mcp-test-project download' },
+      delivery: 'steer',
+    });
+
+    expect(state.prompts[0].text).toContain('用户本次的要求：mcp-test-project download');
+    expect(state.prompts[0].text).toContain('remote_download');
+    expect(state.prompts[0].metadata.displayText).toContain('mcp-test-project download');
+    await cleanup();
+  });
+
+  it('persist-remote-config 在 IDE 不可用时报错并提示先 /open-in-ide', async () => {
+    const { ctx, state } = fakeCtx({ ports: [1], mcpProbeTimeoutMs: 10 });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('persist-remote-config').execute({
+      sessionID: 's1',
+      prompt: { text: '' },
+      delivery: 'steer',
+    });
+
+    expect(state.prompts[0].metadata.displayText).toContain('/open-in-ide');
     await cleanup();
   });
 });
