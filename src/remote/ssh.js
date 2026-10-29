@@ -94,6 +94,9 @@ export function connect(server) {
                 privateKey,
                 passphrase: server.passphrase,
                 agent,
+                // 传输层压缩：产物多是文本（前端资源、打出来的 main.js），压缩后能小一个数量级；
+                // 已是压缩包的内容（jar、wasm）压不动，但也只是多花一点 CPU。
+                compress: true,
                 readyTimeout: CONNECT_TIMEOUT_MS,
                 keepaliveInterval: 5000,
                 keepaliveCountMax: 3,

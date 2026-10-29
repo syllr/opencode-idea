@@ -285,10 +285,10 @@ function transferTool(toolset, direction) {
     return {
         name: isUpload ? 'remote_upload' : 'remote_download',
         description: isUpload
-            ? '把一条 deployment 的本地目录上传到它的远程目录。默认 overwrite（只覆盖/新增，远程多余文件保留）；' +
-            'mode=mirror 时还会删掉远程多出来的文件。'
-            : '把一条 deployment 的远程目录拉回本地目录。默认 overwrite（只覆盖/新增，本地多余文件保留）；' +
-            'mode=mirror 时还会删掉本地多出来的文件。',
+            ? '把一条 deployment 的本地目录上传到它的远程目录。只传大小或修改时间变了的文件，未变的自动跳过；' +
+            '默认 overwrite（只覆盖/新增，远程多余文件保留）；mode=mirror 时还会删掉远程多出来的文件。'
+            : '把一条 deployment 的远程目录拉回本地目录。只拉大小或修改时间变了的文件，未变的自动跳过；' +
+            '默认 overwrite（只覆盖/新增，本地多余文件保留）；mode=mirror 时还会删掉本地多出来的文件。',
         input: {
             type: 'object',
             properties: {
@@ -324,9 +324,11 @@ function transferTool(toolset, direction) {
                 default: {
                     const verb = isUpload ? '上传' : '下载';
                     const stats = outcome.stats;
+                    const unchanged = stats.unchanged ?? 0;
                     const head = `[${outcome.deployment.name}] ${verb}完成 (${mode})`;
                     const lines = [
-                        `${stats.files} files, ${stats.dirs} dirs, ${formatBytes(stats.bytes)}`,
+                        `${stats.files} files${unchanged > 0 ? ` (${unchanged} unchanged)` : ''}, ` +
+                        `${stats.dirs} dirs, ${formatBytes(stats.bytes)}`,
                     ];
                     if (stats.skipped > 0) lines.push(`skipped (symlink/other): ${stats.skipped}`);
                     if (stats.deleted > 0) lines.push(`deleted: ${stats.deleted}`);

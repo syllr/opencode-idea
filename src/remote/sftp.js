@@ -5,7 +5,7 @@
 //
 // 符号链接跳过并计数 —— 跟随链接会把目标目录之外的整棵树拖进来，那是另一个决定。
 
-import {readdir, stat as fsStat} from 'node:fs/promises';
+import {readdir, stat as fsStat, utimes} from 'node:fs/promises';
 import {join} from 'node:path';
 import {posix} from 'node:path';
 
@@ -15,6 +15,7 @@ import {posix} from 'node:path';
  *   dirs: number,
  *   bytes: number,
  *   skipped: number,
+ *   unchanged: number,
  *   deleted: number,
  * }} SyncStats
  */
@@ -24,6 +25,57 @@ function call(fn, ...args) {
     return new Promise((resolve, reject) => {
         fn(...args, (error, value) => (error ? reject(error) : resolve(value)));
     });
+}
+
+/** 远程 attrs 的 mtime 是秒；本地 stat 是毫秒，比较时统一成毫秒。 */
+function remoteMtimeMs(attrs) {
+    return typeof attrs?.mtime === 'number' ? attrs.mtime * 1000 : undefined;
+}
+
+/**
+ * 目标端那份是否与本地一致：size 相同且 mtime 落在同一秒内。
+ *
+ * 上传后会把远端 mtime 写成源文件的秒值（见 preserveRemoteMtime），所以第二次同步能命中这里；
+ * 服务器不支持 setstat 时远端 mtime 永远是写入时刻，这时只会退化成全量传输，不会误跳过。
+ */
+function sameFile(localSize, localMtimeMs, remoteAttrs) {
+    const remoteMs = remoteMtimeMs(remoteAttrs);
+    if (typeof remoteAttrs?.size !== 'number' || remoteMs === undefined) return false;
+    if (remoteAttrs.size !== localSize) return false;
+    return Math.abs(remoteMs - localMtimeMs) < 1000;
+}
+
+/**
+ * 把远端文件的 mtime 写回源文件的秒值，供下次同步做差量判断。
+ * 服务器拒绝 setstat 时忽略：代价只是下次重传。
+ */
+async function preserveRemoteMtime(sftp, remotePath, info) {
+    if (typeof sftp.utimes !== 'function') return;
+    try {
+        await call(
+            sftp.utimes.bind(sftp),
+            remotePath,
+            Math.floor(info.atimeMs / 1000),
+            Math.floor(info.mtimeMs / 1000),
+        );
+    } catch {
+        // 忽略：不影响传输结果
+    }
+}
+
+/** 读一层远程目录，得到 name → attrs；目录不存在返回 undefined。 */
+async function readRemoteEntries(sftp, dir) {
+    const entries = await call(sftp.readdir.bind(sftp), dir).catch((error) => {
+        if (error?.code === 2 || /No such file/i.test(String(error?.message))) return undefined;
+        throw error;
+    });
+    if (!entries) return undefined;
+    const result = new Map();
+    for (const entry of entries) {
+        if (entry.filename === '.' || entry.filename === '..') continue;
+        result.set(entry.filename, entry.attrs);
+    }
+    return result;
 }
 
 /**
@@ -70,10 +122,17 @@ export async function ensureRemoteDir(sftp, dir) {
  * @param {string} localDir
  * @param {string} remoteDir
  * @param {SyncStats} stats
- * @param {{ signal?: AbortSignal }} [options]
+ * @param {{ signal?: AbortSignal, root?: boolean }} [options]
  */
 async function uploadTree(sftp, localDir, remoteDir, stats, options = {}) {
-    await ensureRemoteDir(sftp, remoteDir);
+    if (options.root) await ensureRemoteDir(sftp, remoteDir);
+    // 先读远程目录：存在就顺带拿到名字 → attrs（差量判断用），不存在就建出来。
+    // 一个目录只花一次往返，比逐级 stat 便宜得多。
+    let remote = await readRemoteEntries(sftp, remoteDir);
+    if (!remote) {
+        await call(sftp.mkdir.bind(sftp), remoteDir);
+        remote = new Map();
+    }
     const entries = await readdir(localDir, {withFileTypes: true});
     for (const entry of entries) {
         if (options.signal?.aborted) throw new Error('传输已取消');
@@ -81,10 +140,15 @@ async function uploadTree(sftp, localDir, remoteDir, stats, options = {}) {
         const remotePath = posix.join(remoteDir, entry.name);
         if (entry.isDirectory()) {
             stats.dirs += 1;
-            await uploadTree(sftp, localPath, remotePath, stats, options);
+            await uploadTree(sftp, localPath, remotePath, stats, {...options, root: false});
         } else if (entry.isFile()) {
             const info = await fsStat(localPath);
+            if (sameFile(info.size, info.mtimeMs, remote.get(entry.name))) {
+                stats.unchanged += 1;
+                continue;
+            }
             await call(sftp.fastPut.bind(sftp), localPath, remotePath);
+            await preserveRemoteMtime(sftp, remotePath, info);
             stats.files += 1;
             stats.bytes += info.size;
         } else {
@@ -153,8 +217,8 @@ async function listLocalTree(localDir, prefix = '') {
  * @returns {Promise<SyncStats>}
  */
 export async function uploadDirectory(sftp, localDir, remoteDir, mode, options = {}) {
-    const stats = {files: 0, dirs: 0, bytes: 0, skipped: 0, deleted: 0};
-    await uploadTree(sftp, localDir, remoteDir, stats, options);
+    const stats = {files: 0, dirs: 0, bytes: 0, skipped: 0, unchanged: 0, deleted: 0};
+    await uploadTree(sftp, localDir, remoteDir, stats, {...options, root: true});
 
     if (mode === 'mirror') {
         const localSet = new Set((await listLocalTree(localDir)).map((entry) => entry.path));
@@ -200,7 +264,16 @@ async function downloadTree(sftp, remoteDir, localDir, stats, options = {}) {
             stats.dirs += 1;
             await downloadTree(sftp, remotePath, localPath, stats, options);
         } else if (entry.attrs.isFile()) {
+            const localInfo = await fsStat(localPath).catch(() => undefined);
+            if (localInfo?.isFile() && sameFile(localInfo.size, localInfo.mtimeMs, entry.attrs)) {
+                stats.unchanged += 1;
+                continue;
+            }
             await call(sftp.fastGet.bind(sftp), remotePath, localPath);
+            const remoteMs = remoteMtimeMs(entry.attrs);
+            if (remoteMs !== undefined) {
+                await utimes(localPath, remoteMs / 1000, remoteMs / 1000).catch(() => {});
+            }
             stats.files += 1;
             stats.bytes += entry.attrs.size ?? 0;
         } else {
@@ -220,7 +293,7 @@ async function downloadTree(sftp, remoteDir, localDir, stats, options = {}) {
  * @returns {Promise<SyncStats>}
  */
 export async function downloadDirectory(sftp, remoteDir, localDir, mode, options = {}) {
-    const stats = {files: 0, dirs: 0, bytes: 0, skipped: 0, deleted: 0};
+    const stats = {files: 0, dirs: 0, bytes: 0, skipped: 0, unchanged: 0, deleted: 0};
     await downloadTree(sftp, remoteDir, localDir, stats, options);
 
     if (mode === 'mirror') {

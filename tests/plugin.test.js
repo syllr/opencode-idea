@@ -364,7 +364,7 @@ describe('plugin setup', () => {
     expect(state.commands.has('remote-shell')).toBe(true);
     expect(state.commands.has('remote-deployment')).toBe(true);
     // The skills are static knowledge and go in as soon as the plugin loads.
-    expect([...state.skills.keys()].sort()).toEqual(['idea-run-config-manager', 'idea-standalone']);
+    expect([...state.skills.keys()].sort()).toEqual(['idea-run-config-manager', 'idea-standalone', 'run-job-manager']);
 
     // Never marked, so no per-request prompt may mention IDEA. Nothing probes,
     // ever: the plugin only reacts to the request it sees.
@@ -569,6 +569,31 @@ describe('plugin setup', () => {
     expect(event.env.PATH).toBe('/jdk/bin:/node/bin:/usr/bin');
     expect(event.env.GOROOT).toBe('/go');
     expect(event.env.VIRTUAL_ENV).toBe('/venv');
+
+    await cleanup();
+  });
+
+  it('puts the project PATH in front of the shell command itself', async () => {
+    // `~/.zshenv` 之类的启动脚本会在 env 设置之后重排 PATH；命令文本里的前缀才是最终优先级。
+    const fake = await startFakeIdeForProject();
+    running = fake.server;
+    fake.setToolResult(
+      'get_project_env',
+      JSON.stringify({ PATH: '/jdk/bin:/node/bin', variables: {} }),
+    );
+    const { ctx, state } = fakeCtx({ ports: [fake.port] });
+    const cleanup = await plugin.setup(ctx);
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+
+    const before = state.toolHooks['execute.before'];
+    const shell = { tool: 'shell', input: { command: 'node -v' } };
+    await before(shell);
+    expect(shell.input.command).toBe(`export PATH='/jdk/bin':'/node/bin':"$PATH"\nnode -v`);
+
+    // 其它工具的参数一字不改。
+    const other = { tool: 'read', input: { filePath: '/a' } };
+    await before(other);
+    expect(other.input).toEqual({ filePath: '/a' });
 
     await cleanup();
   });
@@ -1195,7 +1220,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
     const registered = [...state.skills.keys()].sort();
-    expect(registered).toEqual(['idea-run-config-manager', 'idea-standalone']);
+    expect(registered).toEqual(['idea-run-config-manager', 'idea-standalone', 'run-job-manager']);
 
     await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     expect([...state.skills.keys()].sort()).toEqual(registered);

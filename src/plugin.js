@@ -1835,11 +1835,28 @@ export default {
                 });
             }
             if (typeof ctx.tool?.hook === 'function') {
-                toolBeforeRegistration = await ctx.tool.hook('execute.before', (event) => {
+                toolBeforeRegistration = await ctx.tool.hook('execute.before', async (event) => {
                     if (typeof event?.tool !== 'string') return;
                     applyIdeToolDefaults(event.tool, event.input, prefixes());
                     // 下限抬升与"固定值"是两件事:前者保留调用方更大的值,所以参数继续留在 schema 里。
                     raiseMinimumArguments(event.tool, event.input, prefixes());
+                    // `create.before` 只改进程创建前的 env；shell 启动脚本（~/.zshenv 里的 brew shellenv、
+                    // `export PATH="...:$PATH"`）会在那之后把 PATH 再排一遍，把注入的 SDK 挤到后面。
+                    // 这里在命令文本最前面再前置一次，优先级才是真的。
+                    if (event.tool !== 'shell' && event.tool !== 'bash') return;
+                    const input = event.input;
+                    if (!input || typeof input.command !== 'string' || input.command === '') return;
+                    if (!projectEnv || Date.now() - projectEnvAt > PROJECT_ENV_TTL_MS) {
+                        await loadProjectEnv().catch(() => false);
+                    }
+                    const path = projectEnv?.PATH;
+                    if (!path) return;
+                    const quoted = path
+                        .split(':')
+                        .filter(Boolean)
+                        .map((entry) => `'${entry.replaceAll("'", `'\\''`)}'`)
+                        .join(':');
+                    input.command = `export PATH=${quoted}:"$PATH"\n${input.command}`;
                 });
             }
 
