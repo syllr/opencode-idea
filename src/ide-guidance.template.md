@@ -57,13 +57,11 @@
 
 ## 本地命令
 
-- **常驻进程**(dev server / watch / 长时间跑的服务)有 run configuration 就用 `rerun` 起它。
-- **一次性的命令就地跑完,反复发生的流程才固化成 run configuration** —— 配置是**项目资产**,不是"跑命令"
-  的手段。判据只有一条: **这件事以后会不会以同样的形态再发生?** 会 (构建 / 生成 / 迁移 / 起服务 / 部署这类)
-  就 **主动提**一次要不要固化成配置,并把配置名 / 类型 / 命令 / 工作目录 / 为什么值得留摊开;
-  不会 (查条数据、看个日志、试一条命令) 就地跑完算。
-- **建 / 改 / 删运行配置,走 `idea-run-config-manager` skill**(服务化应用的配置归 `idea-standalone`):
-  它落手用的就是「运行配置」里的那组工具 —— 配置文件由工具写入和删除。
+- **常驻进程**(dev server / watch / 长时间跑的服务)用 run configuration 起,`rerun` 就是启停入口(见 `idea-standalone`)。
+- **一次性流程固化成 job skill,不建 run configuration** —— `.opencode/skills/job-<名>/`:`SKILL.md` 写清按顺序跑哪些步骤,
+  `assets/` 放脚本;怎么建、怎么加环境差异,按 `run-job-manager` skill 来。
+- 判据只有一条: **这件事以后会不会以同样的形态再发生?** 会(构建 / 生成 / 迁移 / 发布 / 批处理)→ job skill;
+  不会(查条数据、看个日志、试一条命令)→ 就地跑完算。
 
 ## 工具 (每条先列各项目的命令名,再写用法)
 
@@ -138,30 +136,23 @@
 - **全仓检查是收尾动作,不是编辑循环**:同一任务只在最后跑一次;过程中只对改动文件跑 `lint_files` /
   `get_file_problems`。
 
-### 运行配置
+### 运行配置 (只服务化应用)
 
-- {{cmd_get_run_configurations}} **项目里有哪些运行配置**:传 `filePath` 可列该文件的运行入口。
-  配置由 IDE 自己存储(通常在项目目录之外),用这个工具读。
-- {{cmd_execute_run_configuration}} **跑已有配置**:配置里的 `EXECUTE_IN_TERMINAL` 要是 `false`(共享出去的配置都这样);
-  覆盖参数 (`programArguments` / `workingDirectory` / `envs`) 需配置支持 `supportsDynamicLaunchOverrides`,否则会直接报错。
-- {{cmd_create_run_configuration}} **新建任意类型的项目级配置**:内容来源三选一 —— `cloneFrom`(复制一个现成的,最稳;
-  字段名不确定时只走它)、`configurationXml`(模板里的 XML 片段)、平台模板 + `options` / `attributes` / `envs` 补丁。
-  **建不建按上面那条判据**;怎么建、档案怎么记,全按 `idea-run-config-manager` skill 走。
-  **改完同步档案**:新增 / 删除 / 改名之后按 skill 更新 `AGENTS.md` 里的档案块 —— 档案和项目里的配置对不上,比没有档案更糟。
-- {{cmd_inspect_run_configuration}} **看一个配置的全貌**:定义 (options / envs / before-launch)、命名解析 (`win` /
-  mac-linux、base、env)、当前活实例、历史运行及各自的日志文件路径。 **改之前先用它拿当前值**;服务起没起来想看日志,先用
-  `list_running_configurations` 的 `logFile`,要翻"上一次为什么挂了"再走这里。
-- {{cmd_update_run_configuration}} **改字段或改名**:`options` / `envs` / `attributes` 是补丁 (`null` = 删),`newName` 改名并
-  **连带更新别人对它的引用**、迁移历史日志。改之前先 `inspect` 拿 `configurationXml` 与当前值。
-- {{cmd_delete_run_configuration}} **删配置**:在跑或被人引用时拒绝;`force = true` 才会连引用一起清掉。
-- {{cmd_list_running_configurations}} **当前真正在跑的配置**(几个实例 / 各自 pid / 退出码,每个实例还带自己的日志文件路径
+只用于常驻应用(dev server / watch / 服务)。一次性流程走 job skill,不在这里建配置。
+
+- {{cmd_get_run_configurations}} **项目里有哪些配置**:传 `filePath` 可列该文件的运行入口。配置由 IDE 自己存储
+  (通常在项目目录之外),用这个工具读。
+- {{cmd_list_running_configurations}} **当前真正在跑的配置**(几个实例 / 各自 pid / 退出码,每个实例还带日志文件路径
   `logFile`):停 / 重启前后都先用它看状态。
-- {{cmd_stop_run_configuration}} **停掉该配置的全部实例并等它们退出**:没在跑也返回成功。
 - {{cmd_rerun_run_configuration}} **启动 / 重启常驻进程**:在跑就重启、没在跑就启动 —— 改完代码要重启就直接用它,
   有没有热重载都一样;读 `started` 判断新进程是否真的起来了。这次运行的输出在 `output`,完整日志文件路径在
   `fullOutputPath`。启停都走这个工具,IDE 的 Run 窗口状态才会跟着更新。
   **before-launch 很久**(要先构建 / 跑另一个配置)时,调用会一直等到它结束;等不起就传 `waitForStart: false`,
   提交后自己查 {{cmd_list_running_configurations}}。
+- {{cmd_stop_run_configuration}} **停掉该配置的全部实例并等它们退出**:没在跑也返回成功。
+- {{cmd_inspect_run_configuration}} **看一个配置的全貌**:定义 (options / envs / before-launch)、命名解析、当前活实例、
+  历史运行及各自的日志文件路径。服务起没起来想看日志先用 `list_running_configurations` 的 `logFile`;
+  要翻"上一次为什么挂了"再走这里。
 
 **配置名怎么读**:`[os@]base[@env]`,`@` 分割、最多三段 —— `os` = `win`(缺省 macOS / Linux)、`base` = 配置本体(必填)、
 `env` = 环境名(缺省 = 默认环境)。`win@base`(换平台)与 `base@env`(换环境)都是 `base` 的 **变体**,跑哪一个:

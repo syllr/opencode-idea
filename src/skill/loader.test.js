@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parseSkillFrontmatter, readAutoinvoke, readSkill, readSkills, SKILL_FILE_NAME } from './loader.js';
 
-const SKILL_IDS = ['idea-run-config-manager', 'idea-standalone', 'run-job-manager'];
+const SKILL_IDS = ['idea-standalone', 'run-job-manager'];
 
 describe('shipped skills', () => {
   it('loads every skill directory into a Skill.Info-shaped definition', () => {

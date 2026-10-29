@@ -364,7 +364,7 @@ describe('plugin setup', () => {
     expect(state.commands.has('remote-shell')).toBe(true);
     expect(state.commands.has('remote-deployment')).toBe(true);
     // The skills are static knowledge and go in as soon as the plugin loads.
-    expect([...state.skills.keys()].sort()).toEqual(['idea-run-config-manager', 'idea-standalone', 'run-job-manager']);
+    expect([...state.skills.keys()].sort()).toEqual(['idea-standalone', 'run-job-manager']);
 
     // Never marked, so no per-request prompt may mention IDEA. Nothing probes,
     // ever: the plugin only reacts to the request it sees.
@@ -1220,7 +1220,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
     const registered = [...state.skills.keys()].sort();
-    expect(registered).toEqual(['idea-run-config-manager', 'idea-standalone', 'run-job-manager']);
+    expect(registered).toEqual(['idea-standalone', 'run-job-manager']);
 
     await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     expect([...state.skills.keys()].sort()).toEqual(registered);

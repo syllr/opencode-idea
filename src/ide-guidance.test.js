@@ -37,9 +37,6 @@ const VISIBLE = [
   'analyze_calls',
   'apply_patch',
   'build_project',
-  'create_run_configuration',
-  'delete_run_configuration',
-  'execute_run_configuration',
   'get_all_open_file_paths',
   'get_file_problems',
   'get_project_dependencies',
@@ -56,7 +53,7 @@ const VISIBLE = [
   'rename_refactoring',
   'rerun_run_configuration',
   'search_symbol',
-  'update_run_configuration',
+  'stop_run_configuration',
 ];
 
 /** 两个项目的会话。 */
