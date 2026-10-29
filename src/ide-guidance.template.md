@@ -55,14 +55,6 @@
   统一。它从磁盘重读,外部写完直接格式化是安全的。
 - 某条功能下面没有你正要操作的那个项目的命令,说明那个项目没接上:提示用户执行 `/open-in-ide`。
 
-## 本地命令
-
-- **常驻进程**(dev server / watch / 长时间跑的服务)用 run configuration 起,`rerun` 就是启停入口(见 `idea-standalone`)。
-- **一次性流程固化成 job skill,不建 run configuration** —— `.opencode/skills/job-<名>/`:`SKILL.md` 写清按顺序跑哪些步骤,
-  `assets/` 放脚本;怎么建、怎么加环境差异,按 `run-job-manager` skill 来。
-- 判据只有一条: **这件事以后会不会以同样的形态再发生?** 会(构建 / 生成 / 迁移 / 发布 / 批处理)→ job skill;
-  不会(查条数据、看个日志、试一条命令)→ 就地跑完算。
-
 ## 工具 (每条先列各项目的命令名,再写用法)
 
 ### 符号 (只有 IDE 的语义索引能给)
