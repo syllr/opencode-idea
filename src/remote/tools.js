@@ -184,8 +184,7 @@ export function remoteExecTool(toolset) {
         name: 'remote_exec',
         description:
             '用户说“去某台机器上执行 / 重启 / 看日志”、或提到部署机 / 开发机 / 测试机时用它 —— 不要自己拼 ssh / scp。' +
-            '在远程服务器上执行一条命令，返回输出与退出码。服务器与凭据来自三级配置（IDE 的 Deployment 配置 →' +
-            ' 项目内 .opencode/remote-shell/hosts.json → ~/.config/remote-shell/hosts.json），同名以高优先级为准。' +
+            '在远程服务器上执行一条命令，返回输出与退出码。' +
             '每条命令是一条独立 SSH 连接：cd / export 不会跨命令保留，需要目录就传 workingDirectory。' +
             '传错服务器名时会返回全部可用服务器，按返回的列表重新调用即可。',
         input: {
@@ -243,7 +242,7 @@ export function remoteListServersTool(toolset) {
     return {
         name: 'remote_list_servers',
         description:
-            '列出当前可用的远程服务器与它们上面的路径映射（IDE → 项目 → 全局，同名以高优先级为准），带来源标记。' +
+            '列出当前可用的远程服务器与它们上面的路径映射，带 [IDE] / [项目] / [全局] 来源标记。' +
             '不确定服务器名或 deployment 名时先调它。',
         input: {type: 'object', properties: {}, required: []},
         execute: async () => {
