@@ -357,12 +357,11 @@ export function remoteDownloadTool(toolset) {
  * 一次执行的结果 → 模型可读的文本。
  *
  * @param {import('./hosts.js').RemoteServer} server
- * @param {{ exitCode: number | null, stdout: string, stderr: string, timedOut: boolean }} result
+ * @param {{ exitCode: number | null, stdout: string, stderr: string }} result
  * @param {boolean} retried
  */
 export function formatRunSummary(server, result, retried = false) {
     const head = [`[${server.name}] exitCode ${result.exitCode ?? 'null'}`];
-    if (result.timedOut) head.push('timedOut');
     if (retried) head.push('retried');
     const body = [result.stdout.trimEnd()];
     if (result.stderr.trim()) body.push(`[stderr]\n${result.stderr.trimEnd()}`);

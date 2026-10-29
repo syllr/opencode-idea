@@ -10,7 +10,7 @@ import {join} from 'node:path';
 
 import {Client} from 'ssh2';
 
-/** 连接建立的上限；命令本身另有 `timeoutMs`（默认 300s，与旧终端工具一致）。 */
+/** 连接建立的上限。命令本身**不设超时**：卡住时由用户取消这次调用。 */
 const CONNECT_TIMEOUT_MS = 15000;
 
 /** @param {string} path */
@@ -112,13 +112,13 @@ export function connect(server) {
  *
  * @param {import('./hosts.js').RemoteServer} server
  * @param {string} command
- * @param {{ workingDirectory?: string, timeoutMs?: number }} [options]
- * @returns {Promise<{ exitCode: number | null, stdout: string, stderr: string, timedOut: boolean }>}
+ * @param {{ workingDirectory?: string }} [options]
+ * @returns {Promise<{ exitCode: number | null, stdout: string, stderr: string }>}
  */
 export async function runRemoteCommand(server, command, options = {}) {
     const conn = await connect(server);
     try {
-        return await execOn(conn, withWorkingDirectory(command, options.workingDirectory), options.timeoutMs);
+        return await execOn(conn, withWorkingDirectory(command, options.workingDirectory));
     } finally {
         conn.end();
     }
@@ -127,10 +127,8 @@ export async function runRemoteCommand(server, command, options = {}) {
 /**
  * @param {import('ssh2').Client} conn
  * @param {string} command 已经包好 `cd` 的命令
- * @param {number | undefined} timeoutMs
  */
-function execOn(conn, command, timeoutMs) {
-    const timeout = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : 300000;
+function execOn(conn, command) {
     const encoded = Buffer.from(command, 'utf8').toString('base64');
     const execCommand = `printf '%s' '${encoded}' | (base64 -d 2>/dev/null || openssl base64 -d 2>/dev/null) | sh`;
 
@@ -138,17 +136,13 @@ function execOn(conn, command, timeoutMs) {
         let settled = false;
         let stdout = '';
         let stderr = '';
-        let timedOut = false;
-        /** @type {NodeJS.Timeout | undefined} */
-        let timer;
 
         /** @param {Error} [error] @param {{ exitCode: number | null }} [value] */
         const finish = (error, value) => {
             if (settled) return;
             settled = true;
-            if (timer) clearTimeout(timer);
             if (error) reject(error);
-            else resolve({exitCode: value?.exitCode ?? null, stdout, stderr, timedOut});
+            else resolve({exitCode: value?.exitCode ?? null, stdout, stderr});
         };
 
         conn.exec(execCommand, (error, stream) => {
@@ -156,16 +150,6 @@ function execOn(conn, command, timeoutMs) {
                 finish(error);
                 return;
             }
-            timer = setTimeout(() => {
-                timedOut = true;
-                // 通道关掉，命令在远端会被 SIGHUP；连接由调用方 finally 收尾。
-                try {
-                    stream.close();
-                } catch {
-                    // ignore
-                }
-                finish();
-            }, timeout);
 
             stream.on('data', (chunk) => {
                 stdout += chunk.toString('utf8');
@@ -173,6 +157,7 @@ function execOn(conn, command, timeoutMs) {
             stream.stderr.on('data', (chunk) => {
                 stderr += chunk.toString('utf8');
             });
+            // 没有内部超时：命令会一直跑到自己结束或连接断掉。卡住的调用由用户取消。
             stream.on('close', (code) => {
                 finish(undefined, {exitCode: typeof code === 'number' ? code : null});
             });
