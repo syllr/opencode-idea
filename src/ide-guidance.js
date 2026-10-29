@@ -72,8 +72,17 @@ import { renderTemplate } from './template.js';
 /** The prompt document, next to this module so it ships with it. */
 const TEMPLATE_PATH = new URL('ide-guidance.template.md', import.meta.url);
 
+/**
+ * 远程执行的指引。`remote_*` 是**插件自己**的工具（不带 `<前缀>_`、IDE 关掉也在），
+ * 所以这份文本与 IDE 连接状态无关，单独渲染、单独注入。
+ */
+const REMOTE_TEMPLATE_PATH = new URL('plugin-tools-guidance.template.md', import.meta.url);
+
 /** Read once: the file is fixed for the life of the process, and this runs per request. */
 const TEMPLATE = readFileSync(TEMPLATE_PATH, 'utf8');
+
+/** 同上，只为远程工具那份。 */
+const REMOTE_TEMPLATE = readFileSync(REMOTE_TEMPLATE_PATH, 'utf8');
 
 /**
  * 「本会话有哪些项目、各自用哪个 MCP 工具前缀」的清单。
@@ -187,6 +196,29 @@ export function appendIdeGuidance(system, projects) {
   if (!Array.isArray(system)) return;
   if (!Array.isArray(projects) || projects.length === 0) return;
   const text = buildIdeGuidanceText(projects);
+  if (system.some((part) => part?.text === text)) return;
+  system.push({ type: 'text', text });
+}
+
+/**
+ * 远程执行的指引，**与 IDE 连接状态无关**。
+ *
+ * `remote_*` 是插件常驻注册的工具：IDE 关掉时它们仍然能跑（服务器列表退到 hosts.json）。
+ * 所以这段不能跟着 `appendIdeGuidance` 一起在 `serving === false` 时被跳过 —— 否则模型手上有
+ * `remote_exec`，却没有任何说明告诉它该用、怎么传参。
+ *
+ * @returns {string}
+ */
+export function buildRemoteGuidanceText() {
+  return renderTemplate(REMOTE_TEMPLATE, {});
+}
+
+/**
+ * @param {unknown} system
+ */
+export function appendRemoteGuidance(system) {
+  if (!Array.isArray(system)) return;
+  const text = buildRemoteGuidanceText();
   if (system.some((part) => part?.text === text)) return;
   system.push({ type: 'text', text });
 }

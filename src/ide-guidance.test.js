@@ -5,7 +5,9 @@ import {
   MCP_RECOVERY_GUIDANCE_RECONNECTING,
   appendIdeGuidance,
   appendIdeRecoveryGuidance,
+  appendRemoteGuidance,
   buildIdeGuidanceText,
+  buildRemoteGuidanceText,
 } from './ide-guidance.js';
 import { HIDDEN_IDE_TOOL_SUFFIXES } from './plugin.js';
 
@@ -82,12 +84,24 @@ describe('引导的生成', () => {
   it('always describes the companion plugin tools', () => {
     // 配套插件是硬前提 —— 不检测它装没装,也不按工具快照决定写不写。
     const text = guidance();
-    expect(text).toContain('### 远程执行与文件同步');
     expect(text).toContain('ide_inspect_run_configuration');
-    expect(text).toContain('`remote_upload`');
-    expect(text).toContain('`remote_download`');
-    expect(text).toContain('`remote_exec`');
-    expect(text).toContain('`remote_list_servers`');
+  });
+});
+
+describe('远程指引', () => {
+  it('独立于 IDE 连接渲染，点名四个 remote_* 工具', () => {
+    // 远程工具是插件常驻注册的：IDE 断开时 Appendix 仍然要发，否则模型手上有工具却没有用法。
+    const text = buildRemoteGuidanceText();
+    for (const name of ['remote_list_servers', 'remote_exec', 'remote_upload', 'remote_download']) {
+      expect(text).toContain(name);
+    }
+  });
+
+  it('注入是幂等的', () => {
+    const system = [];
+    appendRemoteGuidance(system);
+    appendRemoteGuidance(system);
+    expect(system).toHaveLength(1);
   });
 });
 

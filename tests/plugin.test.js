@@ -57,13 +57,8 @@ function ideConfig(rootPath, { app = 'idea', children = [] } = {}) {
  */
 const DEFAULT_IDE_TOOLS = ['ide_read_file'];
 
-/**
- * 部署 / 终端那两节的标题（模板里的字面量）。整节不再受 `{{#if}}` 控制，
- * "这一节在不在"只是结构断言，写在一处，改标题时不会漏。
- */
-const DEPLOYMENT_HEADING = '### 远程执行与文件同步';
-
-const TERMINAL_HEADING = DEPLOYMENT_HEADING;
+/** 远程工具是插件自己的工具，指引单独一份（见 `plugin-tools-guidance.template.md`）。 */
+const REMOTE_HEADING = '## 远程命令';
 
 afterAll(() => rmSync(projectPath, { recursive: true, force: true }));
 
@@ -375,7 +370,9 @@ describe('plugin setup', () => {
     // ever: the plugin only reacts to the request it sees.
     const system = [];
     await state.sessionHook({ system, tools: { read: {} } });
-    expect(system).toHaveLength(0);
+    // 远程工具常驻，所以即使 IDE 没接入也有这一条；它不承诺任何 IDE 工具。
+    expect(system).toHaveLength(1);
+    expect(system[0].text).toContain('## 远程命令');
 
     await cleanup();
     rmSync(plain, { recursive: true, force: true });
@@ -633,10 +630,11 @@ describe('plugin setup', () => {
     await state.sessionHook(request);
 
     const system = request.system;
-    expect(system).toHaveLength(2);
+    // recovery（有 config 时）+ 远程指引 + IDE 指引
+    expect(system).toHaveLength(3);
     expect(system.every((part) => part.type === 'text')).toBe(true);
-    expect(system[1].text).toContain(projectPath);
-    expect(system[1].text).toContain('ide_search_symbol');
+    expect(system[2].text).toContain(projectPath);
+    expect(system[2].text).toContain('ide_search_symbol');
     // The native tools survive untouched.
     for (const name of ['edit', 'write', 'patch', 'shell']) {
       expect(request.tools).toHaveProperty(name);
@@ -705,7 +703,8 @@ describe('plugin setup', () => {
     // promising tools the model cannot call and heals off the request snapshot.
     const gone = { system: [], tools: { read: {} } };
     await state.sessionHook(gone);
-    expect(gone.system).toHaveLength(1);
+    // recovery + 远程指引（IDE 断掉不影响它）
+    expect(gone.system).toHaveLength(2);
     expect(gone.system[0].text).toContain('IDE MCP failure recovery');
     // The reconnecting variant, not "retry the operation once": a call made in
     // this request can only fail with `No tool named ... available`.
@@ -726,7 +725,9 @@ describe('plugin setup', () => {
     const cleanupOff = await plugin.setup(off.ctx);
     const systemOff = [];
     await off.state.sessionHook({ system: systemOff });
-    expect(systemOff).toHaveLength(0);
+    // 只有远程指引，没有任何 IDE 提示。
+    expect(systemOff).toHaveLength(1);
+    expect(systemOff[0].text).toContain('## 远程命令');
     await cleanupOff();
 
     // Marked in an earlier run, no IDE: the fast-fail recovery hint stays.
@@ -735,7 +736,7 @@ describe('plugin setup', () => {
     const cleanupMarked = await plugin.setup(marked.ctx);
     const systemMarked = [];
     await marked.state.sessionHook({ system: systemMarked });
-    expect(systemMarked).toHaveLength(1);
+    expect(systemMarked).toHaveLength(2);
     expect(systemMarked[0].text).toContain('IDE MCP failure recovery');
     await cleanupMarked();
 
@@ -767,11 +768,10 @@ describe('plugin setup', () => {
       'ide_get_run_configurations',
       'ide_rerun_run_configuration',
     ]) {
-      expect(request.system[1].text).toContain(name);
+      expect(request.system[2].text).toContain(name);
     }
-    expect(request.system[1].text).toContain(DEPLOYMENT_HEADING);
-    expect(request.system[1].text).toContain(TERMINAL_HEADING);
-    // 远程执行是本插件自己的工具，不带 ide_ 前缀
+    // 远程工具的指引是独立一份，不带 ide_ 前缀，IDE 断开时也照发。
+    expect(request.system[1].text).toContain(REMOTE_HEADING);
     expect(request.system[1].text).toContain('`remote_exec`');
     expect(request.system[1].text).toContain('`remote_list_servers`');
 
@@ -1335,7 +1335,7 @@ describe('plugin setup', () => {
     const request = { system: [], tools: { read: {}, ide_read_file: {} } };
     await state.sessionHook(request);
     expect(request.tools).toHaveProperty('ide_read_file');
-    expect(request.system).toHaveLength(2);
+    expect(request.system).toHaveLength(3);
 
     await cleanup();
   });

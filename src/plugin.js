@@ -68,6 +68,7 @@ import {
 import {
     appendIdeGuidance,
     appendIdeRecoveryGuidance,
+    appendRemoteGuidance,
 } from './ide-guidance.js';
 import {
     IDE_LABELS,
@@ -1777,6 +1778,8 @@ export default {
                     appendIdeRecoveryGuidance(event?.system, {marked: Boolean(config), serving});
                 }
                 if (!injectGuidance) return;
+                // 远程工具是常驻的（IDE 关掉也在，退到 hosts.json），指引不能跟着 IDE 连接一起消失。
+                appendRemoteGuidance(event?.system);
                 // Guidance promises tools the model can call, so it only goes out when
                 // they are actually in this request.
                 if (!serving) return;

@@ -7,16 +7,9 @@
 2. **IDE 工具补自带工具做不到的**：符号与定义用 `<前缀>_search_symbol` + `<前缀>_read_file`；改名用
    `<前缀>_rename_refactoring`；单文件检查用 `<前缀>_lint_files` / `<前缀>_get_file_problems`；跨模块构建用
    `<前缀>_build_project`。
-3. **本机命令一律走原生 `shell`**:它已经带上项目配置的 JDK / Node / Go / Maven / Python —— 插件把 IDE 的环境变量
-   注入到了每个新 shell 的 `PATH` 里,`java` / `node` / `go` / `mvn` / `python` 直接就是项目配置的版本。不要找"IDE 终端";
-   `git` / `ls` / `curl` / `docker` 这类与项目无关的也走它。远程机器不是这条 —— 见第 4 条。细则见「命令执行」。
-4. **远程机器上的命令走 `remote_exec`**：用户说"去 xxx 上执行""部署机上跑一下""连某台机器看看",
-   名字不确定就先 `remote_list_servers`(它会列出 IDE、项目、全局三层配置里的全部服务器)。凭据与连接信息
-   都由 IDE 的 Deployment 配置或两级 hosts.json 提供 —— `server` 参数就是这些连接信息的唯一入口。
-5. **远程命令每条独立连接**:`cd` / `export` 不跨命令保留,要目录就传 `workingDirectory`。细则见「远程执行」。
-6. **校验节奏**：改一处只在收尾跑 `lint_files` (要细节再 `get_file_problems`);改一大片或动了接口 / 依赖就用
+3. **校验节奏**：改一处只在收尾跑 `lint_files` (要细节再 `get_file_problems`);改一大片或动了接口 / 依赖就用
    `build_project`;全仓检查只在收尾。
-7. **批量修改**：逐文件用 `edit`，或一次用 `<前缀>_apply_patch`。
+4. **批量修改**：逐文件用 `edit`，或一次用 `<前缀>_apply_patch`。
 
 本会话接入了 {{projectCount}} 个 JetBrains 项目。**每个 IDE 功能在所有项目下都各有一份工具**,命令名是
 `<项目前缀>_<工具名>`;下文写 `<前缀>` 就是指这一截。
@@ -43,8 +36,6 @@
   符号检索、依赖实现、重构、格式化、校验、运行配置、跨文件补丁。
   **两边都不顺手时,你自己判断用 `shell` 里的命令** —— 那是第三选择,不是第一选择。
 - **项目外、但还在本机** —— 用 OpenCode 自带的工具;IDE 工具只对项目内路径生效。
-- **远程机器(部署机 / 开发机 / 用户点名的那台主机)** —— 跑命令走 `remote_exec`,传文件走 `remote_upload` /
-  `remote_download`。凭据与路径映射来自 IDE 的 Deployment 配置,或项目 / 全局的 hosts.json。
 
 ## 总则 (所有项目通用)
 
@@ -64,19 +55,9 @@
   统一。它从磁盘重读,外部写完直接格式化是安全的。
 - 某条功能下面没有你正要操作的那个项目的命令,说明那个项目没接上:提示用户执行 `/open-in-ide`。
 
-## 命令执行 (所有项目通用)
+## 本地命令
 
-- **按"这条命令在哪台机器上"分流**:
-  - **远程机器**(部署机 / 开发机 / 用户说了"去 xxx 上"的那台)→ `remote_exec`,不要用 `ssh` / `scp`
-    兜底 —— 宿主机、凭据、跳板机都在 IDE 里,自己拼 ssh 反而连不上;服务器名字不确定就先 `remote_list_servers`
-    —— **它的返回就是"能直接跑命令的机器"清单**。
-  - **本机**(不管要不要项目运行时)→ 原生 `shell`。IDE 里配的 JDK / Node / Go / Maven / Python 已经注入到每个新 shell 的
-    `PATH` 与环境变量里,`java` / `node` / `go` / `mvn` / `python` 直接就是项目配置的版本,不需要为了"用对版本"换工具。
-- **远程命令每条一条独立 SSH 连接**:`cd` / `export` 不会跨命令保留 —— 需要目录就传 `workingDirectory`,需要环境就写进
-  命令本身。不要指望上一条命令的 `cd` 还在。
-- **远程命令同步返回**:跑完(或超时 300 秒)才返回输出与 `exitCode`,没有 tab、没有增量读。预计跑很久的命令,自己在
-  远程用 `nohup` / `tmux`,不要指望工具替你保活。
-- **常驻进程**(dev server / watch / 长时间跑的服务)有 run configuration 就用 `rerun` 起它;没有就用原生 `shell` 起在后台。
+- **常驻进程**(dev server / watch / 长时间跑的服务)有 run configuration 就用 `rerun` 起它。
 - **一次性的命令就地跑完,反复发生的流程才固化成 run configuration** —— 配置是**项目资产**,不是"跑命令"
   的手段。判据只有一条: **这件事以后会不会以同样的形态再发生?** 会 (构建 / 生成 / 迁移 / 起服务 / 部署这类)
   就 **主动提**一次要不要固化成配置,并把配置名 / 类型 / 命令 / 工作目录 / 为什么值得留摊开;
@@ -190,30 +171,3 @@
   变体、没有默认版的,就用它自己那个 —— "10 个服务"可以是"3 个 `@dev` + 7 个默认",不必逐条问。
 - 一条配置同时有 `base` 与 `base@<env>`、又没说走哪个环境 → **问一次走哪个环境**,选定后本会话默认走这套。
 - 一个环境怎么接上(启动参数 / 环境变量 / 配置文件)是项目自己的事:照现成的同类变体来,或问用户。
-
-### 远程执行与文件同步
-
-服务器是**同一个连接的两面**:既能跑命令,也是文件同步的目标 —— 主机、凭据、路径映射都在它后面。
-
-- `remote_list_servers` **列出全部可用服务器**,带 `[IDE]` / `[项目]` / `[全局]` 来源标记 —— 三层同名时高优先级覆盖,
-  同一个名字只会出现一次;每条 mapping 显示 `本地目录 ↔ 远程目录`。不确定名字时先调它。
-- `remote_exec` **在服务器上跑一条命令**,返回 `[服务器名] exitCode N` 加输出。参数只有三个:`server`、
-  `command`、可选的 `workingDirectory`(先 `cd` 过去)。
-- `remote_upload` / `remote_download` **按 deployment 名同步目录**:默认 `overwrite`(只覆盖 / 新增);
-  `mode: "mirror"` 会**删掉目标端多出来的文件**,不可逆,只在明确要求镜像时用。
-- **凭据来自 IDE**:IDE 里配好的 SFTP 服务器直接可用,不需要在本地再填一遍。三种认证方式都支持 ——
-  `PASSWORD`(密码)、`KEY_PAIR`(私钥)、`OPEN_SSH`(ssh-agent / `~/.ssh/config`)。IDE 没开时退到
-  `<项目>/.opencode/remote-shell/hosts.json` 和 `~/.config/remote-shell/hosts.json`。
-- **名字传错不会失败成死路**:工具会返回全部候选(服务器或 deployment),按列表里的名字重新调用即可。
-- **不要用 `scp` / `rsync` / `ssh` 手工顶替** —— 手工那条路既没有 IDE 的路径映射,也常常根本没有权限。
-
-**约定**
-
-1. 每条命令一条独立 SSH 连接:`cd` / `export` 不跨命令保留。要目录就传 `workingDirectory`。
-2. 命令同步返回,没有 tab、没有 `running` 状态、没有 Ctrl-C 通道。长任务自己在远程用 `nohup` / `tmux`。
-3. 认证 / 连接失败时会自动刷新一次凭据再重试;仍失败才把错误交回来 —— 看错误里的原因(认证失败 / 拒绝 / 超时)。
-4. 传输也是同步的:返回 `files / dirs / bytes`,mirror 时还带 `deleted`;符号链接跳过并计入 `skipped`。
-5. 目录同步是把本地目录的**内容**落到远程目录,不会多生成一层同名子目录。
-
-**IDE 配置可以固定到项目**:用户执行 `/persist-remote-config` 后,服务器与 mapping 会写进
-`<项目>/.opencode/remote-shell/hosts.json` —— 之后即使 IDE 关掉,`remote_list_servers` 仍然列得出它们。
