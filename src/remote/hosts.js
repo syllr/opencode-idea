@@ -4,10 +4,13 @@
 //
 //   global（最低） → project → IDE（最高）
 //
+// IDE 层只提供 SSH 配置与凭据；deployment / exclude 全部由 hosts.json 维护。
+//
 // 这个文件只做**纯数据**的事：读文件、校验形状、合并。调 IDE 取凭据在 `plugin.js`
 // 里（那里才拿得到端口和项目路径），SSH 连接在 `ssh.js` 里。
 
 import {existsSync, readFileSync} from 'node:fs';
+import {isAbsolute, resolve} from 'node:path';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 
@@ -30,7 +33,9 @@ export function projectHostsPath(projectPath) {
  *   password?: string,
  *   passphrase?: string,
  *   privateKeyPath?: string,
- *   deployments: Array<{ name: string, localPath: string, deployPath: string }>,
+ *   dockerCommand?: string,
+ *   exclude?: string[],
+ *   deployments: Array<{ name: string, localPath: string, deployPath: string, exclude?: string[] }>,
  *   source: 'ide' | 'project' | 'global',
  * }} RemoteServer
  */
@@ -79,8 +84,7 @@ function toServer(name, entry, source) {
     const username = typeof record.username === 'string' ? record.username.trim() : '';
     const deployments = parseDeployments(record.deployments);
     // 允许"只补 mapping"的条目：没有 host、但带了 deployments 时也算一条补丁，合并时由
-    // 低优先级层补上连接信息。没有 host 又没有 mapping 的条目没有任何用途（单独一个 username
-    // 既连不上也补不了东西），直接丢掉。三层都只有补丁的条目会在 finalize 时再过滤一次。
+    // 低优先级层补上连接信息。没有 host 又没有 mapping 的条目没有任何用途，直接丢掉。
     if (!host && deployments.length === 0) return undefined;
 
     /** @type {RemoteServer} */
@@ -100,6 +104,10 @@ function toServer(name, entry, source) {
     if (passphrase) server.passphrase = passphrase;
     const privateKeyPath = stringOrUndefined(record.privateKeyPath);
     if (privateKeyPath) server.privateKeyPath = privateKeyPath;
+    const dockerCommand = stringOrUndefined(record.dockerCommand);
+    if (dockerCommand) server.dockerCommand = dockerCommand;
+    const exclude = parseExclude(record.exclude);
+    if (exclude.length > 0) server.exclude = exclude;
     return server;
 }
 
@@ -109,11 +117,58 @@ function stringOrUndefined(value) {
 }
 
 /**
+ * 解析排除项。只接受**路径前缀**与**精确文件**，不认通配符。
+ *
+ * 校验放在使用前（`assertExcludePatterns`），这里保留原样 —— 读文件时不该因为一条
+ * 写错的配置就让整个服务器消失，用户要能看到自己的配置并在报错里被点名。
+ *
+ * @param {unknown} raw
+ * @returns {string[]}
+ */
+export function parseExclude(raw) {
+    if (!Array.isArray(raw)) return [];
+    return raw
+        .filter((entry) => typeof entry === 'string')
+        .map((entry) => entry.trim().replace(/^\.\//, '').replace(/\/+$/, ''))
+        .filter((entry) => entry !== '');
+}
+
+/**
+ * 排除项里出现 `*` / `?` 时抛出可读错误。
+ *
+ * @param {ReadonlyArray<string>} patterns
+ * @returns {void}
+ */
+export function assertExcludePatterns(patterns) {
+    for (const pattern of patterns) {
+        if (/[*?]/.test(pattern)) {
+            throw new Error(
+                `exclude 不支持通配符："${pattern}"。写具体路径，例如 "logs/app.log" 或整个目录 "logs"。`,
+            );
+        }
+    }
+}
+
+/**
+ * 判断一个相对路径是否被排除。
+ *
+ * 规则：命中 `p === pattern` 或 `p` 以 `pattern + "/"` 开头。
+ *
+ * @param {string} relative 相对 mapping 根的路径，使用 `/`
+ * @param {ReadonlyArray<string>} patterns
+ */
+export function isExcluded(relative, patterns) {
+    if (patterns.length === 0) return false;
+    const path = relative.replace(/^\.\//, '').replace(/\/+$/, '');
+    return patterns.some((pattern) => path === pattern || path.startsWith(`${pattern}/`));
+}
+
+/**
  * 解析一个 server 上的路径映射。缺 name / localPath / deployPath 的条目直接丢掉 ——
  * 少了任何一头都传不了。
  *
  * @param {unknown} raw
- * @returns {Array<{ name: string, localPath: string, deployPath: string }>}
+ * @returns {Array<{ name: string, localPath: string, deployPath: string, exclude: string[] }>}
  */
 function parseDeployments(raw) {
     if (!Array.isArray(raw)) return [];
@@ -124,23 +179,61 @@ function parseDeployments(raw) {
         const localPath = typeof record.localPath === 'string' ? record.localPath : '';
         const deployPath = typeof record.deployPath === 'string' ? record.deployPath : '';
         if (!name || !localPath || !deployPath) return [];
-        return [{name, localPath, deployPath}];
+        return [{name, localPath, deployPath, exclude: parseExclude(record.exclude)}];
     });
+}
+
+/**
+ * `localPath` 的来源约束：
+ *
+ * - 项目级 hosts.json（跟着仓库走）→ 只能是相对路径，换台电脑也能用
+ * - 全局 hosts.json（跨项目共用）→ 只能是绝对路径，否则不知道相对谁
+ *
+ * @param {'ide' | 'project' | 'global'} source
+ * @param {{ name: string, localPath: string }} deployment
+ */
+export function assertDeploymentLocalPath(source, deployment) {
+    const {name, localPath} = deployment;
+    if (source === 'project' && isAbsolute(localPath)) {
+        throw new Error(
+            `deployment "${name}" 的 localPath 必须是相对项目根目录的路径，不能是绝对路径：${localPath}`,
+        );
+    }
+    if (source === 'global' && !isAbsolute(localPath)) {
+        throw new Error(
+            `全局配置里 deployment "${name}" 的 localPath 必须是绝对路径：${localPath}`,
+        );
+    }
+}
+
+/**
+ * 项目级相对路径 → 绝对路径；全局/已绝对的原样返回。
+ *
+ * @param {string} projectPath
+ * @param {string} localPath
+ */
+export function resolveLocalPath(projectPath, localPath) {
+    return isAbsolute(localPath) ? localPath : resolve(projectPath, localPath);
 }
 
 /**
  * 把合并后的 server 列表摊平成 deployment 表（按 name 全局唯一）。
  *
  * `server` 挂在每条 mapping 上：上传 / 下载既要知道两端目录，也要知道连哪台机器。
+ * `exclude` 已经合并了 server 级与 deployment 级（并集、去重）。
  *
  * @param {ReadonlyArray<RemoteServer>} servers
- * @returns {Array<{ name: string, localPath: string, deployPath: string, server: RemoteServer }>}
+ * @returns {Array<{ name: string, localPath: string, deployPath: string, exclude: string[], server: RemoteServer }>}
  */
 export function collectDeployments(servers) {
     const byName = new Map();
     for (const server of servers) {
         for (const deployment of server.deployments ?? []) {
-            byName.set(deployment.name, {...deployment, server});
+            byName.set(deployment.name, {
+                ...deployment,
+                exclude: [...new Set([...(server.exclude ?? []), ...(deployment.exclude ?? [])])],
+                server,
+            });
         }
     }
     return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
@@ -202,13 +295,25 @@ function mergeServer(base, override) {
 /**
  * deployment 按 name 合并；高优先级层没配任何 mapping 时保留低优先级的。
  *
- * @param {Array<{ name: string, localPath: string, deployPath: string }>} base
- * @param {Array<{ name: string, localPath: string, deployPath: string }>} override
+ * 字段级合并：高优先级层没给 `exclude` 时保留低优先级层的，避免 IDE 层（不提供 exclude）
+ * 把项目级手写的排除项冲掉。
+ *
+ * @param {Array<{ name: string, localPath: string, deployPath: string, exclude?: string[] }>} base
+ * @param {Array<{ name: string, localPath: string, deployPath: string, exclude?: string[] }>} override
  */
 function mergeDeployments(base, override) {
     if (override.length === 0) return base;
     const byName = new Map(base.map((deployment) => [deployment.name, deployment]));
-    for (const deployment of override) byName.set(deployment.name, deployment);
+    for (const deployment of override) {
+        const existing = byName.get(deployment.name);
+        byName.set(deployment.name, existing
+            ? {
+                ...existing,
+                ...deployment,
+                exclude: deployment.exclude ?? existing.exclude,
+            }
+            : deployment);
+    }
     return [...byName.values()];
 }
 
@@ -219,8 +324,6 @@ function mergeDeployments(base, override) {
  * @param {string} name
  */
 export function findServer(servers, name) {
-    // 旧 remote-shell 的 `findHost` 优先按 alias 匹配；这里保持一致，现有配置里的
-    // `"alias": "远程开发机"` 可以继续用。name 命中优先于 alias。
     return servers.find((server) => server.name === name)
         ?? servers.find((server) => server.alias === name);
 }
@@ -234,7 +337,7 @@ export function findServer(servers, name) {
 export function deploymentNotFoundText(deployments, wanted) {
     if (deployments.length === 0) {
         return `没有名为 "${wanted}" 的 deployment，当前也没有任何路径映射。` +
-            `在 IDE 的 Deployment 里配置，或在 hosts.json 的 host 条目下加 deployments。`;
+            `在 hosts.json 的 host 条目下加 deployments。`;
     }
     const lines = deployments.map((deployment) =>
         `- ${deployment.name}  ${deployment.localPath} ↔ ${deployment.server.name}:${deployment.deployPath}`);

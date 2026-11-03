@@ -31,7 +31,7 @@ vi.mock('../src/ide-launcher.js', async (importOriginal) => {
   };
 });
 
-import plugin, { ideFeedback, ideServersFromResult, projectEnvFromResult } from '../src/plugin.js';
+import plugin, { ideFeedback, ideServersFromResult, projectEnvFromResult, sameProjectPath } from '../src/plugin.js';
 import { IDE_PORTS } from '../src/ide-projects.js';
 import { startFakeIde } from './helpers/fake-ide.js';
 
@@ -41,13 +41,12 @@ const REAL_IDE_PORTS = { ...IDE_PORTS };
 const projectPath = mkdtempSync(path.join(tmpdir(), 'ojbm-'));
 
 /**
- * 一个已接入的配置：root 用某个 IDE，可选子项目。
+ * 一个已接入的配置：当前项目用某个 IDE。
  *
- * 旧版标记只是一个布尔 `true`；现在存的是结构化配置（见 `src/ide-projects.js`），
- * 所以每个需要"已接入"前提的测试都用它预置 storage。
+ * 只认当前格式（见 `src/ide-projects.js`），所以每个需要"已接入"前提的测试都用它预置 storage。
  */
-function ideConfig(rootPath, { app = 'idea', children = [] } = {}) {
-  return { root: { path: rootPath, app }, children };
+function ideConfig(rootPath, { app = 'idea' } = {}) {
+  return { version: 3, path: rootPath, app };
 }
 
 /**
@@ -57,8 +56,8 @@ function ideConfig(rootPath, { app = 'idea', children = [] } = {}) {
  */
 const DEFAULT_IDE_TOOLS = ['ide_read_file'];
 
-/** 远程工具是插件自己的工具，指引单独一份（见 `plugin-tools-guidance.template.md`）。 */
-const REMOTE_HEADING = '## 远程命令';
+/** 远端工具是插件自己的工具，和 IDE 段在同一份指引里。 */
+const REMOTE_HEADING = '## 远端工具（插件自带）';
 
 afterAll(() => rmSync(projectPath, { recursive: true, force: true }));
 
@@ -292,12 +291,23 @@ describe('projectEnvFromResult', () => {
     const env = projectEnvFromResult({ structuredContent: { PATH: '/a', variables: { A: 'x', B: 1 } } });
     expect(env.variables).toEqual({ A: 'x' });
   });
+
+  it('carries the IDE project path when present', () => {
+    expect(
+      projectEnvFromResult({ structuredContent: { projectPath: '/p', PATH: '', variables: {} } }),
+    ).toEqual({ PATH: '', variables: {}, projectPath: '/p' });
+  });
+
+  it('compares exact project directories, not prefixes', () => {
+    expect(sameProjectPath('/a/b', '/a/b/')).toBe(true);
+    expect(sameProjectPath('/a/b', '/a')).toBe(false);
+    expect(sameProjectPath('/a/b', '/a/b/c')).toBe(false);
+  });
 });
 
 describe('ideServersFromResult', () => {
   const server = {
-    name: 'aidata-middleware',
-    sshConfigName: 'mbp',
+    name: 'mbp',
     host: '10.0.0.1',
     port: 2222,
     username: 'u',
@@ -305,8 +315,6 @@ describe('ideServersFromResult', () => {
     password: 'p',
     passphrase: null,
     privateKeyPath: null,
-    rootFolder: '/r',
-    deployments: [{ name: 'app', localPath: '/local/app', deployPath: '/srv/app' }],
   };
 
   it('解析 structuredContent 与 text，缺 name/host 的条目丢掉', () => {
@@ -319,17 +327,13 @@ describe('ideServersFromResult', () => {
         password: 'p',
         passphrase: undefined,
         privateKeyPath: undefined,
-        deployments: [{ name: 'app', localPath: '/local/app', deployPath: '/srv/app' }],
+        deployments: [],
         source: 'ide',
       },
     ]);
     expect(
       ideServersFromResult({ content: [{ type: 'text', text: JSON.stringify({ servers: [server] }) }] }),
     ).toHaveLength(1);
-    // 旧版插件没有 sshConfigName：回落到 Deployment（WebServer）名。
-    expect(
-      ideServersFromResult({ structuredContent: { servers: [{ ...server, sshConfigName: '' }] } })[0].name,
-    ).toBe('aidata-middleware');
     expect(ideServersFromResult({ structuredContent: { servers: [{ name: 'x' }] } })).toEqual([]);
   });
 
@@ -360,9 +364,11 @@ describe('plugin setup', () => {
     expect(state.mcp).toBe(0);
     expect(state.commands.has('open-in-ide')).toBe(true);
     expect(state.commands.has('delete-in-ide')).toBe(true);
-    expect(state.commands.has('persist-remote-config')).toBe(true);
+    expect(state.commands.has('sync-remote-config')).toBe(true);
+    expect(state.commands.has('manage-remote-config')).toBe(true);
     expect(state.commands.has('remote-shell')).toBe(true);
     expect(state.commands.has('remote-deployment')).toBe(true);
+    expect(state.commands.has('remote-sync')).toBe(true);
     // The skills are static knowledge and go in as soon as the plugin loads.
     expect([...state.skills.keys()].sort()).toEqual(['idea-standalone', 'run-job-manager']);
 
@@ -372,7 +378,8 @@ describe('plugin setup', () => {
     await state.sessionHook({ system, tools: { read: {} } });
     // 远程工具常驻，所以即使 IDE 没接入也有这一条；它不承诺任何 IDE 工具。
     expect(system).toHaveLength(1);
-    expect(system[0].text).toContain('## 远程命令');
+    expect(system[0].text).toContain('## 远端工具（插件自带）');
+    expect(system[0].text).not.toContain('ide_search_symbol');
 
     await cleanup();
     rmSync(plain, { recursive: true, force: true });
@@ -599,10 +606,11 @@ describe('plugin setup', () => {
   });
 
   it('does not claim connected when the project environment cannot be read', async () => {
-    // 假 IDE 对未登记的工具回 `{"modules":[]}` —— 没有 PATH / variables，
-    // 不能算"环境已就绪"。
+    // 项目本身是打开的（get_project_env 返回 projectPath），但结果里没有
+    // PATH / variables，不能算"环境已就绪"。
     const fake = await startFakeIdeForProject();
     running = fake.server;
+    fake.setToolResult('get_project_env', JSON.stringify({modules: []}));
     const { ctx, state } = fakeCtx({ ports: [fake.port] });
     const cleanup = await plugin.setup(ctx);
 
@@ -655,11 +663,10 @@ describe('plugin setup', () => {
     await state.sessionHook(request);
 
     const system = request.system;
-    // recovery（有 config 时）+ 远程指引 + IDE 指引
-    expect(system).toHaveLength(3);
+    // recovery（有 config 时）+ 统一指引
+    expect(system).toHaveLength(2);
     expect(system.every((part) => part.type === 'text')).toBe(true);
-    expect(system[2].text).toContain(projectPath);
-    expect(system[2].text).toContain('ide_search_symbol');
+    expect(system[1].text).toContain('ide_search_symbol');
     // The native tools survive untouched.
     for (const name of ['edit', 'write', 'patch', 'shell']) {
       expect(request.tools).toHaveProperty(name);
@@ -752,7 +759,7 @@ describe('plugin setup', () => {
     await off.state.sessionHook({ system: systemOff });
     // 只有远程指引，没有任何 IDE 提示。
     expect(systemOff).toHaveLength(1);
-    expect(systemOff[0].text).toContain('## 远程命令');
+    expect(systemOff[0].text).toContain(REMOTE_HEADING);
     await cleanupOff();
 
     // Marked in an earlier run, no IDE: the fast-fail recovery hint stays.
@@ -790,10 +797,11 @@ describe('plugin setup', () => {
     const request = { system: [], tools: { read: {}, ide_read_file: {}, ide_build_project: {} } };
     await state.sessionHook(request);
     for (const name of [
-      'ide_get_run_configurations',
+      'ide_list_remote_processes',
+      'ide_deploy_remote_process',
       'ide_rerun_run_configuration',
     ]) {
-      expect(request.system[2].text).toContain(name);
+      expect(request.system[1].text).toContain(name);
     }
     // 远程工具的指引是独立一份，不带 ide_ 前缀，IDE 断开时也照发。
     expect(request.system[1].text).toContain(REMOTE_HEADING);
@@ -1360,334 +1368,7 @@ describe('plugin setup', () => {
     const request = { system: [], tools: { read: {}, ide_read_file: {} } };
     await state.sessionHook(request);
     expect(request.tools).toHaveProperty('ide_read_file');
-    expect(request.system).toHaveLength(3);
-
-    await cleanup();
-  });
-});
-
-describe('多项目接入（root + 子项目，各自用不同 IDE）', () => {
-  /** 一个真实存在的子项目目录；它位于 root 之下，所以随 afterAll 一起被清掉。 */
-  const childPath = path.join(projectPath, 'modelserver');
-  mkdirSync(childPath, { recursive: true });
-  /** 目录真实存在，但名字不符合工具前缀规则。 */
-  const badNamePath = path.join(projectPath, 'ModelServer.v2');
-  mkdirSync(badNamePath, { recursive: true });
-
-  /** 一个已登记 root + modelserver 的配置。 */
-  const twoProjects = () => ({
-    root: { path: projectPath, app: 'idea' },
-    children: [{ path: childPath, app: 'pycharm' }],
-  });
-
-  it('首次 /open-in-ide 不猜 IDE，而是让模型去问用户', async () => {
-    const { ctx, state } = fakeCtx();
-    const cleanup = await plugin.setup(ctx);
-
-    await state.commands.get('open-in-ide').execute({
-      sessionID: 's1',
-      prompt: { text: '' },
-      delivery: 'steer',
-    });
-
-    // 没有配置、也没带参数 → 不连、不写；发一条**任务**让模型问用户并回写。
-    expect(state.mcp).toBe(0);
-    expect(state.storage.has(`project/${projectPath}`)).toBe(false);
-    expect(state.prompts).toHaveLength(1);
-    expect(state.prompts[0].text).toContain('configure_ide_project');
-    expect(state.prompts[0].metadata.displayText).toContain('IntelliJ IDEA');
-    expect(state.prompts[0].metadata.displayText).toContain('PyCharm');
-
-    // 实测踩过:模型收到"问用户选哪个 IDE"后自己跑 `ps aux | grep`,那只看到**正在运行**
-    // 的进程 —— PyCharm 装了没开就被报成"未发现"。所以插件自己按应用目录探一次,把结论写进
-    // 任务文本,并明确禁止模型再去翻进程。
-    // 判据是**行为**:插件自己探了(而不是让模型去探),探到的结论进了任务文本。
-    // 结论里"装了什么 / 缺什么"的具体措辞不归测试管。
-    const text = state.prompts[0].text;
-    const detected = text.slice(0, text.indexOf('请向用户提问'));
-    expect(detected.length).toBeGreaterThan(0);
-    expect(detected).toContain('IntelliJ IDEA');
-
-    await cleanup();
-  });
-
-  it('probes the local IDE inventory itself and puts the result in the task', async () => {
-    // 实测踩过:模型收到"问用户选哪个 IDE"后自己跑 `ps aux | grep`,那只看到**正在运行**
-    // 的进程 —— PyCharm 装了没开就被报成"未发现"。所以插件自己按应用目录探一次,把结论写进
-    // 任务文本,并明确禁止模型再去翻进程。
-    // 判据是**行为**:探到了就把结论写进任务;没探到就不写(那段"没探出来"不等于"没装",
-    // 所以宁可不提,也不能瞎说)。结论长什么样不归测试管。
-    const ask = async () => {
-      const { ctx, state } = fakeCtx();
-      const cleanup = await plugin.setup(ctx);
-      await state.commands.get('open-in-ide').execute({
-        sessionID: 's1',
-        prompt: { text: '' },
-        delivery: 'steer',
-      });
-      const text = state.prompts[0].text;
-      await cleanup();
-      return text;
-    };
-
-    const withProbe = await ask();
-    expect(withProbe).toContain('configure_ide_project');
-
-    launcher.installedIdes = [];
-    const withoutProbe = await ask();
-    expect(withoutProbe).toContain('configure_ide_project');
-    // 探到的那段结论整段都不在 → 文本更短。
-    expect(withoutProbe.length).toBeLessThan(withProbe.length);
-  });
-
-  it('configure_ide_project 写入用户选的 root IDE，然后接入', async () => {
-    const fake = await startFakeIdeForProject();
-    running = fake.server;
-    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
-    const cleanup = await plugin.setup(ctx);
-
-    const tool = state.registeredTools.configure_ide_project;
-    expect(tool).toBeTypeOf('object');
-    const result = await tool.execute({ ide: 'pycharm' });
-
-    expect(result.content).toContain('PyCharm');
-    expect(state.storage.get(`project/${projectPath}`)).toMatchObject({
-      root: { path: projectPath, app: 'pycharm' },
-      children: [],
-    });
-    expect(state.mcp).toBe(1);
-    // root 的前缀与 IDE 产品无关：用 PyCharm 打开也叫 `ide`。
-    expect(state.mcpConfig.name).toBe('ide');
-
-    await cleanup();
-  });
-
-  it('configure_ide_project 拒绝不是 IDE 的值', async () => {
-    const { ctx, state } = fakeCtx();
-    const cleanup = await plugin.setup(ctx);
-
-    const result = await state.registeredTools.configure_ide_project.execute({ ide: 'vscode' });
-
-    expect(result.content).toContain('不支持的 IDE');
-    expect(state.storage.has(`project/${projectPath}`)).toBe(false);
-
-    await cleanup();
-  });
-
-  it('add-sub-module-in-ide 在没有配置时直接报错，并要求先 /open-in-ide', async () => {
-    const { ctx, state } = fakeCtx();
-    const cleanup = await plugin.setup(ctx);
-
-    await state.commands.get('add-sub-module-in-ide').execute({
-      sessionID: 's1',
-      prompt: { text: 'modelserver' },
-      delivery: 'steer',
-    });
-
-    expect(state.storage.has(`project/${projectPath}`)).toBe(false);
-    expect(state.mcp).toBe(0);
-    expect(state.prompts.at(-1).metadata.displayText).toContain('请先执行 /open-in-ide');
-
-    await cleanup();
-  });
-
-  it('add-sub-module-in-ide 只收一个参数，并先校验路径再提问', async () => {
-    const { ctx, state } = fakeCtx();
-    state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
-    const cleanup = await plugin.setup(ctx);
-    const command = state.commands.get('add-sub-module-in-ide');
-
-    // 多给参数 = 错误，不猜。
-    await command.execute({ sessionID: 's1', prompt: { text: 'modelserver pycharm' }, delivery: 'steer' });
-    expect(state.prompts.at(-1).metadata.displayText).toContain('只接受一个参数');
-
-    // 目录不存在：拒绝。
-    await command.execute({ sessionID: 's1', prompt: { text: 'nope' }, delivery: 'steer' });
-    expect(state.prompts.at(-1).metadata.displayText).toContain('目录不存在');
-
-    // 合法：发起提问（写配置由模型调用工具完成）。
-    await command.execute({ sessionID: 's1', prompt: { text: 'modelserver' }, delivery: 'steer' });
-    const asked = state.prompts.at(-1);
-    expect(asked.text).toContain('configure_ide_project');
-    expect(asked.text).toContain('path: "modelserver"');
-    expect(state.storage.get(`project/${projectPath}`).children).toHaveLength(0);
-
-    await cleanup();
-  });
-
-  it('登记子项目后给每个项目各注册一个 server，各自指向自己的路径', async () => {
-    const rootPort = await freePort();
-    const childPort = await freePort();
-    const rootIde = await startFakeIdeForProject(rootPort);
-    const childIde = await startFakeIde(childPort);
-    // 各认各的项目：这正是"端口归属"要区分的东西。
-    childIde.setProjectOpen(childPath, true);
-    running = [rootIde.server, childIde.server];
-
-    const { ctx, state } = fakeCtx({ ports: [rootPort, childPort], toolRefreshTimeoutMs: 100 });
-    state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
-    const cleanup = await plugin.setup(ctx);
-
-    await state.registeredTools.configure_ide_project.execute({ path: 'modelserver', ide: 'pycharm' });
-
-    const byName = Object.fromEntries(state.mcpConfigs.map((entry) => [entry.name, entry.config]));
-    expect(Object.keys(byName).sort()).toEqual(['ide', 'modelserver']);
-    expect(byName.ide.headers.IJ_MCP_SERVER_PROJECT_PATH).toBe(projectPath);
-    expect(byName.modelserver.headers.IJ_MCP_SERVER_PROJECT_PATH).toBe(childPath);
-    // 两个项目在两个不同的 IDE 进程里 —— 也就是两个端口。
-    expect(byName.ide.url).toContain(`:${rootPort}/stream`);
-    expect(byName.modelserver.url).toContain(`:${childPort}/stream`);
-
-    await cleanup();
-  });
-
-  it('拒绝目录名不合法的子项目（大小写 / 点号）', async () => {
-    const { ctx, state } = fakeCtx();
-    state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
-    const cleanup = await plugin.setup(ctx);
-
-    const result = await state.registeredTools.configure_ide_project.execute({
-      path: 'ModelServer.v2',
-      ide: 'pycharm',
-    });
-
-    expect(result.content).toContain('无法登记子项目');
-    expect(state.storage.get(`project/${projectPath}`).children).toHaveLength(0);
-
-    await cleanup();
-  });
-
-  it('拒绝会与已登记项目重名的子项目', async () => {
-    const { ctx, state } = fakeCtx();
-    state.storage.set(`project/${projectPath}`, twoProjects());
-    const cleanup = await plugin.setup(ctx);
-
-    // 另建一个同名目录（不同层级），前缀会撞车。
-    const nested = path.join(childPath, 'modelserver');
-    mkdirSync(nested, { recursive: true });
-    const result = await state.registeredTools.configure_ide_project.execute({
-      path: 'modelserver/modelserver',
-      ide: 'idea',
-    });
-
-    expect(result.content).toContain('已被');
-    expect(state.storage.get(`project/${projectPath}`).children).toHaveLength(1);
-
-    await cleanup();
-  });
-
-  it('按每个前缀清洗工具，子项目那份也不例外', async () => {
-    const fake = await startFakeIdeForProject();
-    fake.setProjectOpen(childPath, true);
-    running = fake.server;
-    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
-    state.storage.set(`project/${projectPath}`, twoProjects());
-    const cleanup = await plugin.setup(ctx);
-
-    await state.commands.get('open-in-ide').execute({
-      sessionID: 's1',
-      prompt: { text: 'idea' },
-      delivery: 'steer',
-    });
-
-    const request = {
-      system: [],
-      tools: {
-        ide_read_file: {},
-        ide_git_status: {},
-        modelserver_read_file: {},
-        modelserver_git_status: {},
-      },
-    };
-    await state.sessionHook(request);
-
-    expect(request.tools).toHaveProperty('ide_read_file');
-    expect(request.tools).toHaveProperty('modelserver_read_file');
-    expect(request.tools).not.toHaveProperty('ide_git_status');
-    // 子项目那份同样要被清掉 —— 只处理 `ide_` 前缀是这次改动最容易犯的错。
-    expect(request.tools).not.toHaveProperty('modelserver_git_status');
-
-    await cleanup();
-  });
-
-  it('逐项目注入提示词：每个项目只看到自己前缀的工具', async () => {
-    const fake = await startFakeIdeForProject();
-    fake.setProjectOpen(childPath, true);
-    running = fake.server;
-    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
-    state.storage.set(`project/${projectPath}`, twoProjects());
-    const cleanup = await plugin.setup(ctx);
-
-    await state.commands.get('open-in-ide').execute({
-      sessionID: 's1',
-      prompt: { text: 'idea' },
-      delivery: 'steer',
-    });
-
-    const request = {
-      system: [],
-      tools: { ide_read_file: {}, modelserver_read_file: {} },
-    };
-    await state.sessionHook(request);
-
-    const guidance = request.system.at(-1).text;
-    expect(guidance).toContain('`ide_search_symbol`');
-    expect(guidance).toContain('`modelserver_search_symbol`');
-    expect(guidance).toContain('IntelliJ IDEA');
-    expect(guidance).toContain('PyCharm');
-    // 公共段只出一次。
-    expect(guidance.match(/# IDE MCP:OpenCode 自带工具的补充/g)).toHaveLength(1);
-
-    await cleanup();
-  });
-
-  it('在非 macOS 上连子项目也不拉起 IDE(与 IDEA 同一套规则)', async () => {
-    // 旧逻辑:非 mac 一律不 open。加了 PyCharm 之后这条不能只对 idea 成立 ——
-    // `appNameFor` 与 app 无关,所以 pycharm 同样拿不到 app,走到 manual-launch。
-    launcher.platform = 'win32';
-    // 这个 fake IDE 认得 modelserver 这个项目 —— 但它是以子项目身份接进来的。
-    const fake = await startFakeIde();
-    fake.setProjectOpen(childPath, true);
-    running = fake.server;
-    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
-    state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
-    const cleanup = await plugin.setup(ctx);
-
-    openCalls.length = 0;
-    // 登记子项目(PyCharm)并接入。
-    await state.registeredTools.configure_ide_project.execute({ path: 'modelserver', ide: 'pycharm' });
-
-    // 从来不请求拉起:Windows 上没有 `open -a`。
-    expect(openCalls).toHaveLength(0);
-    // 但已经打开着的端点照样连上 —— 不拉起 ≠ 不能用。
-    expect(state.mcp).toBeGreaterThan(0);
-
-    await cleanup();
-  });
-
-  it('delete-in-ide 删掉整个配置，子项目一并清掉', async () => {
-    const fake = await startFakeIdeForProject();
-    fake.setProjectOpen(childPath, true);
-    running = fake.server;
-    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
-    state.storage.set(`project/${projectPath}`, twoProjects());
-    const cleanup = await plugin.setup(ctx);
-
-    await state.commands.get('open-in-ide').execute({
-      sessionID: 's1',
-      prompt: { text: 'idea' },
-      delivery: 'steer',
-    });
-    expect(state.mcpConfigs).toHaveLength(2);
-
-    await state.commands.get('delete-in-ide').execute({
-      sessionID: 's1',
-      prompt: { text: '' },
-      delivery: 'steer',
-    });
-
-    expect(state.storage.has(`project/${projectPath}`)).toBe(false);
-    expect(state.prompts.at(-1).metadata.displayText).toContain('已删除本项目的 IDE 配置');
+    expect(request.system).toHaveLength(2);
 
     await cleanup();
   });
@@ -1712,27 +1393,44 @@ describe('远程命令', () => {
     await cleanup();
   });
 
-  it('remote-deployment 把用户要求原样注入提示词', async () => {
+  it('remote-deployment 走 deploy_remote_process', async () => {
     const { ctx, state } = fakeCtx({});
     const cleanup = await plugin.setup(ctx);
 
     await state.commands.get('remote-deployment').execute({
+      sessionID: 's1',
+      prompt: { text: 'aidata-api 上线' },
+      delivery: 'steer',
+    });
+
+    expect(state.prompts[0].text).toContain('用户本次的要求：aidata-api 上线');
+    expect(state.prompts[0].text).toContain('deploy_remote_process');
+    expect(state.prompts[0].metadata.displayText).toContain('aidata-api 上线');
+    await cleanup();
+  });
+
+  it('remote-sync 只做文件同步', async () => {
+    const { ctx, state } = fakeCtx({});
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('remote-sync').execute({
       sessionID: 's1',
       prompt: { text: 'mcp-test-project download' },
       delivery: 'steer',
     });
 
     expect(state.prompts[0].text).toContain('用户本次的要求：mcp-test-project download');
+    expect(state.prompts[0].text).toContain('remote_upload');
     expect(state.prompts[0].text).toContain('remote_download');
     expect(state.prompts[0].metadata.displayText).toContain('mcp-test-project download');
     await cleanup();
   });
 
-  it('persist-remote-config 在 IDE 不可用时报错并提示先 /open-in-ide', async () => {
+  it('sync-remote-config 在 IDE 不可用时报错并提示先 /open-in-ide', async () => {
     const { ctx, state } = fakeCtx({ ports: [1], mcpProbeTimeoutMs: 10 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('persist-remote-config').execute({
+    await state.commands.get('sync-remote-config').execute({
       sessionID: 's1',
       prompt: { text: '' },
       delivery: 'steer',

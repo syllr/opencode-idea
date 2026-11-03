@@ -3,7 +3,7 @@
 // 这里盯的是 **mapping 语义**：本地目录内容落到远程目录、嵌套层级、overwrite 不删多余、
 // mirror 删多余。传输出错（认证、断线）不在这里测。
 
-import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, posix} from 'node:path';
 
@@ -241,5 +241,52 @@ describe('downloadDirectory', () => {
         await downloadDirectory(sftp, '/srv/app', local, 'mirror');
         expect(readFileSync(join(local, 'a.txt'), 'utf8')).toBe('new');
         expect(() => readFileSync(join(local, 'stale.txt'), 'utf8')).toThrow();
+    });
+});
+
+describe('exclude', () => {
+    it('命中的目录与文件不上传，mirror 也不删远端对应项', async () => {
+        const local = localTree({
+            'a.txt': 'A',
+            'keep/b.txt': 'B',
+            'node_modules/pkg/index.js': 'X',
+            'logs/app.log': 'L',
+        });
+        const sftp = memorySftp({
+            '/srv/app/node_modules/old.js': 'remote-only',
+            '/srv/app/stale.txt': 'gone',
+        });
+
+        const stats = await uploadDirectory(sftp, local, '/srv/app', 'mirror', {
+            exclude: ['node_modules', 'logs/app.log'],
+        });
+
+        expect(snapshot(sftp, '/srv/app')).toEqual({
+            'a.txt': 'A',
+            'keep': '(dir)',
+            'keep/b.txt': 'B',
+            // 目录本身仍会建出来，只是里面的文件被跳过
+            'logs': '(dir)',
+            // 被排除的远端路径不参与差异删除
+            'node_modules': '(dir)',
+            'node_modules/old.js': 'remote-only',
+        });
+        // node_modules 整棵跳过 + logs/app.log
+        expect(stats.skipped).toBe(2);
+        // stale.txt 仍然按 mirror 删掉
+        expect(stats.deleted).toBe(1);
+    });
+
+    it('下载也跳过排除项', async () => {
+        const local = mkdtempSync(join(workDir, 'download-'));
+        const sftp = memorySftp({
+            '/srv/app/a.txt': 'A',
+            '/srv/app/node_modules/x.js': 'X',
+        });
+
+        await downloadDirectory(sftp, '/srv/app', local, 'overwrite', {exclude: ['node_modules']});
+
+        expect(readFileSync(join(local, 'a.txt'), 'utf8')).toBe('A');
+        expect(existsSync(join(local, 'node_modules'))).toBe(false);
     });
 });

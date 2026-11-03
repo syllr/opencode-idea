@@ -1,21 +1,15 @@
 // opencode-idea — OpenCode plugin entry.
 //
-// 一个 OpenCode 会话（root 项目）可以接入**多个** JetBrains 项目：root 本身，加上
-// root 下任意层级的子目录。每个项目可以被不同的 IDE 打开（root 用 IDEA、modelserver
-// 用 PyCharm 是常态），所以每个项目注册一个独立的 MCP server，名字 = 工具前缀：
+// 一个 OpenCode 会话只对应**一个** JetBrains 项目：当前 workspace root。
+// 工具前缀固定 `ide_`，IDE 打开的项目目录必须和 workspace root 完全相同。
 //
-//   * root   → `ide`        与 IDE 产品无关,root 用谁打开都叫它
-//   * 子项目  → 目录名        `modelserver` → `modelserver_*`
-//
-// 数据模型与校验在 `ide-projects.js`；这里只做编排：探测、注册、提示词、命令、工具。
+// 数据模型在 `ide-projects.js`；这里只做编排：探测、注册、提示词、命令、工具。
 //
 // For a root project the user opted in, this plugin:
-//   1. registers one IDE MCP server per project (see `activate`), each scoped to
-//      its own project through the `IJ_MCP_SERVER_PROJECT_PATH` header; injects
-//      per-project direct-call guidance; and hides the IDE tools that must not
-//      reach the model (for every prefix);
-//   2. registers `/open-in-ide` (接入 root 与其全部子项目), `/delete-in-ide`
-//      (删掉整个配置) and `/add-sub-module-in-ide <路径>` (登记一个子项目),
+//   1. registers one IDE MCP server (`ide`) scoped to the project through the
+//      `IJ_MCP_SERVER_PROJECT_PATH` header; injects direct-call guidance; and
+//      hides the IDE tools that must not reach the model;
+//   2. registers `/open-in-ide` (接入当前项目) and `/delete-in-ide` (删掉配置),
 //      plus the `configure_ide_project` tool the MODEL calls to write the IDE a
 //      user picked into the config;
 //   3. registers the shipped skills (`skills/<id>/SKILL.md`) — marked projects
@@ -23,10 +17,10 @@
 //
 // A root that was never configured is left untouched. Everything is manual:
 // setup does NOT probe or connect any IDE. The commands probe, open the IDE, and
-// load the MCP servers + guidance on demand.
+// load the MCP server + guidance on demand.
 //
-// `/open-in-ide` opens each configured project in ITS OWN IDE, waits until its
-// MCP endpoint is ready, registers it under its prefix, and keeps the config in
+// `/open-in-ide` opens the configured project in its IDE, waits until its MCP
+// endpoint is ready, registers it as `ide`, and keeps the config in
 // `ctx.storage`. A live endpoint alone does NOT mean our project is open there
 // (the running IDE may have a different project open), so the open flow asks the
 // IDE directly — one project-scoped MCP call — and runs `open -a` only when the
@@ -51,7 +45,7 @@
 // `{ id, setup }` object is the whole plugin contract. Exporting it directly
 // keeps this package dependency-free at runtime.
 
-import {existsSync} from 'node:fs';
+import {statSync} from 'node:fs';
 import {resolve} from 'node:path';
 
 import {callTool, serverConfig} from './mcp/idea.js';
@@ -66,23 +60,18 @@ import {
     openInIde,
 } from './ide-launcher.js';
 import {
-    appendIdeGuidance,
+    appendGuidance,
     appendIdeRecoveryGuidance,
-    appendRemoteGuidance,
 } from './ide-guidance.js';
 import {
     IDE_LABELS,
     IDE_PORTS,
+    ROOT_SERVER_NAME,
     SUPPORTED_IDES,
-    listProjects,
     markKeyFor,
     parseIdeArgument,
     parseMark,
-    parseSubprojectArgument,
     serializeMark,
-    toolPrefixes,
-    validateSubproject,
-    withSubproject,
 } from './ide-projects.js';
 import {readSkills} from './skill/loader.js';
 import {
@@ -92,12 +81,17 @@ import {
     remoteListServersTool,
     remoteUploadTool,
 } from './remote/tools.js';
-import {persistRemoteConfig} from './remote/persist.js';
+import {syncRemoteConfig} from './remote/persist.js';
+import {projectHostsPath} from './remote/hosts.js';
 import {
+    MANAGE_REMOTE_CONFIG_DISPLAY,
     REMOTE_DEPLOYMENT_DISPLAY,
     REMOTE_SHELL_DISPLAY,
+    REMOTE_SYNC_DISPLAY,
+    manageRemoteConfigPrompt,
     remoteDeploymentPrompt,
     remoteShellPrompt,
+    remoteSyncPrompt,
 } from './remote/prompts.js';
 
 const DEFAULT_LAUNCH_COOLDOWN_MS = 120000;
@@ -125,6 +119,9 @@ const DEFAULT_EXECUTION_TIMEOUT_MS = 600000;
 // is enough for a healthy IDE and short enough that a wedged one cannot stall
 // `/open-in-ide` or a shell creation.
 const PROJECT_ENV_TIMEOUT_MS = 3000;
+// `get_ssh_servers` / `sync_deployments`：前者是一次读，后者会写 IDE 的 Deployment 配置
+// 并触发 UI 刷新，给 10s 的余量；仍然是一个有界上限，不会挂住命令。
+const IDE_CONFIG_TIMEOUT_MS = 10000;
 // The project environment is also re-read while the session runs (SDK / Maven
 // settings can change under a live IDE). One read per minute per session is
 // plenty: a shell that starts within the window reuses the cached value.
@@ -141,11 +138,49 @@ const PATH_DELIMITER = process.platform === 'win32' ? ';' : ':';
  * content and some IDE builds only fill the text part.
  *
  * @param {{ isError?: boolean, content?: unknown, structuredContent?: unknown } | undefined} result
- * @returns {{ PATH: string, variables: Record<string, string> } | undefined}
+ * @returns {{ PATH: string, variables: Record<string, string>, projectPath?: string } | undefined}
  */
 export function projectEnvFromResult(result) {
     if (!result || result.isError === true) return undefined;
-    return normalizeProjectEnv(result.structuredContent) ?? normalizeProjectEnv(textJson(result));
+    const payload = (result.structuredContent && typeof result.structuredContent === 'object')
+        ? result.structuredContent
+        : textJson(result);
+    const env = normalizeProjectEnv(payload);
+    if (!env) return undefined;
+    if (typeof payload?.projectPath === 'string' && payload.projectPath !== '') {
+        env.projectPath = payload.projectPath;
+    }
+    return env;
+}
+
+/** 从 `get_project_env` 结果里取 IDE 项目路径；与 PATH/variables 是否完整无关。 */
+function projectPathFromResult(result) {
+    if (!result || result.isError === true) return undefined;
+    const payload = (result.structuredContent && typeof result.structuredContent === 'object')
+        ? result.structuredContent
+        : textJson(result);
+    return typeof payload?.projectPath === 'string' && payload.projectPath !== ''
+        ? payload.projectPath
+        : undefined;
+}
+
+/**
+ * 两个项目路径是否**完全同一个目录**（不是父子关系）。
+ *
+ * IDE 会把"落在某个已打开项目目录树内"的路径解析到那个项目，所以只靠一次成功的
+ * 工具调用无法判断 IDE 打开的是不是同一个目录；必须比较 `get_project_env` 返回的
+ * `projectPath`。macOS / Windows 的文件系统大小写不敏感，比较时统一小写。
+ *
+ * @param {string} left
+ * @param {string} right
+ */
+export function sameProjectPath(left, right) {
+    const normalize = (value) => value.replace(/\\/g, '/').replace(/\/+$/, '');
+    const a = normalize(left);
+    const b = normalize(right);
+    return process.platform === 'win32' || process.platform === 'darwin'
+        ? a.toLowerCase() === b.toLowerCase()
+        : a === b;
 }
 
 /** @param {unknown} value */
@@ -185,29 +220,13 @@ function textJson(result) {
 }
 
 /**
- * 解析 IDE 返回的路径映射。缺任何一头的条目丢掉 —— 少了 localPath 或 deployPath 都传不了。
- *
- * @param {unknown} raw
- * @returns {Array<{ name: string, localPath: string, deployPath: string }>}
- */
-function parseDeploymentMappings(raw) {
-    if (!Array.isArray(raw)) return [];
-    return raw.flatMap((entry) => {
-        if (!entry || typeof entry !== 'object') return [];
-        const record = /** @type {Record<string, unknown>} */ (entry);
-        const name = typeof record.name === 'string' ? record.name : '';
-        const localPath = typeof record.localPath === 'string' ? record.localPath : '';
-        const deployPath = typeof record.deployPath === 'string' ? record.deployPath : '';
-        if (!name || !localPath || !deployPath) return [];
-        return [{name, localPath, deployPath}];
-    });
-}
-
-/**
- * Parse a `get_deployment_servers` result into the plugin's own server shape.
+ * Parse a `get_ssh_servers` result into the plugin's own server shape.
  *
  * 只认有 name + host 的条目；其余字段缺了就用默认值 —— 凭据缺失的服务器仍然列出来
  * （`remote_list_servers` 要能看到它），执行时才报"没有凭据"。
+ *
+ * IDE 只提供 SSH 配置与凭据：deployment / exclude 全部来自 hosts.json，
+ * 所以这里固定给一个空数组，由 `mergeServers` 保留项目层的 mapping。
  *
  * @param {{ isError?: boolean, content?: unknown, structuredContent?: unknown } | undefined} result
  */
@@ -222,11 +241,7 @@ export function ideServersFromResult(result) {
     return servers.flatMap((entry) => {
         if (!entry || typeof entry !== 'object') return [];
         const record = /** @type {Record<string, unknown>} */ (entry);
-        // 主键用 SSH 配置名（IDEA 的 `SshConfig`，即用户眼里的"服务器"）：同一台主机上配多套
-        // root/mapping 只是多条 deployment，不该变成多台 server。旧版插件不返回这个字段时，
-        // 回落到 WebServer 名，保证升级前后的调用都还能用。
-        const sshConfigName = typeof record.sshConfigName === 'string' ? record.sshConfigName.trim() : '';
-        const name = sshConfigName || (typeof record.name === 'string' ? record.name : '');
+        const name = typeof record.name === 'string' ? record.name.trim() : '';
         const host = typeof record.host === 'string' ? record.host : '';
         if (!name || !host) return [];
         return [{
@@ -239,7 +254,7 @@ export function ideServersFromResult(result) {
             privateKeyPath: typeof record.privateKeyPath === 'string' && record.privateKeyPath !== ''
                 ? record.privateKeyPath
                 : undefined,
-            deployments: parseDeploymentMappings(record.deployments),
+            deployments: [],
             source: 'ide',
         }];
     });
@@ -326,7 +341,7 @@ const PLUGIN_TOOL_NAMES = new Set(['configure_ide_project']);
  *   commands are handled by this plugin's `remote_exec` (over SSH) instead of the
  *   IDE's own remote terminal, so those tools are hidden as well.
  * - Environment / credential channels: `get_project_env` and
- *   `get_deployment_servers` are data channels for this plugin, not tasks. The
+ *   `get_ssh_servers` are data channels for this plugin, not tasks. The
  *   model never needs them, and exposing them only invites calls that duplicate
  *   what the plugin already does.
  */
@@ -352,7 +367,9 @@ export const HIDDEN_IDE_TOOL_SUFFIXES = [
     // Environment channel: consumed by this plugin's shell hook (see the note above).
     'get_project_env',
     // Credential channel: consumed by this plugin's remote_exec (see the note above).
-    'get_deployment_servers',
+    'get_ssh_servers',
+    // Deployment writer: consumed by /sync-remote-config and the fingerprint reconcile.
+    'sync_deployments',
     // Debugger
     'xdebug_control_session',
     'xdebug_evaluate_expression',
@@ -417,8 +434,7 @@ export const HIDDEN_IDE_TOOL_SUFFIXES = [
 /**
  * Remove the hidden IDE tools from one request's tool record, for every prefix.
  *
- * 入参是**后缀**列表,这里按当前前缀集合展开成完整工具名 —— 每个项目一份都要删,
- * 否则子项目那几份会原样送到模型面前。
+ * 入参是**后缀**列表,这里按当前前缀展开成完整工具名。
  *
  * @param {Record<string, unknown> | undefined} tools
  * @param {readonly string[]} suffixes
@@ -460,7 +476,7 @@ function toolIds(tools) {
  * Everything else is `none`.
  *
  * @param {{ message?: unknown } | undefined} error
- * @param {readonly string[]} serverNames 当前注册的 server 名（`ide` 与各子项目前缀）。
+ * @param {readonly string[]} serverNames 当前注册的 server 名（现在只有 `ide`）。
  * @returns {'project' | 'mcp' | 'none'}
  */
 function classifyIdeFailure(error, serverNames) {
@@ -498,8 +514,8 @@ function classifyIdeFailure(error, serverNames) {
     // accepted as a structural signal too (a wording change must not silently
     // disable the heal).
     //
-    // serverNames 是当前注册的全部 server 名（`ide` / 各子项目前缀）：错误里点名的是
-    // 哪一个 server，取决于失败的是哪个项目的工具，所以只能逐个匹配。
+    // serverNames 是当前注册的 server 名（现在只有 `ide`）：错误里点名的是哪个 server，
+    // 取决于失败的工具，所以逐个匹配。
     if (
         serverNames.some((name) => message.includes(`MCP server "${name}" is not available`)) ||
         message.includes('MCP server is not connected') ||
@@ -562,7 +578,6 @@ function rewriteToolError(event, message) {
  *     | 'deleted'
  *     | 'bad-argument'
  *     | 'not-configured'
- *     | 'invalid-subproject'
  *     | 'needs-ide',
  *   // `manual-launch` = this platform has no launcher at all (the user must
  *   // open the IDE by hand); `disabled` = the user turned launching off. Both
@@ -570,8 +585,7 @@ function rewriteToolError(event, message) {
  *   port?: number,
  *   opened?: boolean,
  *   unavailableNoticeSent?: boolean,
- *   project?: { label?: string, app?: string, isRoot?: boolean },
- *   projects?: ReadonlyArray<{ label?: string, app?: string }>,
+ *   project?: { app?: string },
  *   message?: string
  * }} IdeCommandResult
  */
@@ -587,13 +601,10 @@ const asPositiveNumber = (value, fallback) =>
 /** @param {IdeCommandResult} result */
 export function ideFeedback(result) {
     const appOf = (project) => IDE_LABELS[project?.app] ?? 'IDE';
-    const nameOf = (project) =>
-        project?.isRoot === false ? `${appOf(project)}(子项目 ${project.label ?? ''})` : appOf(project);
+    const nameOf = (project) => appOf(project);
     switch (result?.status) {
-        case 'connected': {
-            const list = (result.projects ?? []).map((project) => `${project.label}(${appOf(project)})`).join('、');
-            return list ? `IDE MCP 已连接并接入:${list}。` : 'IDE MCP 已连接。';
-        }
+        case 'connected':
+            return 'IDE MCP 已连接并接入。';
         case 'tools-loading':
             return 'IDE MCP 已连接,但原生 IDE 工具列表尚未完成注册。请稍后再次执行 /open-in-ide。';
         case 'env-unready': {
@@ -615,16 +626,15 @@ export function ideFeedback(result) {
             return '当前系统不支持自动打开 IDE(仅 macOS 实现了启动)。请手动打开 IDE,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后再次执行 /open-in-ide。';
         case 'deleted':
             return '已删除本项目的 IDE 配置:已注销全部 IDE MCP 并清除配置。如需重新接入,请执行 /open-in-ide。';
-        case 'persisted':
-            return result?.message ?? '已把 IDE 配置写入项目。';
-        case 'persist-failed':
-            return result?.message ?? '持久化失败。';
+        case 'synced':
+        case 'sync-partial':
+            return result?.message ?? '已对齐远程配置。';
+        case 'sync-failed':
+            return result?.message ?? '对齐远程配置失败。';
         case 'bad-argument':
             return `命令参数有误:${result?.message ?? ''}`;
         case 'not-configured':
-            return '当前项目还没有 IDE 配置。请先执行 /open-in-ide 接入根项目,再登记子项目。';
-        case 'invalid-subproject':
-            return `无法登记子项目:${result?.message ?? ''}`;
+            return '当前项目还没有 IDE 配置。请先执行 /open-in-ide。';
         case 'needs-ide':
             return '需要确定用哪个 IDE 打开。请回答 AI 的提问(IntelliJ IDEA 或 PyCharm),AI 会把选择写入配置。';
         default:
@@ -790,7 +800,7 @@ export default {
         /** @type {Promise<boolean> | undefined} */
         let envLoadInFlight;
 
-        // 本会话的 IDE 配置：root 用哪个 IDE，以及登记了哪些子项目、各自用哪个 IDE。
+        // 本会话的 IDE 配置：当前项目用哪个 IDE。
         // 一个插件实例服务一个 root（OpenCode 按 Location 激活插件），所以这就是全部
         // 状态。持久化在 `ctx.storage` 的 `project/<rootPath>` 下。
         //
@@ -836,39 +846,31 @@ export default {
             config = next;
         };
 
-        /** 当前接入的全部项目（root 在前），每个带工具前缀与展示标签。 */
-        const currentProjects = () =>
-            config
-                ? listProjects(config).map((project) => ({
-                    ...project,
-                    label: project.isRoot ? '.' : project.path.slice(projectPath.length + 1),
-                }))
-                : [];
+        /** 当前接入的项目；未配置时为 `undefined`。 */
+        const currentProject = () =>
+            config ? {path: config.path, app: config.app, server: ROOT_SERVER_NAME} : undefined;
 
-        /** 当前所有项目的工具前缀（含下划线）；未配置时为空。 */
-        const prefixes = () => (config ? toolPrefixes(config) : []);
+        /** 当前工具前缀（含下划线）；未配置时为空。 */
+        const prefixes = () => (config ? [`${ROOT_SERVER_NAME}_`] : []);
 
-        /** 当前注册的全部 server 名（= 前缀去掉下划线）。 */
-        const serverNames = () => (config ? listProjects(config).map((project) => project.server) : []);
+        /** 当前注册的 server 名（= 前缀去掉下划线）。 */
+        const serverNames = () => (config ? [ROOT_SERVER_NAME] : []);
 
-        /** 这个工具名是否属于某个 IDE server（插件自己的工具不算）。 */
+        /** 这个工具名是否属于 IDE server（插件自己的工具不算）。 */
         const isIdeToolName = (name) => {
             if (PLUGIN_TOOL_NAMES.has(name)) return false;
             return prefixes().some((prefix) => name.startsWith(prefix));
         };
 
         /**
-         * 这个 IDE 工具属于哪个项目？
-         *
-         * 按**最长前缀**匹配：`modelserver_` 必须先于 `model_` 命中，否则一个叫 `model`
-         * 的项目会把 `modelserver_*` 的工具认领走。
+         * 这个 IDE 工具是否属于当前项目。
          *
          * @param {string} name
          */
-        const projectForTool = (name) =>
-            currentProjects()
-                .filter((project) => name.startsWith(`${project.server}_`))
-                .sort((a, b) => b.server.length - a.server.length)[0];
+        const projectForTool = (name) => {
+            const project = currentProject();
+            return project && name.startsWith(`${project.server}_`) ? project : undefined;
+        };
 
         // 先解析一次，请求钩子之后就能同步读到。
         await readConfig();
@@ -917,8 +919,7 @@ export default {
          * 拉 **root 项目** 的环境变量（`get_project_env`）。
          *
          * 只取 root：PATH 的语义是"这个会话的基础环境"，按子目录分流会把同一份
-         * shell 状态切成几套互不相干的 PATH；子项目要独立环境时，用户在它自己的
-         * 会话里工作更符合直觉。
+         * shell 状态切成几套互不相干的 PATH。
          *
          * 这是**连接的硬条件**：`reconcileOnce` 只有它成功才算 ready，失败时
          * `/open-in-ide` 报 `env-unready`，不会静默降级成"工具有了但环境是空的"。
@@ -928,10 +929,10 @@ export default {
         const loadProjectEnv = async () => {
             if (envLoadInFlight) return envLoadInFlight;
             const run = (async () => {
-                const root = currentProjects().find((project) => project.isRoot);
-                const port = root ? portFor(root) : undefined;
-                if (!root || port === undefined) return false;
-                const result = await callTool(port, root.path, 'get_project_env', {}, {
+                const project = currentProject();
+                const port = project ? portFor(project) : undefined;
+                if (!project || port === undefined) return false;
+                const result = await callTool(port, project.path, 'get_project_env', {}, {
                     timeoutMs: PROJECT_ENV_TIMEOUT_MS,
                 }).catch(() => undefined);
                 const env = projectEnvFromResult(result);
@@ -949,35 +950,117 @@ export default {
         };
 
         /**
-         * 远程执行的数据源：IDE 的 Deployment server + 凭据。
+         * 调一次 IDE 的隐藏工具（`get_ssh_servers` / `sync_deployments`）。
+         *
+         * 与模型可见的 IDE 工具分开：这两个是数据通道，参数固定、结果由插件消费。
+         * 工具自己的错误文本（例如 `[deployment_config_incomplete]` 点名了哪台缺配置）
+         * 原样往上抛，调用方直接转给用户，不要覆盖成一句"不可用"。
+         *
+         * @param {string} name
+         * @param {Record<string, unknown>} args
+         */
+        const callIdeTool = async (name, args, options = {}) => {
+            const project = currentProject();
+            const port = project ? portFor(project) : undefined;
+            if (!project || port === undefined) {
+                throw new Error('还没有接入 IDE 项目：先执行 /open-in-ide。');
+            }
+            const result = await callTool(port, project.path, name, args, {
+                timeoutMs: options.timeoutMs ?? IDE_CONFIG_TIMEOUT_MS,
+            }).catch(() => undefined);
+            if (!result) throw new Error('IDE MCP 未连接：先执行 /open-in-ide。');
+            if (result.isError === true) {
+                const text = (result.content ?? [])
+                    .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+                    .map((part) => part.text)
+                    .join('\n');
+                throw new Error(text || `${name} 返回错误。`);
+            }
+            return result;
+        };
+
+        /**
+         * 远程执行的数据源：IDE 的 SSH 配置 + 凭据。
          *
          * 每次 `remote_exec` 命中缓存就不打 IDE；未命中或连接失败才强制刷新（见
          * `createRemoteToolset`）。IDE 没开时抛错，toolset 会吞掉并退到项目级 /
          * 全局的 hosts.json。
          */
         const fetchIdeServers = async () => {
-            const root = currentProjects().find((project) => project.isRoot);
-            const port = root ? portFor(root) : undefined;
-            if (!root || port === undefined) {
-                throw new Error('还没有接入 IDE 项目：先执行 /open-in-ide。');
-            }
-            const result = await callTool(port, root.path, 'get_deployment_servers', {}, {
-                timeoutMs: PROJECT_ENV_TIMEOUT_MS,
-            }).catch(() => undefined);
-            if (!result) throw new Error('IDE MCP 未连接：先执行 /open-in-ide。');
-            if (result.isError === true) {
-                // 工具自己的错误文本（例如 [deployment_config_incomplete] 点名了哪台缺配置）
-                // 原样往上抛，调用方直接转给用户，不要覆盖成一句"不可用"。
-                const text = (result.content ?? [])
-                    .filter((part) => part?.type === 'text' && typeof part.text === 'string')
-                    .map((part) => part.text)
-                    .join('\n');
-                throw new Error(text || 'get_deployment_servers 返回错误。');
-            }
+            const result = await callIdeTool('get_ssh_servers', {});
             return ideServersFromResult(result);
         };
 
+        /**
+         * 把一条 server 的 deployment 推到 IDE。
+         *
+         * @param {{ server: string, deployments: Array<{ name: string, localPath: string, deployPath: string, exclude: string[] }> }} target
+         */
+        const pushDeployments = async (target) => {
+            const result = await callIdeTool('sync_deployments', {
+                server: target.server,
+                deployments: target.deployments,
+            });
+            const payload = (result.structuredContent && typeof result.structuredContent === 'object')
+                ? result.structuredContent
+                : textJson(result);
+            return {
+                server: target.server,
+                created: Array.isArray(payload?.created) ? payload.created.length : 0,
+                updated: Array.isArray(payload?.updated) ? payload.updated.length : 0,
+                unchanged: Array.isArray(payload?.unchanged) ? payload.unchanged.length : 0,
+            };
+        };
+
         const remoteToolset = createRemoteToolset({projectPath, fetchIdeServers});
+
+        /**
+         * hosts.json 的指纹：mtime + size。
+         *
+         * 不做文件监听：OpenCode 没有文件系统事件，而且编辑器保存 / rename 会让 watch 失效。
+         * 每次工具执行后 stat 一次就够了 —— AI 改完，下一个工具调用就对账。
+         */
+        const hostsFingerprint = () => {
+            try {
+                const info = statSync(projectHostsPath(projectPath));
+                return `${info.mtimeMs}:${info.size}`;
+            } catch {
+                return '';
+            }
+        };
+
+        let lastHostsFingerprint = hostsFingerprint();
+        /** @type {Promise<void> | undefined} */
+        let hostsReconcile;
+
+        /**
+         * 指纹变了就把 hosts.json 静默对齐到 IDE。
+         *
+         * 触发点是 `tool.execute.after` 与 `session.hook('prompt')`：前者覆盖 AI 的编辑，
+         * 后者覆盖用户手改。失败不打扰用户，只重置指纹，下次交互再试。
+         */
+        const reconcileHostsIfChanged = () => {
+            if (hostsReconcile) return hostsReconcile;
+            const current = hostsFingerprint();
+            if (current === '' || current === lastHostsFingerprint) return undefined;
+            lastHostsFingerprint = current;
+            hostsReconcile = (async () => {
+                try {
+                    const servers = await fetchIdeServers();
+                    const result = syncRemoteConfig({projectPath, servers});
+                    for (const target of result.syncTargets) {
+                        await pushDeployments(target).catch(() => {});
+                    }
+                    await remoteToolset.load({force: true}).catch(() => {});
+                } catch {
+                    // IDE 没开 / 配置暂时不完整：不打扰用户，下次交互再试。
+                    lastHostsFingerprint = '';
+                } finally {
+                    hostsReconcile = undefined;
+                }
+            })();
+            return hostsReconcile;
+        };
 
         const refreshIdeTools = async () => {
             if (typeof ctx.mcp.reload === 'function') await ctx.mcp.reload();
@@ -992,7 +1075,7 @@ export default {
         /**
          * 按配置给**每个**已打开的项目各注册一个 MCP server。
          *
-         * server 名就是项目的工具前缀（root = `ide`，子项目 = 目录名），所以 `editor.set`
+         * server 名就是工具前缀（现在固定 `ide`），所以 `editor.set`
          * 的 key 与 `serverConfig` 里带的项目路径必须成对出现 —— 一个 server 只服务一个
          * 项目（路径走 header，注册后无法逐次改写）。
          *
@@ -1039,7 +1122,8 @@ export default {
             }
 
             const bindings = [];
-            for (const project of currentProjects()) {
+            const project = currentProject();
+            if (project) {
                 const port = await portForProject(project);
                 if (port !== undefined) bindings.push({project, port});
             }
@@ -1079,53 +1163,25 @@ export default {
         const reconcile = (options) => enqueue(() => reconcileOnce(options));
 
         /**
-         * Is `path` actually OPEN in the IDE that serves `port`?
+         * `path` 是不是 IDE **真正打开的那个项目目录**？
          *
-         * A live endpoint only means the IDE is RUNNING — it may have a different
-         * project open (or sit on the Welcome screen), while everything we do is
-         * scoped to THIS project. So ask the IDE directly with one project-scoped
-         * call: the server resolves the project from `IJ_MCP_SERVER_PROJECT_PATH`
-         * BEFORE running the tool, and for a project that is not open it fails with
-         * "Unable to determine the target project ..." — the same shape
-         * `classifyIdeFailure` maps to `project`. Any other outcome (a real result,
-         * or an unrelated tool error) means the project WAS resolved, i.e. open.
+         * 不能只看一次工具调用是否成功：IDE 会把"落在某个已打开项目目录树内"的路径
+         * 解析到那个项目，所以父目录打开时，当前项目也能被解析成功。严格同目录必须比较
+         * `get_project_env` 返回的 `projectPath`。
          *
-         * A transport failure (`undefined`) counts as "not confirmed open", so the
-         * caller still asks the IDE to open the project: `open -a` is idempotent,
-         * and the only cost is a redundant focus.
-         *
-         * 这个判定现在只回答一个问题:"这个 IDE 里打开着这个项目吗?" —— 端口本身由
-         * `IDE_PORTS` 按 IDE 唯一确定,不再需要靠它去区分端口归属。
-         *
-         * ⚠️ 实测(2026-10-16,IntelliJ IDEA 2026.2 + PyCharm 2026.2):请求路径**落在某个已打开
-         * 项目的目录树内**时,IDE 会把它解析到那个项目 —— `get_project_modules` 正常返回它的模块,
-         * 而不是报错。只有路径完全不在任何已打开项目下(`/tmp`、不存在的路径)才报
-         * "Unable to determine the target project"。
-         *
-         * 因此「子项目与 root 用同一个 IDE」时必须知道:只要那个 IDE 打开了 root,子项目就会被判成
-         * "已打开" —— 它确实是 root 项目的一部分,工具能操作它的文件,只是语言支持按 **root 项目**
-         * 走(Python 子项目被 root 的 Web 模块解析,符号/检查会不准)。这是 IDE 的目录包含语义,
-         * 不是探测可以绕过的;要让子项目按自己的模块解析,得让它在那个 IDE 里**单独打开**一个项目
-         * —— 或者(正常做法)给它配它真正被打开的那个 IDE。
-         *
-         * A transport failure (`undefined`) counts as "not confirmed open", so the
-         * caller still asks the IDE to open the project: `open -a` is idempotent,
-         * and the only cost is a redundant focus.
+         * 连接失败 / 拿不到 `projectPath` 一律按"未确认打开"处理，让调用方去拉起 IDE。
          *
          * @param {number} port
          * @param {string} path
          */
         const isProjectOpen = async (port, path) => {
-            const result = await callTool(port, path, 'get_project_modules', {}, {
+            const result = await callTool(port, path, 'get_project_env', {}, {
                 timeoutMs: mcpProbeTimeoutMs,
             }).catch(() => undefined);
-            if (!result) return false;
-            if (result.isError !== true) return true;
-            const text = (result.content ?? [])
-                .filter((part) => part?.type === 'text' && typeof part.text === 'string')
-                .map((part) => part.text)
-                .join('\n');
-            return classifyIdeFailure({message: text}, serverNames()) !== 'project';
+            if (!result || result.isError === true) return false;
+            const projectPath = projectPathFromResult(result);
+            if (!projectPath) return false;
+            return sameProjectPath(projectPath, path);
         };
 
         /**
@@ -1184,7 +1240,7 @@ export default {
         /**
          * 确保 `project` 的 IDE 正开着、并且打开着这个项目；返回它的端口。
          *
-         * @param {{ path: string, server: string, app: string, label: string, isRoot: boolean }} project
+         * @param {{ path: string, server: string, app: string }} project
          * @param {{ onUnavailable?: (result: IdeCommandResult) => Promise<boolean> }} [options]
          * @returns {Promise<IdeCommandResult>}
          */
@@ -1243,48 +1299,34 @@ export default {
          * `/open-in-ide` 的主流程：让每个已登记项目的 IDE 都就绪，然后把它们注册进
          * OpenCode。
          *
-         * 每个项目各自拉起**自己的** IDE —— root 在 IDEA、某子项目在 PyCharm 是常态，
-         * 所以这里不是"连一个 IDE"，而是"连一组"，彼此并行。
+         * 现在只有一个项目，拉起它配置的 IDE 即可。
          *
          * @param {{ onUnavailable?: (result: IdeCommandResult) => Promise<boolean> }} [options]
          * @returns {Promise<IdeCommandResult>}
          */
         const runOpenInIdea = async ({onUnavailable} = {}) => {
-            const projects = currentProjects();
-            if (projects.length === 0) return {status: 'not-configured'};
-            const results = await Promise.all(
-                projects.map((project) => ensureProject(project, {onUnavailable})),
-            );
-            const connected = results.filter((result) => result.status === 'connected');
-            if (connected.length === 0) {
-                // 一个都没连上：注销残留注册，并挑一个代表性结果回去（文案已带上具体项目）。
+            const project = currentProject();
+            if (!project) return {status: 'not-configured'};
+            const result = await ensureProject(project, {onUnavailable});
+            if (result.status !== 'connected') {
+                // 没连上：注销残留注册，把 ensureProject 的具体失败原因交回去。
                 await reconcile({probeIde: false}).catch(() => {
                 });
-                return results[0];
+                return result;
             }
             let stage = 'none';
             try {
-                // 重新探测一次并整体注册：ensureProject 只保证 IDE 就绪，注册要按"当前真正
-                // 打开着哪些项目"重来一遍，这样 `/open-in-ide` 每次都是同一套结果。
+                // 重新探测一次并注册：ensureProject 只保证 IDE 就绪，注册要按"现在真的
+                // 打开着这个项目"重来一遍，这样 `/open-in-ide` 每次都是同一套结果。
                 stage = await reconcile({probeIde: true});
             } catch {
                 // capability load is best effort; feedback still matters
             }
-            const connectedProjects = connected.map((result) => result.project);
-            if (stage === 'ready') {
-                return {status: 'connected', port: connected[0].port, projects: connectedProjects};
-            }
+            if (stage === 'ready') return {status: 'connected', port: result.port, project};
             // IDE 已连上、但 env 没拉到：连接按"没做完"处理，命令会要求重试，
             // 而不是报一个看起来成功的 connected。
-            if (stage === 'env') {
-                return {
-                    status: 'env-unready',
-                    port: connected[0].port,
-                    project: connected[0].project,
-                    projects: connectedProjects,
-                };
-            }
-            return {...connected[0], status: 'tools-loading', projects: connectedProjects};
+            if (stage === 'env') return {status: 'env-unready', port: result.port, project};
+            return {...result, status: 'tools-loading', project};
         };
 
         /**
@@ -1391,14 +1433,11 @@ export default {
          * 里必须写明"调用了工具才算完成"，否则模型很容易只回一句"好的，用 PyCharm"。
          *
          * @param {{ sessionID?: string, prompt?: unknown, delivery?: unknown }} input
-         * @param {{ label: string, isRoot: boolean }} target
          */
-        const askIdeChoice = async (input, target) => {
+        const askIdeChoice = async (input) => {
             if (typeof ctx.session?.prompt !== 'function') return;
-            const where = target.isRoot ? `根项目(${projectPath})` : `子项目 ${target.label}`;
-            const call = target.isRoot
-                ? 'configure_ide_project({ ide: "<idea|pycharm>" })'
-                : `configure_ide_project({ path: "${target.label}", ide: "<idea|pycharm>" })`;
+            const where = `当前项目(${projectPath})`;
+            const call = 'configure_ide_project({ ide: "<idea|pycharm>" })';
             // 插件自己摸底,而不是让模型去"找 IDE" —— 它找到的办法通常是 `ps aux | grep`(只能
             // 看到**正在运行**的进程,装了没开就漏),又慢又不准。这里是按应用目录读一次得到的。
             const installed = detectInstalledIdes();
@@ -1422,8 +1461,7 @@ export default {
                 '- `idea` → IntelliJ IDEA',
                 '- `pycharm` → PyCharm',
                 '',
-                '要选它**真正被打开**的那个 IDE(例如 Python 子项目通常是 PyCharm;选错了,IDE 会把请求解析到',
-                '包含它的另一个已打开项目上,符号检索与检查会按那个项目的语言支持走)。',
+                '要选用户**真正用来打开这个目录**的那个 IDE;选错了,IDE 会解析不到这个项目。',
                 '',
                 `调用形式:${call}`,
                 '',
@@ -1448,61 +1486,37 @@ export default {
         /**
          * `configure_ide_project` 的执行体：校验后写入配置并立即接入。
          *
-         * 这是模型把用户的选择写回插件的**唯一**通道，所以它自己也做全套校验：模型可能
-         * 传错路径、传一个不是 IDE 的值，插件不能因为"是模型给的"就放行。
+         * 这是模型把用户的选择写回插件的**唯一**通道，所以它自己也做校验：模型可能
+         * 传一个不是 IDE 的值，插件不能因为"是模型给的"就放行。
          *
-         * @param {{ path?: unknown, ide?: unknown }} args
+         * @param {{ ide?: unknown }} args
          */
         const configureIdeProject = async (args) => {
             const ide = typeof args?.ide === 'string' ? args.ide.toLowerCase() : '';
             if (!SUPPORTED_IDES.includes(ide)) {
                 return {content: `不支持的 IDE \`${String(args?.ide)}\`。可选:${SUPPORTED_IDES.join(' / ')}。`};
             }
-            const rawPath = typeof args?.path === 'string' ? args.path.trim() : '';
-            let current = await readConfig();
-            if (rawPath === '') {
-                current = current
-                    ? {root: {...current.root, app: ide}, children: current.children}
-                    : {root: {path: projectPath, app: ide}, children: []};
-                await writeConfig(current);
-                await runOpenInIdea();
-                return {content: `已把根项目配置为 ${IDE_LABELS[ide]} 并接入。`};
-            }
-            if (!current) {
-                return {content: '当前项目还没有 IDE 配置。请先执行 /open-in-ide。'};
-            }
-            const absPath = resolve(projectPath, rawPath);
-            if (!existsSync(absPath)) {
-                return {content: `目录不存在:${absPath}。`};
-            }
-            const verdict = validateSubproject(current, absPath);
-            if (!verdict.ok) {
-                return {content: `无法登记子项目:${verdict.message}`};
-            }
-            current = withSubproject(current, absPath, ide);
-            await writeConfig(current);
+            const current = await readConfig();
+            const next = current ? {...current, app: ide} : {path: projectPath, app: ide};
+            await writeConfig(next);
             await runOpenInIdea();
-            return {content: `已登记子项目 \`${rawPath}\`(${IDE_LABELS[ide]})并接入。`};
+            return {content: `已把当前项目配置为 ${IDE_LABELS[ide]} 并接入。`};
         };
 
         /** `configure_ide_project` 的工具定义。 */
         const configureIdeTool = () => ({
             name: 'configure_ide_project',
             description:
-                '把用户选定的 IDE 写入本项目的 IDE 配置(即"这个项目用哪个 IDE 打开")。' +
+                '把用户选定的 IDE 写入当前项目的 IDE 配置(即"这个项目用哪个 IDE 打开")。' +
                 '仅当用户明确回答了"用 IntelliJ IDEA 还是 PyCharm"之后调用,不要在用户没答复前猜。' +
-                'path 省略表示配置 root 项目本身;ide 只取 idea / pycharm。',
+                'ide 只取 idea / pycharm。',
             input: {
                 type: 'object',
                 properties: {
-                    path: {
-                        type: 'string',
-                        description: '子项目相对 root 的路径(例如 modelserver);省略表示 root 项目本身。',
-                    },
                     ide: {
                         type: 'string',
                         enum: [...SUPPORTED_IDES],
-                        description: '该项目的 IDE:idea = IntelliJ IDEA,pycharm = PyCharm。',
+                        description: '当前项目的 IDE:idea = IntelliJ IDEA,pycharm = PyCharm。',
                     },
                 },
                 required: ['ide'],
@@ -1510,16 +1524,14 @@ export default {
             execute: async (args) => configureIdeProject(args),
         });
 
-        // `/open-in-ide` 接入 root 与其全部子项目；`/add-sub-module-in-ide <路径>` 登记
-        // 一个子项目（IDE 由模型问用户后写回）；`/delete-in-ide` 删除整个配置。
+        // `/open-in-ide` 接入当前项目；`/delete-in-ide` 删除配置。
         //
-        // 三个名字都带 `-ide` 而不是 `-idea`：这里说的是"接入 IDE"，与具体产品无关 —— root 可能是
-        // IDEA、子项目可能是 PyCharm，和工具前缀（`ide_*` / `<目录名>_*`）是同一套口径。
+        // 名字带 `-ide` 而不是 `-idea`：这里说的是"接入 IDE"，与具体产品无关。
         if (typeof ctx.command?.transform === 'function') {
             commandRegistration = await ctx.command.transform((editor) => {
                 editor.add({
                     name: 'open-in-ide',
-                    description: '接入当前项目:root 及其全部已登记子项目,各自用配置好的 IDE 打开',
+                    description: '接入当前项目:用配置好的 IDE 打开',
                     execute: async (input) => {
                         const parsed = parseIdeArgument(input?.prompt?.text);
                         if (!parsed.ok) {
@@ -1528,16 +1540,16 @@ export default {
                         }
                         let current = await readConfig();
                         if (!current) {
-                            // 第一次：需要知道 root 用哪个 IDE。无参时让模型问用户；带参则直通。
+                            // 第一次：需要知道这个项目用哪个 IDE。无参时让模型问用户；带参则直通。
                             if (!parsed.app) {
-                                await askIdeChoice(input, {isRoot: true, label: '.'});
+                                await askIdeChoice(input);
                                 return;
                             }
-                            current = {root: {path: projectPath, app: parsed.app}, children: []};
+                            current = {path: projectPath, app: parsed.app};
                             await writeConfig(current);
-                        } else if (parsed.app && parsed.app !== current.root.app) {
-                            // 直通逃生口：显式带参时改绑 root 的 IDE（模型不配合时用户仍能自救）。
-                            current = {root: {...current.root, app: parsed.app}, children: current.children};
+                        } else if (parsed.app && parsed.app !== current.app) {
+                            // 直通逃生口：显式带参时改绑 IDE（模型不配合时用户仍能自救）。
+                            current = {...current, app: parsed.app};
                             await writeConfig(current);
                         }
                         /** @type {boolean} */
@@ -1557,38 +1569,8 @@ export default {
                     },
                 });
                 editor.add({
-                    name: 'add-sub-module-in-ide',
-                    description: '登记一个子项目(参数:子项目相对 root 的路径);随后由 AI 询问用哪个 IDE',
-                    execute: async (input) => {
-                        const parsed = parseSubprojectArgument(input?.prompt?.text);
-                        if (!parsed.ok) {
-                            await sendFeedback(input, {status: 'bad-argument', message: parsed.message});
-                            return;
-                        }
-                        const current = await readConfig();
-                        if (!current) {
-                            await sendFeedback(input, {status: 'not-configured'});
-                            return;
-                        }
-                        const absPath = resolve(projectPath, parsed.path);
-                        if (!existsSync(absPath)) {
-                            await sendFeedback(input, {
-                                status: 'invalid-subproject',
-                                message: `目录不存在:${absPath}`,
-                            });
-                            return;
-                        }
-                        const verdict = validateSubproject(current, absPath);
-                        if (!verdict.ok) {
-                            await sendFeedback(input, {status: 'invalid-subproject', message: verdict.message});
-                            return;
-                        }
-                        await askIdeChoice(input, {isRoot: false, label: absPath.slice(projectPath.length + 1)});
-                    },
-                });
-                editor.add({
                     name: 'delete-in-ide',
-                    description: '删除本项目的 IDE 配置:注销全部 IDE MCP 并清除 root 与子项目的登记',
+                    description: '删除本项目的 IDE 配置:注销 IDE MCP 并清除登记',
                     execute: async (input) => {
                         await writeConfig(null);
                         // 注销全部 server。走串行化的 reconcile，所以在飞的重建（另一个
@@ -1597,41 +1579,71 @@ export default {
                         await sendFeedback(input, {status: 'deleted'});
                     },
                 });
-                // 把 IDE 里的 server + deployment 固定到项目配置：之后 IDE 没开也能列出服务器与路径映射
-                // （凭据要么 IDE 在线时提供，要么在全局 hosts.json 里配）。
+                // 双向对齐：IDE 的 SSH 配置写回 hosts.json，hosts.json 的 deployment 推到 IDE。
+                // IDE 没开时整条命令直接失败 —— 两个方向都需要 IDE。
                 editor.add({
-                    name: 'persist-remote-config',
-                    description: '把 IDE 里配置的 server 与 deployment 持久化到项目的 .opencode/remote-shell/hosts.json',
+                    name: 'sync-remote-config',
+                    description: '双向对齐 IDE 与 hosts.json：SSH 配置写回，deployment 推到 IDE 的 Deployment 面板',
                     execute: async (input) => {
                         let servers;
                         try {
                             servers = await fetchIdeServers();
                         } catch (error) {
                             await sendFeedback(input, {
-                                status: 'persist-failed',
+                                status: 'sync-failed',
                                 message:
-                                    '读取 IDE 配置失败：' +
+                                    '读取 IDE 的 SSH 配置失败：' +
                                     (error instanceof Error ? error.message : String(error)),
                             });
                             return;
                         }
+
+                        let result;
                         try {
-                            const result = persistRemoteConfig({projectPath, servers});
-                            // 缓存里还是旧的列表，紧接着的 remote_exec 会读不到刚写进去的条目。
-                            await remoteToolset.load({force: true}).catch(() => {});
-                            await sendFeedback(input, {
-                                status: 'persisted',
-                                message:
-                                    `已写入 ${result.path}\n` +
-                                    `新增 ${result.added} 台 / 更新 ${result.updated} 台 / 保留 ${result.kept} 台，` +
-                                    `共 ${result.total} 台、${result.deployments} 条 deployment。`,
-                            });
+                            result = syncRemoteConfig({projectPath, servers});
                         } catch (error) {
                             await sendFeedback(input, {
-                                status: 'persist-failed',
-                                message: `写入项目配置失败：${error instanceof Error ? error.message : String(error)}`,
+                                status: 'sync-failed',
+                                message: `写入 hosts.json 失败：${error instanceof Error ? error.message : String(error)}`,
                             });
+                            return;
                         }
+
+                        const pushed = [];
+                        const failures = [];
+                        for (const target of result.syncTargets) {
+                            try {
+                                pushed.push(await pushDeployments(target));
+                            } catch (error) {
+                                failures.push(
+                                    `${target.server}: ${error instanceof Error ? error.message : String(error)}`,
+                                );
+                            }
+                        }
+
+                        // 缓存里还是旧的列表，紧接着的 remote_exec 会读不到刚写进去的条目。
+                        await remoteToolset.load({force: true}).catch(() => {});
+
+                        const lines = [
+                            `已对齐 ${result.path}`,
+                            `server：新增 ${result.added} 台 / 更新 ${result.updated} 台 / 保留 ${result.kept} 台，` +
+                            `共 ${result.total} 台`,
+                        ];
+                        if (pushed.length > 0) {
+                            const deployments = pushed.reduce(
+                                (sum, entry) => sum + entry.created + entry.updated + entry.unchanged, 0,
+                            );
+                            lines.push(`deployment：已推 ${deployments} 条到 IDE`);
+                        } else if (result.deploymentCount === 0) {
+                            lines.push('deployment：hosts.json 里还没有配置');
+                        }
+                        if (failures.length > 0) {
+                            lines.push(`未推送 ${failures.length} 台：`, ...failures.map((line) => `  - ${line}`));
+                        }
+                        await sendFeedback(input, {
+                            status: failures.length > 0 ? 'sync-partial' : 'synced',
+                            message: lines.join('\n'),
+                        });
                     },
                 });
 
@@ -1639,7 +1651,7 @@ export default {
                 // 参数原样附在末尾；没带参数时提示词会要求模型先问清楚。
                 editor.add({
                     name: 'remote-shell',
-                    description: '远程执行模式：引导 AI 用 remote_exec / remote_upload / remote_download 而不是 ssh',
+                    description: '远程执行模式：引导 AI 用 remote_exec 而不是 ssh',
                     execute: async (input) => {
                         if (typeof ctx.session?.prompt !== 'function') return;
                         const request = input?.prompt?.text ?? '';
@@ -1665,7 +1677,7 @@ export default {
                 });
                 editor.add({
                     name: 'remote-deployment',
-                    description: '远程部署模式：引导 AI 用 remote_upload / remote_download 而不是 scp / rsync',
+                    description: '远程部署模式：引导 AI 用 deploy_remote_process 同步并启动，而不是手动拼 ssh / scp',
                     execute: async (input) => {
                         if (typeof ctx.session?.prompt !== 'function') return;
                         const request = input?.prompt?.text ?? '';
@@ -1678,6 +1690,56 @@ export default {
                                     displayText: request.trim()
                                         ? `【远程部署同步】${request.trim()}`
                                         : REMOTE_DEPLOYMENT_DISPLAY,
+                                    comments: [],
+                                },
+                                delivery: input.delivery,
+                            });
+                        } catch {
+                            // 同上
+                        }
+                    },
+                });
+                // 纯文件同步：和部署分开，避免把 remote_upload 当成部署。
+                editor.add({
+                    name: 'remote-sync',
+                    description: '远程文件同步模式：引导 AI 用 remote_upload / remote_download，不启动进程',
+                    execute: async (input) => {
+                        if (typeof ctx.session?.prompt !== 'function') return;
+                        const request = input?.prompt?.text ?? '';
+                        try {
+                            await ctx.session.prompt({
+                                ...input.prompt,
+                                sessionID: input.sessionID,
+                                text: remoteSyncPrompt(request),
+                                metadata: {
+                                    displayText: request.trim()
+                                        ? `【远程文件同步】${request.trim()}`
+                                        : REMOTE_SYNC_DISPLAY,
+                                    comments: [],
+                                },
+                                delivery: input.delivery,
+                            });
+                        } catch {
+                            // 同上
+                        }
+                    },
+                });
+                // 纯提示词命令：AI 只改 hosts.json，改完由指纹对账自动推到 IDE。
+                editor.add({
+                    name: 'manage-remote-config',
+                    description: '远程配置模式：引导 AI 修改 hosts.json（server / deployment / exclude）',
+                    execute: async (input) => {
+                        if (typeof ctx.session?.prompt !== 'function') return;
+                        const request = input?.prompt?.text ?? '';
+                        try {
+                            await ctx.session.prompt({
+                                ...input.prompt,
+                                sessionID: input.sessionID,
+                                text: manageRemoteConfigPrompt(request),
+                                metadata: {
+                                    displayText: request.trim()
+                                        ? `【远程配置】${request.trim()}`
+                                        : MANAGE_REMOTE_CONFIG_DISPLAY,
                                     comments: [],
                                 },
                                 delivery: input.delivery,
@@ -1778,13 +1840,9 @@ export default {
                     appendIdeRecoveryGuidance(event?.system, {marked: Boolean(config), serving});
                 }
                 if (!injectGuidance) return;
-                // 远程工具是常驻的（IDE 关掉也在，退到 hosts.json），指引不能跟着 IDE 连接一起消失。
-                appendRemoteGuidance(event?.system);
-                // Guidance promises tools the model can call, so it only goes out when
-                // they are actually in this request.
-                if (!serving) return;
-                // 逐项目注入：每条工具后面直接列各项目的命令名，模型不需要自己换算前缀。
-                appendIdeGuidance(event?.system, currentProjects());
+                // 一个文件、两段内容：IDE 段只在 IDE 工具真的在本次请求里时出现；
+                // 远端工具段与连接状态无关，始终出现。
+                appendGuidance(event?.system, serving);
             });
 
             // 自愈入口(钩子型)。OpenCode 会 await `prompt`,所以在这里修好的连接会在
@@ -1801,7 +1859,10 @@ export default {
             // 只探测、不启动 IDE:走 `reconcile({ probeIde: true })`,而不是会 `open -a`
             // 的 `reviveIde()` —— 一条用户消息不该把 IDE 拉起来。
             promptRegistration = await ctx.session.hook('prompt', async (event) => {
-                if (disposed || !config) return;
+                if (disposed) return;
+                // hosts.json 可能被用户手改过：一次 stat，变了就静默对齐（不注入任何消息）。
+                reconcileHostsIfChanged();
+                if (!config) return;
                 const fresh = registrations.length === 0;
                 if (!needsRebuild && !fresh) return;
                 // Never react to the plugin's own notices, or recovery would feed on
@@ -1867,6 +1928,8 @@ export default {
             // "the project is not open in the IDE" do.
             if (typeof ctx.tool?.hook === 'function') {
                 toolRegistration = await ctx.tool.hook('execute.after', async (event) => {
+                    // hosts.json 可能被这次工具调用改过：一次 stat，变了就静默对齐。
+                    reconcileHostsIfChanged();
                     if (event?.status === 'completed') {
                         // 输出侧:目录树顶到 maxDepth 边界时补一句看得见的截断提示
                         // (静默截断正是模型把"被切"读成"空目录"的原因,见 `mcp/idea-tool-output.js`)。

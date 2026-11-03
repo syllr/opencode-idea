@@ -9,6 +9,19 @@ import {readdir, stat as fsStat, utimes} from 'node:fs/promises';
 import {join} from 'node:path';
 import {posix} from 'node:path';
 
+import {isExcluded} from './hosts.js';
+
+/**
+ * 一次同步的公共选项。
+ *
+ * @typedef {{
+ *   signal?: AbortSignal,
+ *   root?: boolean,
+ *   prefix?: string,
+ *   exclude?: string[],
+ * }} SyncOptions
+ */
+
 /**
  * @typedef {{
  *   files: number,
@@ -118,11 +131,13 @@ export async function ensureRemoteDir(sftp, dir) {
 /**
  * 递归上传一个本地目录。
  *
+ * `options.exclude` 是相对 mapping 根的路径前缀列表；命中的目录整棵跳过、命中的文件不传。
+ *
  * @param {import('ssh2').SFTPWrapper} sftp
  * @param {string} localDir
  * @param {string} remoteDir
  * @param {SyncStats} stats
- * @param {{ signal?: AbortSignal, root?: boolean }} [options]
+ * @param {SyncOptions} [options]
  */
 async function uploadTree(sftp, localDir, remoteDir, stats, options = {}) {
     if (options.root) await ensureRemoteDir(sftp, remoteDir);
@@ -136,11 +151,16 @@ async function uploadTree(sftp, localDir, remoteDir, stats, options = {}) {
     const entries = await readdir(localDir, {withFileTypes: true});
     for (const entry of entries) {
         if (options.signal?.aborted) throw new Error('传输已取消');
+        const relative = options.prefix ? `${options.prefix}/${entry.name}` : entry.name;
+        if (isExcluded(relative, options.exclude ?? [])) {
+            stats.skipped += 1;
+            continue;
+        }
         const localPath = join(localDir, entry.name);
         const remotePath = posix.join(remoteDir, entry.name);
         if (entry.isDirectory()) {
             stats.dirs += 1;
-            await uploadTree(sftp, localPath, remotePath, stats, {...options, root: false});
+            await uploadTree(sftp, localPath, remotePath, stats, {...options, root: false, prefix: relative});
         } else if (entry.isFile()) {
             const info = await fsStat(localPath);
             if (sameFile(info.size, info.mtimeMs, remote.get(entry.name))) {
@@ -160,12 +180,16 @@ async function uploadTree(sftp, localDir, remoteDir, stats, options = {}) {
 /**
  * 递归读取远程目录的条目（相对路径 + 是否目录），用于 mirror 的差异删除。
  *
+ * 排除项在这里也要跳过：被排除的路径不参与差异比较，否则 `mirror` 会把它们当成
+ * "本地没有"而删掉远端。
+ *
  * @param {import('ssh2').SFTPWrapper} sftp
  * @param {string} remoteDir
  * @param {string} [prefix]
+ * @param {string[]} [exclude]
  * @returns {Promise<{ path: string, dir: boolean }[]>}
  */
-async function listRemoteTree(sftp, remoteDir, prefix = '') {
+async function listRemoteTree(sftp, remoteDir, prefix = '', exclude = []) {
     const entries = await call(sftp.readdir.bind(sftp), remoteDir).catch((error) => {
         if (error?.code === 2 || /No such file/i.test(String(error?.message))) return [];
         throw error;
@@ -175,10 +199,11 @@ async function listRemoteTree(sftp, remoteDir, prefix = '') {
         const name = entry.filename;
         if (name === '.' || name === '..') continue;
         const relative = prefix ? `${prefix}/${name}` : name;
+        if (isExcluded(relative, exclude)) continue;
         const isDir = entry.attrs.isDirectory();
         result.push({path: relative, dir: isDir});
         if (isDir) {
-            result.push(...await listRemoteTree(sftp, posix.join(remoteDir, name), relative));
+            result.push(...await listRemoteTree(sftp, posix.join(remoteDir, name), relative, exclude));
         }
     }
     return result;
@@ -189,16 +214,18 @@ async function listRemoteTree(sftp, remoteDir, prefix = '') {
  *
  * @param {string} localDir
  * @param {string} [prefix]
+ * @param {string[]} [exclude]
  * @returns {Promise<{ path: string, dir: boolean }[]>}
  */
-async function listLocalTree(localDir, prefix = '') {
+async function listLocalTree(localDir, prefix = '', exclude = []) {
     const entries = await readdir(localDir, {withFileTypes: true}).catch(() => []);
     const result = [];
     for (const entry of entries) {
         const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+        if (isExcluded(relative, exclude)) continue;
         if (entry.isDirectory()) {
             result.push({path: relative, dir: true});
-            result.push(...await listLocalTree(join(localDir, entry.name), relative));
+            result.push(...await listLocalTree(join(localDir, entry.name), relative, exclude));
         } else if (entry.isFile()) {
             result.push({path: relative, dir: false});
         }
@@ -213,16 +240,17 @@ async function listLocalTree(localDir, prefix = '') {
  * @param {string} localDir
  * @param {string} remoteDir
  * @param {'overwrite' | 'mirror'} mode
- * @param {{ signal?: AbortSignal }} [options]
+ * @param {SyncOptions} [options]
  * @returns {Promise<SyncStats>}
  */
 export async function uploadDirectory(sftp, localDir, remoteDir, mode, options = {}) {
     const stats = {files: 0, dirs: 0, bytes: 0, skipped: 0, unchanged: 0, deleted: 0};
+    const exclude = options.exclude ?? [];
     await uploadTree(sftp, localDir, remoteDir, stats, {...options, root: true});
 
     if (mode === 'mirror') {
-        const localSet = new Set((await listLocalTree(localDir)).map((entry) => entry.path));
-        const remoteEntries = await listRemoteTree(sftp, remoteDir);
+        const localSet = new Set((await listLocalTree(localDir, '', exclude)).map((entry) => entry.path));
+        const remoteEntries = await listRemoteTree(sftp, remoteDir, '', exclude);
         // 先删文件再删目录，避免 rmdir 非空。
         for (const entry of remoteEntries.filter((item) => !item.dir)) {
             if (localSet.has(entry.path)) continue;
@@ -258,11 +286,16 @@ async function downloadTree(sftp, remoteDir, localDir, stats, options = {}) {
         if (options.signal?.aborted) throw new Error('传输已取消');
         const name = entry.filename;
         if (name === '.' || name === '..') continue;
+        const relative = options.prefix ? `${options.prefix}/${name}` : name;
+        if (isExcluded(relative, options.exclude ?? [])) {
+            stats.skipped += 1;
+            continue;
+        }
         const remotePath = posix.join(remoteDir, name);
         const localPath = join(localDir, name);
         if (entry.attrs.isDirectory()) {
             stats.dirs += 1;
-            await downloadTree(sftp, remotePath, localPath, stats, options);
+            await downloadTree(sftp, remotePath, localPath, stats, {...options, prefix: relative});
         } else if (entry.attrs.isFile()) {
             const localInfo = await fsStat(localPath).catch(() => undefined);
             if (localInfo?.isFile() && sameFile(localInfo.size, localInfo.mtimeMs, entry.attrs)) {
@@ -289,24 +322,25 @@ async function downloadTree(sftp, remoteDir, localDir, stats, options = {}) {
  * @param {string} remoteDir
  * @param {string} localDir
  * @param {'overwrite' | 'mirror'} mode
- * @param {{ signal?: AbortSignal }} [options]
+ * @param {SyncOptions} [options]
  * @returns {Promise<SyncStats>}
  */
 export async function downloadDirectory(sftp, remoteDir, localDir, mode, options = {}) {
     const stats = {files: 0, dirs: 0, bytes: 0, skipped: 0, unchanged: 0, deleted: 0};
+    const exclude = options.exclude ?? [];
     await downloadTree(sftp, remoteDir, localDir, stats, options);
 
     if (mode === 'mirror') {
-        const remoteEntries = await listRemoteTree(sftp, remoteDir);
+        const remoteEntries = await listRemoteTree(sftp, remoteDir, '', exclude);
         const remoteSet = new Set(remoteEntries.map((entry) => entry.path));
         const {rm, rmdir} = await import('node:fs/promises');
-        for (const entry of (await listLocalTree(localDir)).filter((item) => !item.dir)) {
+        for (const entry of (await listLocalTree(localDir, '', exclude)).filter((item) => !item.dir)) {
             if (remoteSet.has(entry.path)) continue;
             await rm(join(localDir, entry.path), {force: true});
             stats.deleted += 1;
         }
         // 本地空目录也收掉；非空时 rmdir 会失败，忽略即可。
-        for (const entry of (await listLocalTree(localDir)).filter((item) => item.dir).reverse()) {
+        for (const entry of (await listLocalTree(localDir, '', exclude)).filter((item) => item.dir).reverse()) {
             if (remoteSet.has(entry.path)) continue;
             await rmdir(join(localDir, entry.path)).catch(() => {});
         }

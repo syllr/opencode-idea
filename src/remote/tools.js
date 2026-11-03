@@ -1,16 +1,21 @@
-// 远程执行与文件同步的工具：`remote_exec` / `remote_list_servers` /
-// `remote_upload` / `remote_download`。
+// 远程工具：`remote_exec` / `remote_list_servers` / `remote_upload` / `remote_download`。
+// 远端进程的启停不在这里：直接用 IDE 的 run configuration 工具（带项目前缀）。
+
+
 //
 // 依赖注入而非直接 import 插件上下文：`fetchIdeServers` 由 `plugin.js` 提供
 // （它才知道 IDE 端口和项目路径），这里只负责缓存、合并、调用 SSH / SFTP。
 
 import {
+    assertDeploymentLocalPath,
+    assertExcludePatterns,
     collectDeployments,
     deploymentNotFoundText,
     findServer,
     mergeServers,
     projectHostsPath,
     readHostsFile,
+    resolveLocalPath,
     serverNotFoundText,
     GLOBAL_HOSTS_PATH,
 } from './hosts.js';
@@ -149,13 +154,24 @@ export function createRemoteToolset({projectPath, fetchIdeServers, globalHostsPa
         const {target, deployments} = await findDeployment(name);
         if (!target) return {kind: 'missing', deployments};
 
+        // 通配符在这里挡掉：hosts.json 允许写错，但真正同步前必须报给调用方。
+        try {
+            assertExcludePatterns(target.exclude ?? []);
+            assertDeploymentLocalPath(target.server.source, target);
+        } catch (error) {
+            return {kind: 'invalid-deployment', deployment: target, error};
+        }
+
+        // 项目级 localPath 是相对的，传给文件系统前按项目根解析。
+        const localPath = resolveLocalPath(projectPath, target.localPath);
         const outcome = await withServer(target.server.name, async (server) => {
             const conn = await connect(server);
             try {
                 const sftp = await openSftp(conn);
+                const options = {exclude: target.exclude ?? []};
                 return direction === 'upload'
-                    ? await uploadDirectory(sftp, target.localPath, target.deployPath, mode)
-                    : await downloadDirectory(sftp, target.deployPath, target.localPath, mode);
+                    ? await uploadDirectory(sftp, localPath, target.deployPath, mode, options)
+                    : await downloadDirectory(sftp, target.deployPath, localPath, mode, options);
             } finally {
                 conn.end();
             }
@@ -214,7 +230,7 @@ export function remoteExecTool(toolset) {
                 case 'missing': {
                     const ideError = toolset.ideError();
                     const prefix = ideError
-                        ? `IDE 的 Deployment 配置有问题，这次只用了项目 / 全局的配置：\n${ideError.message}\n\n`
+                        ? `IDE 的 SSH 配置有问题，这次只用了项目 / 全局的配置：\n${ideError.message}\n\n`
                         : '';
                     return {content: prefix + serverNotFoundText(outcome.servers, server)};
                 }
@@ -251,12 +267,12 @@ export function remoteListServersTool(toolset) {
             const lines = [];
             const ideError = toolset.ideError();
             if (ideError) {
-                lines.push('⚠ IDE 的 Deployment 配置有问题，下面只列出项目 / 全局配置里的服务器：');
+                lines.push('⚠ IDE 的 SSH 配置有问题，下面只列出项目 / 全局配置里的服务器：');
                 lines.push(ideError.message);
                 lines.push('');
             }
             if (servers.length === 0) {
-                lines.push('当前没有可用的远程服务器。在 IDE 的 Deployment 里添加 SFTP 服务器，或配置 hosts.json。');
+                lines.push('当前没有可用的远程服务器。在 IDE 的 SSH Configurations 里添加服务器，或配置 hosts.json。');
                 return {content: lines.join('\n')};
             }
             for (const entry of servers) {
@@ -266,7 +282,12 @@ export function remoteListServersTool(toolset) {
                 const label = entry.alias ? `${entry.name} (${entry.alias})` : entry.name;
                 lines.push(`- ${label}  ${entry.host}:${entry.port}  ${entry.username}  [${source}]${auth}`);
                 for (const deployment of entry.deployments ?? []) {
-                    lines.push(`    ${deployment.name}  ${deployment.localPath} ↔ ${deployment.deployPath}`);
+                    try {
+                        assertDeploymentLocalPath(entry.source, deployment);
+                        lines.push(`    ${deployment.name}  ${deployment.localPath} ↔ ${deployment.deployPath}`);
+                    } catch (error) {
+                        lines.push(`    ⚠ ${error.message}`);
+                    }
                 }
             }
             return {content: lines.join('\n')};
@@ -313,6 +334,8 @@ function transferTool(toolset, direction) {
             switch (outcome.kind) {
                 case 'missing':
                     return {content: deploymentNotFoundText(outcome.deployments, name)};
+                case 'invalid-deployment':
+                    return {content: outcome.error.message};
                 case 'no-credentials':
                     return {content: noCredentialsText(outcome.server)};
                 case 'failed':
@@ -382,12 +405,12 @@ export function hasUsableCredentials(server) {
 /** 缺凭据时给模型 / 用户的说明，按认证方式区分该去改哪里。 */
 function noCredentialsText(server) {
     if (server.authType === 'KEY_PAIR') {
-        return `服务器 "${server.name}" 用私钥认证，但没有私钥路径。在 IDE 的 Deployment 设置里选一次私钥文件。`;
+        return `服务器 "${server.name}" 用私钥认证，但没有私钥路径。在 IDE 的 SSH Configurations 里补上私钥路径。`;
     }
     if (server.authType && server.authType !== 'PASSWORD' && server.authType !== 'OPEN_SSH') {
         return `服务器 "${server.name}" 的认证方式 ${server.authType} 暂不支持。`;
     }
-    return `服务器 "${server.name}" 用密码认证，但没有密码。在 IDE 的 Deployment 设置里重新选一次 SSH 配置（` +
+    return `服务器 "${server.name}" 用密码认证，但没有密码。在 IDE 的 SSH Configurations 里重新填一次密码（` +
         `引用的那条可能已被删除），或在 hosts.json 里直接填 password。`;
 }
 

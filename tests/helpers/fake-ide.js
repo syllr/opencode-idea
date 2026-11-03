@@ -76,7 +76,22 @@ export function startFakeIde(port = 0) {
             return;
           }
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          const text = toolResults.get(message.params?.name) ?? '{"modules":[]}';
+          const name = message.params?.name;
+          let text = toolResults.get(name)
+            ?? (name === 'get_project_env' ? '{"PATH":"","variables":{}}' : '{"modules":[]}');
+          // `get_project_env` 是项目路径的探测通道：默认返回当前 header 的项目，
+          // 已经设置过的结果若缺 `projectPath` 也补上，避免每个测试都手写。
+          if (name === 'get_project_env') {
+            try {
+              const parsed = JSON.parse(text);
+              if (parsed && typeof parsed === 'object' && typeof parsed.projectPath !== 'string') {
+                parsed.projectPath = project;
+                text = JSON.stringify(parsed);
+              }
+            } catch {
+              // 不是 JSON：保持原样，让调用方按错误处理
+            }
+          }
           res.end(
             JSON.stringify({
               jsonrpc: '2.0',

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { appendDirectoryTreeTruncationNotice } from './idea-tool-output.js';
 
-/** 本会话有两个项目：root（`ide_`）与一个子项目（`modelserver_`）。 */
-const PREFIXES = ['ide_', 'modelserver_'];
+/** 本会话只有一个 IDE 项目，前缀固定 `ide_`。 */
+const PREFIXES = ['ide_'];
 
 /**
  * 造一棵深度为 `depth` 的树。

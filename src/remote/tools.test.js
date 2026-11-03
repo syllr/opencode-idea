@@ -8,7 +8,13 @@ import {join} from 'node:path';
 
 import {afterAll, describe, expect, it} from 'vitest';
 
-import {createRemoteToolset, remoteDownloadTool, remoteExecTool, remoteListServersTool, remoteUploadTool} from './tools.js';
+import {
+    createRemoteToolset,
+    remoteDownloadTool,
+    remoteExecTool,
+    remoteListServersTool,
+    remoteUploadTool,
+} from './tools.js';
 
 const workDir = mkdtempSync(join(tmpdir(), 'remote-tools-'));
 afterAll(() => rmSync(workDir, {recursive: true, force: true}));
@@ -78,7 +84,7 @@ describe('createRemoteToolset', () => {
 
     it('三层都只有 mapping 的条目会被丢掉（没有连接信息）', async () => {
         const {root, globalPath} = projectWith({
-            projectHosts: {ghost: {deployments: [{name: 'app', localPath: '/l', deployPath: '/r'}]}},
+            projectHosts: {ghost: {deployments: [{name: 'app', localPath: 'app', deployPath: '/r'}]}},
         });
         const toolset = createRemoteToolset({
             projectPath: root,
@@ -160,6 +166,26 @@ describe('文件同步工具', () => {
         const {content} = await remoteUploadTool(toolset).execute({deployment: 'api'});
         expect(content).toContain('没有名为 "api" 的 deployment');
         expect(content).toContain('app  /local/app ↔ dev:/srv/app');
+    });
+
+    it('项目级绝对 localPath 直接报错，不尝试连接', async () => {
+        const {root, globalPath} = projectWith({
+            projectHosts: {
+                dev: {
+                    host: 'h',
+                    username: 'u',
+                    password: 'p',
+                    deployments: [{name: 'app', localPath: '/abs/app', deployPath: '/srv/app'}],
+                },
+            },
+        });
+        const toolset = createRemoteToolset({
+            projectPath: root,
+            globalHostsPath: globalPath,
+            fetchIdeServers: async () => [],
+        });
+        const {content} = await remoteUploadTool(toolset).execute({deployment: 'app'});
+        expect(content).toContain('必须是相对项目根目录');
     });
 
     it('mapping 名对但没凭据时报错，不尝试连接', async () => {

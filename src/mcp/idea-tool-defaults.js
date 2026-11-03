@@ -84,7 +84,7 @@ export function forcedToolNames(prefixes) {
  *
  * @param {unknown} tool Effective tool name for this call (`event.tool`).
  * @param {unknown} input Mutable argument draft for this call (`event.input`).
- * @param {readonly string[]} prefixes 本会话所有项目的工具前缀（`ide_` 等）。
+ * @param {readonly string[]} prefixes 当前 IDE 工具前缀（`ide_`）。
  * @returns {boolean} Whether `input` was modified.
  */
 export function applyIdeToolDefaults(tool, input, prefixes) {
@@ -133,7 +133,7 @@ export const RAISED_ARGUMENTS = [
  *
  * @param {unknown} tool Effective tool name for this call (`event.tool`).
  * @param {unknown} input Mutable argument draft for this call (`event.input`).
- * @param {readonly string[]} prefixes 本会话所有项目的工具前缀（`ide_` 等）。
+ * @param {readonly string[]} prefixes 当前 IDE 工具前缀（`ide_`）。
  * @returns {boolean} Whether `input` was modified.
  */
 export function raiseMinimumArguments(tool, input, prefixes) {

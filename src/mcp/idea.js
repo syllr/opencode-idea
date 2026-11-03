@@ -52,7 +52,7 @@ const CALL_TIMEOUT_MS = 15000;
  * known without exploration. The rest of an MCP server's options are unchanged.
  *
  * The server NAME is not decided here: it is the project's tool prefix, chosen
- * by the caller (root -> `ide`, a subproject -> its directory name). See
+ * by the caller (always `ide`). See
  * `ide-projects.js` for why the prefix encodes the LEVEL, not the IDE product.
  *
  * @param {number} port
@@ -100,13 +100,17 @@ function withExecutionTimeout(config, options) {
  * @param {string} projectPath
  * @param {string} name
  * @param {object} [args]
- * @param {{ fetchImpl?: typeof fetch, timeoutMs?: number }} [options]
+ * @param {{ fetchImpl?: typeof fetch, timeoutMs?: number }} [options] `timeoutMs: 0` 表示不设超时
  * @returns {Promise<{ isError?: boolean, content?: Array<{ type: string, text?: string }> } | undefined>}
  */
 export async function callTool(port, projectPath, name, args = {}, options = {}) {
   const fetchImpl = options.fetchImpl ?? fetch;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? CALL_TIMEOUT_MS);
+  // remote_* 不设内部超时（用户明确要求卡住由自己取消）；0 / Infinity 表示不挂定时器。
+  const timeoutMs = options.timeoutMs ?? CALL_TIMEOUT_MS;
+  const timer = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? setTimeout(() => controller.abort(), timeoutMs)
+    : undefined;
   const post = (payload, sessionId) =>
     fetchImpl(`http://127.0.0.1:${port}${MCP_STREAM_PATH}`, {
       method: 'POST',
@@ -127,7 +131,7 @@ export async function callTool(port, projectPath, name, args = {}, options = {})
       params: {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: 'opencode-idea', version: '0.1.7' },
+        clientInfo: { name: 'opencode-idea', version: '0.1.8' },
       },
     });
     // The IDE's Streamable-HTTP endpoint binds follow-up requests to the session

@@ -8,14 +8,12 @@ import {
   removeSchemaProperty,
 } from './idea-tool-defaults.js';
 
-/** 本会话有两个项目：root（`ide_`）与一个子项目（`modelserver_`）。 */
-const PREFIXES = ['ide_', 'modelserver_'];
+/** 本会话只有一个 IDE 项目，前缀固定 `ide_`。 */
+const PREFIXES = ['ide_'];
 
 describe('applyIdeToolDefaults', () => {
-  it('forces rebuild to true, for every project prefix', () => {
-    // 同一个 IDE 工具会以每个项目的前缀各出现一次；漏掉任何一个，那个项目就还在用
-    // "可能出错"的增量构建回答。
-    for (const tool of ['ide_build_project', 'modelserver_build_project']) {
+  it('forces rebuild to true for the IDE tool', () => {
+    for (const tool of ['ide_build_project']) {
       const empty = {};
       expect(applyIdeToolDefaults(tool, empty, PREFIXES)).toBe(true);
       expect(empty).toEqual({ rebuild: true });
@@ -41,7 +39,6 @@ describe('applyIdeToolDefaults', () => {
   it('touches only the tool it owns', () => {
     for (const tool of [
       'ide_lint_files',
-      'modelserver_read_file',
       'read',
       'shell',
       // 名字相近的也不能碰
@@ -78,8 +75,8 @@ describe('applyIdeToolDefaults', () => {
 });
 
 describe('forcedToolNames', () => {
-  it('composes one real tool name per prefix', () => {
-    expect(forcedToolNames(PREFIXES)).toEqual(['ide_build_project', 'modelserver_build_project']);
+  it('composes the real tool name for the IDE prefix', () => {
+    expect(forcedToolNames(PREFIXES)).toEqual(['ide_build_project']);
     expect(forcedToolNames([])).toEqual([]);
   });
 });
@@ -158,14 +155,10 @@ describe('hideForcedArguments', () => {
     },
   };
 
-  it('strips rebuild from every prefix the IDE tool is registered under', () => {
-    const tools = {
-      ide_build_project: withRebuild(),
-      modelserver_build_project: withRebuild(),
-    };
+  it('strips rebuild from the IDE tool', () => {
+    const tools = { ide_build_project: withRebuild() };
     hideForcedArguments(fakeEditor(tools), PREFIXES);
     expect(tools.ide_build_project).toEqual(expected);
-    expect(tools.modelserver_build_project).toEqual(expected);
   });
 
   it('leaves every other tool alone', () => {
@@ -192,8 +185,8 @@ describe('hideForcedArguments', () => {
 });
 
 describe('raiseMinimumArguments', () => {
-  it('raises a missing or too-small maxDepth to the floor, for every prefix', () => {
-    for (const tool of ['ide_list_directory_tree', 'modelserver_list_directory_tree']) {
+  it('raises a missing or too-small maxDepth to the floor', () => {
+    for (const tool of ['ide_list_directory_tree']) {
       const missing = {};
       expect(raiseMinimumArguments(tool, missing, PREFIXES)).toBe(true);
       expect(missing).toEqual({ maxDepth: 50 });
