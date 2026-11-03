@@ -199,29 +199,32 @@ export function remoteExecTool(toolset) {
     return {
         name: 'remote_exec',
         description:
-            '用户说“去某台机器上执行 / 重启 / 看日志”、或提到部署机 / 开发机 / 测试机时用它 —— 不要自己拼 ssh / scp。' +
             '在远程服务器上执行一条命令，返回输出与退出码。' +
+            '用户说“去某台机器上执行 / 看日志”、或提到部署机 / 开发机 / 测试机时用它 —— 不要自己拼 ssh / scp。' +
             '每条命令是一条独立 SSH 连接：cd / export 不会跨命令保留，需要目录就传 workingDirectory。' +
-            '传错服务器名时会返回全部可用服务器，按返回的列表重新调用即可。',
+            '命令跑完才返回，没有增量输出、没有 Ctrl-C 通道；长任务自己在远端用 nohup / tmux。' +
+            '启动 / 停止远端进程或部署不归这里管，用 IDE 的 run configuration 工具。' +
+            '不传 server 时返回当前可用的机器列表；传错服务器名时也会返回全部可用服务器，按列表重新调用即可。',
         input: {
             type: 'object',
             properties: {
                 server: {
                     type: 'string',
-                    description: '服务器名，来自 remote_list_servers 或上一次报错里列出的候选。',
+                    description: '服务器名，来自 remote_list_servers 或上一次报错里列出的候选；不传就返回机器列表。',
                 },
-                command: {type: 'string', description: '要执行的 shell 命令。'},
+                command: {type: 'string', description: '在远端执行的 shell 命令。'},
                 workingDirectory: {
                     type: 'string',
                     description: '可选：先 cd 到这个远程目录再执行（支持 ~ 与绝对路径）。',
                 },
             },
-            required: ['server', 'command'],
+            required: [],
         },
         execute: async (args) => {
             const server = typeof args?.server === 'string' ? args.server.trim() : '';
             const command = typeof args?.command === 'string' ? args.command : '';
-            if (!server) return {content: 'server 不能为空。'};
+            // 没给机器就当在问“有哪些机器可用”：直接给清单，别让它猜。
+            if (!server) return {content: await serverListText(toolset)};
             if (!command.trim()) return {content: 'command 不能为空。'};
             const workingDirectory = typeof args?.workingDirectory === 'string' ? args.workingDirectory : undefined;
 
@@ -258,41 +261,56 @@ export function remoteListServersTool(toolset) {
     return {
         name: 'remote_list_servers',
         description:
-            '列出当前可用的远程服务器与它们上面的路径映射，带 [IDE] / [项目] / [全局] 来源标记。' +
-            '不确定服务器名或 deployment 名时先调它。',
+            '列出当前可用的远程服务器，以及它们上面的路径映射（deployment）。' +
+            '来源有三层，优先级从高到低：IDE 的 SSH 配置 → 项目 hosts.json → 全局 hosts.json；' +
+            '同名机器以后者为准，deployment 也按名字合并。' +
+            '每台机器带 [IDE] / [项目] / [全局] 标记：只有带 deployment 的机器才能做文件同步' +
+            '（remote_upload / remote_download），只有 SSH 配置的机器只能执行命令（remote_exec）。' +
+            '不确定机器名或 deployment 名时先调它；remote_exec 不传 server 时也会返回同一份清单。',
         input: {type: 'object', properties: {}, required: []},
-        execute: async () => {
-            const servers = await toolset.load();
-            /** @type {string[]} */
-            const lines = [];
-            const ideError = toolset.ideError();
-            if (ideError) {
-                lines.push('⚠ IDE 的 SSH 配置有问题，下面只列出项目 / 全局配置里的服务器：');
-                lines.push(ideError.message);
-                lines.push('');
-            }
-            if (servers.length === 0) {
-                lines.push('当前没有可用的远程服务器。在 IDE 的 SSH Configurations 里添加服务器，或配置 hosts.json。');
-                return {content: lines.join('\n')};
-            }
-            for (const entry of servers) {
-                const source = entry.source === 'ide' ? 'IDE' : entry.source === 'project' ? '项目' : '全局';
-                // 认证方式也报出来：OPEN_SSH 走 agent，不需要密码；KEY_PAIR 看私钥。
-                const auth = entry.authType ? `  ${entry.authType}` : '';
-                const label = entry.alias ? `${entry.name} (${entry.alias})` : entry.name;
-                lines.push(`- ${label}  ${entry.host}:${entry.port}  ${entry.username}  [${source}]${auth}`);
-                for (const deployment of entry.deployments ?? []) {
-                    try {
-                        assertDeploymentLocalPath(entry.source, deployment);
-                        lines.push(`    ${deployment.name}  ${deployment.localPath} ↔ ${deployment.deployPath}`);
-                    } catch (error) {
-                        lines.push(`    ⚠ ${error.message}`);
-                    }
-                }
-            }
-            return {content: lines.join('\n')};
-        },
+        execute: async () => ({content: await serverListText(toolset)}),
     };
+}
+
+/**
+ * 当前可用机器的清单（IDE 的 SSH 配置 + 项目 / 全局 hosts.json 三层合并）。
+ *
+ * `remote_list_servers` 和 `remote_exec`（不传 server 时）共用这一段，
+ * 两处看到的机器列表必须一致。
+ *
+ * @param {ReturnType<typeof createRemoteToolset>} toolset
+ * @returns {Promise<string>}
+ */
+export async function serverListText(toolset) {
+    const servers = await toolset.load();
+    /** @type {string[]} */
+    const lines = [];
+    const ideError = toolset.ideError();
+    if (ideError) {
+        lines.push('⚠ IDE 的 SSH 配置有问题，下面只列出项目 / 全局配置里的服务器：');
+        lines.push(ideError.message);
+        lines.push('');
+    }
+    if (servers.length === 0) {
+        lines.push('当前没有可用的远程服务器。在 IDE 的 SSH Configurations 里添加服务器，或配置 hosts.json。');
+        return lines.join('\n');
+    }
+    for (const entry of servers) {
+        const source = entry.source === 'ide' ? 'IDE' : entry.source === 'project' ? '项目' : '全局';
+        // 认证方式也报出来：OPEN_SSH 走 agent，不需要密码；KEY_PAIR 看私钥。
+        const auth = entry.authType ? `  ${entry.authType}` : '';
+        const label = entry.alias ? `${entry.name} (${entry.alias})` : entry.name;
+        lines.push(`- ${label}  ${entry.host}:${entry.port}  ${entry.username}  [${source}]${auth}`);
+        for (const deployment of entry.deployments ?? []) {
+            try {
+                assertDeploymentLocalPath(entry.source, deployment);
+                lines.push(`    ${deployment.name}  ${deployment.localPath} ↔ ${deployment.deployPath}`);
+            } catch (error) {
+                lines.push(`    ⚠ ${error.message}`);
+            }
+        }
+    }
+    return lines.join('\n');
 }
 
 /**
@@ -306,21 +324,27 @@ function transferTool(toolset, direction) {
     return {
         name: isUpload ? 'remote_upload' : 'remote_download',
         description: isUpload
-            ? '把一条 deployment 的本地目录上传到它的远程目录。只传大小或修改时间变了的文件，未变的自动跳过；' +
-            '默认 overwrite（只覆盖/新增，远程多余文件保留）；mode=mirror 时还会删掉远程多出来的文件。'
-            : '把一条 deployment 的远程目录拉回本地目录。只拉大小或修改时间变了的文件，未变的自动跳过；' +
-            '默认 overwrite（只覆盖/新增，本地多余文件保留）；mode=mirror 时还会删掉本地多出来的文件。',
+            ? '把一条 deployment 的本地目录同步到它的远程目录 —— deployment 就是一条「本地目录 ↔ 远端目录」的映射，' +
+            '名字来自 remote_list_servers。' +
+            '只传「大小或修改时间变了」的文件，没变的根本不传，所以重复同步很便宜。' +
+            '默认 overwrite：只覆盖 / 新增，目标端多出来的文件保留。' +
+            'mode=mirror：目标端多出来的文件会被删掉 —— 不可逆，只在明确要求镜像时用。'
+            : '把一条 deployment 的远程目录同步到它的本地目录 —— deployment 就是一条「本地目录 ↔ 远端目录」的映射，' +
+            '名字来自 remote_list_servers。' +
+            '只传「大小或修改时间变了」的文件，没变的根本不传，所以重复同步很便宜。' +
+            '默认 overwrite：只覆盖 / 新增，目标端多出来的文件保留。' +
+            'mode=mirror：本地多出来的文件会被删掉 —— 不可逆，只在明确要求镜像时用。',
         input: {
             type: 'object',
             properties: {
                 deployment: {
                     type: 'string',
-                    description: 'deployment 名，来自 remote_list_servers 里列出的那条。',
+                    description: 'deployment 名，来自 remote_list_servers 里列出的那条映射（本地目录 ↔ 远端目录）。',
                 },
                 mode: {
                     type: 'string',
                     enum: ['overwrite', 'mirror'],
-                    description: '默认 overwrite；mirror 会删除目标端多出来的文件（不可逆）。',
+                    description: 'overwrite（默认，只覆盖 / 新增，保留目标端多余文件）或 mirror（删掉目标端多余文件，不可逆）。',
                 },
             },
             required: ['deployment'],

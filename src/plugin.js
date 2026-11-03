@@ -9,9 +9,7 @@
 //   1. registers one IDE MCP server (`ide`) scoped to the project through the
 //      `IJ_MCP_SERVER_PROJECT_PATH` header; injects direct-call guidance; and
 //      hides the IDE tools that must not reach the model;
-//   2. registers `/open-in-ide` (接入当前项目) and `/delete-in-ide` (删掉配置),
-//      plus the `configure_ide_project` tool the MODEL calls to write the IDE a
-//      user picked into the config;
+//   2. registers `/open-in-ide` (接入当前项目) and `/delete-in-ide` (删掉配置);
 //   3. registers the shipped skills (`skills/<id>/SKILL.md`) — marked projects
 //      only, and each one also gated on the IDE tools it drives.
 //
@@ -49,14 +47,18 @@ import {statSync} from 'node:fs';
 import {resolve} from 'node:path';
 
 import {callTool, serverConfig} from './mcp/idea.js';
-import {applyIdeToolDefaults, hideForcedArguments, raiseMinimumArguments} from './mcp/idea-tool-defaults.js';
+import {
+    applyDescriptionOverrides,
+    applyIdeToolDefaults,
+    hideForcedArguments,
+    raiseMinimumArguments,
+} from './mcp/idea-tool-defaults.js';
 import {appendDirectoryTreeTruncationNotice} from './mcp/idea-tool-output.js';
 import {currentProjectPath} from './project.js';
 import {
-    appNameFor,
     autoLaunchSupported,
     createLaunchGuard,
-    detectInstalledIdes,
+    ideAppName,
     openInIde,
 } from './ide-launcher.js';
 import {
@@ -64,12 +66,10 @@ import {
     appendIdeRecoveryGuidance,
 } from './ide-guidance.js';
 import {
-    IDE_LABELS,
     IDE_PORTS,
+    MARK_VERSION,
     ROOT_SERVER_NAME,
-    SUPPORTED_IDES,
     markKeyFor,
-    parseIdeArgument,
     parseMark,
     serializeMark,
 } from './ide-projects.js';
@@ -259,16 +259,6 @@ export function ideServersFromResult(result) {
         }];
     });
 }
-
-/**
- * 插件自己注册的工具名（不属于任何 IDE server）。
- *
- * 目前只有 `configure_ide_project`:模型把用户选定的 IDE 写回配置的通道，见
- * `configureIdeTool`。单独列出来是给前缀判断**排除**用的 —— 前缀由配置决定、
- * 动态可变（`ide_` / `<目录名>_`），万一某个目录名恰好拼出同名工具，它也不能被
- * 当成 IDE 工具隐藏掉或写进提示词。
- */
-const PLUGIN_TOOL_NAMES = new Set(['configure_ide_project']);
 
 /**
  * IDE MCP tools that must never reach the model, listed by **suffix**.
@@ -575,9 +565,7 @@ function rewriteToolError(event, message) {
  *     | 'disabled'
  *     | 'manual-launch'
  *     | 'deleted'
- *     | 'bad-argument'
  *     | 'not-configured'
- *     | 'needs-ide',
  *   // `manual-launch` = this platform has no launcher at all (the user must
  *   // open the IDE by hand); `disabled` = the user turned launching off. Both
  *   // mean "no app to open", so only `autoLaunchSupported()` tells them apart.
@@ -596,11 +584,10 @@ function rewriteToolError(event, message) {
 const asPositiveNumber = (value, fallback) =>
     typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
 
-/** 面向用户的状态文案（三个命令与 `configure_ide_project` 共用）。 */
+/** 面向用户的状态文案（两个接入命令共用）。 */
 /** @param {IdeCommandResult} result */
 export function ideFeedback(result) {
-    const appOf = (project) => IDE_LABELS[project?.app] ?? 'IDE';
-    const nameOf = (project) => appOf(project);
+    const nameOf = () => 'IntelliJ IDEA';
     switch (result?.status) {
         case 'connected':
             return 'IDE MCP 已连接并接入。';
@@ -612,7 +599,7 @@ export function ideFeedback(result) {
         }
         case 'mcp-unavailable': {
             const where = nameOf(result?.project);
-            const ide = appOf(result?.project);
+            const ide = 'IntelliJ IDEA';
             return result?.opened
                 ? `已请求打开/激活 ${where} 并等待 MCP 服务启动,但未检测到 MCP 服务。请在 ${ide} 中开启 MCP 服务(Settings → MCP Server,需 2026.2+)并启用 Brave Mode,然后再次执行 /open-in-ide。`
                 : `未检测到 ${where} 的 MCP 服务。请确认已打开,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后再次执行 /open-in-ide。`;
@@ -630,12 +617,8 @@ export function ideFeedback(result) {
             return result?.message ?? '已对齐远程配置。';
         case 'sync-failed':
             return result?.message ?? '对齐远程配置失败。';
-        case 'bad-argument':
-            return `命令参数有误:${result?.message ?? ''}`;
         case 'not-configured':
             return '当前项目还没有 IDE 配置。请先执行 /open-in-ide。';
-        case 'needs-ide':
-            return '需要确定用哪个 IDE 打开。请回答 AI 的提问(IntelliJ IDEA 或 PyCharm),AI 会把选择写入配置。';
         default:
             return '已处理。';
     }
@@ -743,8 +726,7 @@ export default {
 
         const options = ctx.options || {};
         const injectGuidance = options.injectGuidance !== false;
-        // 自动拉起 IDE 的总开关。用哪个 IDE 由**本项目的配置**决定
-        // （`project.app`），这个选项不再指定应用名，只决定"允不允许拉起"。
+        // 自动拉起 IDE 的总开关。只支持 IntelliJ IDEA，这个选项只决定"允不允许拉起"。
         const launchEnabled = options.openInIde !== false;
         const mcpProbeTimeoutMs = asPositiveNumber(options.mcpProbeTimeoutMs, DEFAULT_MCP_PROBE_TIMEOUT_MS);
         const mcpStartTimeoutMs = asPositiveNumber(options.mcpStartTimeoutMs, DEFAULT_MCP_START_TIMEOUT_MS);
@@ -767,8 +749,6 @@ export default {
         let toolRegistration;
         let toolBeforeRegistration;
         let toolTransformRegistration;
-        /** `configure_ide_project` 的注册。 */
-        let configToolRegistration;
         /** `shell.hook("create.before")` 的注册：把项目环境注入每条新 shell。 */
         let shellRegistration;
         /** `remote_exec` / `remote_list_servers` 的注册。 */
@@ -799,7 +779,7 @@ export default {
         /** @type {Promise<boolean> | undefined} */
         let envLoadInFlight;
 
-        // 本会话的 IDE 配置：当前项目用哪个 IDE。
+        // 本会话的 IDE 配置：只记录"用户已经接入过"。
         // 一个插件实例服务一个 root（OpenCode 按 Location 激活插件），所以这就是全部
         // 状态。持久化在 `ctx.storage` 的 `project/<rootPath>` 下。
         //
@@ -818,7 +798,7 @@ export default {
                 return config;
             }
             try {
-                config = parseMark(await storage.get(markKey), projectPath) ?? null;
+                config = parseMark(await storage.get(markKey)) ?? null;
             } catch {
                 // storage is best effort;读不到就当作未配置
                 config = null;
@@ -830,14 +810,14 @@ export default {
          * 写入配置（`null` = 删除），并同步内存缓存。
          *
          * 先写 storage 再更新缓存（write-through）：写失败也要更新缓存，否则用户刚做的
-         * 配置在本进程里不可见，行为会自相矛盾。命令与 `configure_ide_project` 是唯一的
+         * 配置在本进程里不可见，行为会自相矛盾。`/open-in-ide` 与 `/delete-in-ide` 是唯一的
          * 写入者。
          *
          * @param {import('./ide-projects.js').IdeConfig | null} next
          */
         const writeConfig = async (next) => {
             try {
-                if (next) await storage?.set?.(markKey, serializeMark(next));
+                if (next) await storage?.set?.(markKey, serializeMark());
                 else await storage?.remove?.(markKey);
             } catch {
                 // best effort
@@ -845,9 +825,9 @@ export default {
             config = next;
         };
 
-        /** 当前接入的项目；未配置时为 `undefined`。 */
+        /** 当前接入的项目；未配置时为 `undefined`。只有一个项目，路径就是工作区根。 */
         const currentProject = () =>
-            config ? {path: config.path, app: config.app, server: ROOT_SERVER_NAME} : undefined;
+            config ? {path: projectPath, server: ROOT_SERVER_NAME} : undefined;
 
         /** 当前工具前缀（含下划线）；未配置时为空。 */
         const prefixes = () => (config ? [`${ROOT_SERVER_NAME}_`] : []);
@@ -856,10 +836,7 @@ export default {
         const serverNames = () => (config ? [ROOT_SERVER_NAME] : []);
 
         /** 这个工具名是否属于 IDE server（插件自己的工具不算）。 */
-        const isIdeToolName = (name) => {
-            if (PLUGIN_TOOL_NAMES.has(name)) return false;
-            return prefixes().some((prefix) => name.startsWith(prefix));
-        };
+        const isIdeToolName = (name) => prefixes().some((prefix) => name.startsWith(prefix));
 
         /**
          * 这个 IDE 工具是否属于当前项目。
@@ -912,7 +889,7 @@ export default {
          * @param {{ path: string, app: string }} project
          * @returns {number | undefined}
          */
-        const portFor = (project) => IDE_PORTS[project.app];
+        const portFor = () => IDE_PORTS.idea;
 
         /**
          * 拉 **root 项目** 的环境变量（`get_project_env`）。
@@ -1262,7 +1239,7 @@ export default {
                     return {status: 'connected', port: serving, project, unavailableNoticeSent: false};
                 }
                 // 需要一个 app 才能拉起。拿不到 app 的原因有两种，交给 autoLaunchSupported 区分。
-                const app = launchEnabled ? appNameFor(project.app) : undefined;
+                const app = launchEnabled ? ideAppName() : undefined;
                 if (!app) {
                     return {status: autoLaunchSupported() ? 'disabled' : 'manual-launch', project};
                 }
@@ -1424,105 +1401,6 @@ export default {
         };
         await registerSkills();
 
-        /**
-         * 问用户"这个项目用哪个 IDE"，由模型转达并回写。
-         *
-         * 插件自己不能弹选择框，也不能挂起等待；唯一可靠的通道是让模型去问、再把答案用
-         * `configure_ide_project` 结构化地写回来。所以这里发的**不是通知而是任务**：文本
-         * 里必须写明"调用了工具才算完成"，否则模型很容易只回一句"好的，用 PyCharm"。
-         *
-         * @param {{ sessionID?: string, prompt?: unknown, delivery?: unknown }} input
-         */
-        const askIdeChoice = async (input) => {
-            if (typeof ctx.session?.prompt !== 'function') return;
-            const where = `当前项目(${projectPath})`;
-            const call = 'configure_ide_project({ ide: "<idea|pycharm>" })';
-            // 插件自己摸底,而不是让模型去"找 IDE" —— 它找到的办法通常是 `ps aux | grep`(只能
-            // 看到**正在运行**的进程,装了没开就漏),又慢又不准。这里是按应用目录读一次得到的。
-            const installed = detectInstalledIdes();
-            const missing = SUPPORTED_IDES.filter((app) => !installed.includes(app));
-            const detectLines = installed.length
-                ? [
-                    `插件已探测本机安装情况:装有 ${installed.map((app) => IDE_LABELS[app] ?? app).join('、')}` +
-                    (missing.length
-                        ? `;没找到 ${missing.map((app) => IDE_LABELS[app] ?? app).join('、')}(用户若要用它,需要自己先装)`
-                        : '') +
-                    '。',
-                    '**不要再自己去跑命令或翻进程** —— 这是按应用目录得到的结论,进程里没有不代表没装。',
-                    '',
-                ]
-                : [];
-            const text = [
-                `${NOTICE_PREFIX}需要确定 ${where} 用哪个 IDE 打开。`,
-                '',
-                ...detectLines,
-                '请向用户提问,并**在得到答复后调用 `configure_ide_project` 工具**写入配置。可选值只有两个:',
-                '- `idea` → IntelliJ IDEA',
-                '- `pycharm` → PyCharm',
-                '',
-                '要选用户**真正用来打开这个目录**的那个 IDE;选错了,IDE 会解析不到这个项目。',
-                '',
-                `调用形式:${call}`,
-                '',
-                '不要替用户决定,也不要只回答"已配置" —— 没有真正调用工具就等于没配置。',
-            ].join('\n');
-            try {
-                await ctx.session.prompt({
-                    ...input.prompt,
-                    sessionID: input.sessionID,
-                    text,
-                    metadata: {
-                        displayText: `请选择 ${where} 使用的 IDE:IntelliJ IDEA 还是 PyCharm?`,
-                        comments: [],
-                    },
-                    delivery: input.delivery,
-                });
-            } catch {
-                // best effort
-            }
-        };
-
-        /**
-         * `configure_ide_project` 的执行体：校验后写入配置并立即接入。
-         *
-         * 这是模型把用户的选择写回插件的**唯一**通道，所以它自己也做校验：模型可能
-         * 传一个不是 IDE 的值，插件不能因为"是模型给的"就放行。
-         *
-         * @param {{ ide?: unknown }} args
-         */
-        const configureIdeProject = async (args) => {
-            const ide = typeof args?.ide === 'string' ? args.ide.toLowerCase() : '';
-            if (!SUPPORTED_IDES.includes(ide)) {
-                return {content: `不支持的 IDE \`${String(args?.ide)}\`。可选:${SUPPORTED_IDES.join(' / ')}。`};
-            }
-            const current = await readConfig();
-            const next = current ? {...current, app: ide} : {path: projectPath, app: ide};
-            await writeConfig(next);
-            await runOpenInIdea();
-            return {content: `已把当前项目配置为 ${IDE_LABELS[ide]} 并接入。`};
-        };
-
-        /** `configure_ide_project` 的工具定义。 */
-        const configureIdeTool = () => ({
-            name: 'configure_ide_project',
-            description:
-                '把用户选定的 IDE 写入当前项目的 IDE 配置(即"这个项目用哪个 IDE 打开")。' +
-                '仅当用户明确回答了"用 IntelliJ IDEA 还是 PyCharm"之后调用,不要在用户没答复前猜。' +
-                'ide 只取 idea / pycharm。',
-            input: {
-                type: 'object',
-                properties: {
-                    ide: {
-                        type: 'string',
-                        enum: [...SUPPORTED_IDES],
-                        description: '当前项目的 IDE:idea = IntelliJ IDEA,pycharm = PyCharm。',
-                    },
-                },
-                required: ['ide'],
-            },
-            execute: async (args) => configureIdeProject(args),
-        });
-
         // `/open-in-ide` 接入当前项目；`/delete-in-ide` 删除配置。
         //
         // 名字带 `-ide` 而不是 `-idea`：这里说的是"接入 IDE"，与具体产品无关。
@@ -1530,26 +1408,11 @@ export default {
             commandRegistration = await ctx.command.transform((editor) => {
                 editor.add({
                     name: 'open-in-ide',
-                    description: '接入当前项目:用配置好的 IDE 打开',
+                    description: '接入当前项目:在 IntelliJ IDEA 里打开它,并把 IDE MCP 工具注册进来',
                     execute: async (input) => {
-                        const parsed = parseIdeArgument(input?.prompt?.text);
-                        if (!parsed.ok) {
-                            await sendFeedback(input, {status: 'bad-argument', message: parsed.message});
-                            return;
-                        }
-                        let current = await readConfig();
-                        if (!current) {
-                            // 第一次：需要知道这个项目用哪个 IDE。无参时让模型问用户；带参则直通。
-                            if (!parsed.app) {
-                                await askIdeChoice(input);
-                                return;
-                            }
-                            current = {path: projectPath, app: parsed.app};
-                            await writeConfig(current);
-                        } else if (parsed.app && parsed.app !== current.app) {
-                            // 直通逃生口：显式带参时改绑 IDE（模型不配合时用户仍能自救）。
-                            current = {...current, app: parsed.app};
-                            await writeConfig(current);
+                        // 第一次接入:写标记,之后靠它判断"这个项目该不该自动重连"。
+                        if (!(await readConfig())) {
+                            await writeConfig({version: MARK_VERSION});
                         }
                         /** @type {boolean} */
                         let unavailableNoticeSent = false;
@@ -1751,17 +1614,6 @@ export default {
             });
         }
 
-        // `configure_ide_project`：模型把用户选定的 IDE 写回配置的唯一通道。
-        //
-        // 常驻注册，不做"用时注册、写完撤销"：一个工具的 schema 只有几百 token，省不下
-        // 什么，却要换来一整套状态机（什么时候注册、模型一直不调用怎么办、用户中途说别
-        // 的怎么办）。它该不该被调用由 description 约束。
-        if (typeof ctx.tool?.transform === 'function') {
-            configToolRegistration = await ctx.tool.transform((editor) => {
-                editor.add(configureIdeTool());
-            });
-        }
-
         // 远程执行：两个普通工具（不是 IDE 工具，所以不带 `ide_` 前缀）。
         // 注册是常驻的：IDE 没开时它们仍然可用，只是服务器列表退到 hosts.json。
         if (typeof ctx.tool?.transform === 'function') {
@@ -1892,6 +1744,8 @@ export default {
             if (typeof ctx.tool?.transform === 'function') {
                 toolTransformRegistration = await ctx.tool.transform((editor) => {
                     hideForcedArguments(editor, prefixes());
+                    // IDE 自带工具的描述整段替换：只在原文说错、或关键事实没说时改。
+                    applyDescriptionOverrides(editor, prefixes());
                 });
             }
             if (typeof ctx.tool?.hook === 'function') {
@@ -1956,12 +1810,12 @@ export default {
                         if (!launchEnabled) return;
                         // 只有当前项目的 IDE 需要重开。
                         const project = projectForTool(event.tool);
-                        const app = project ? appNameFor(project.app) : undefined;
+                        const app = project ? ideAppName() : undefined;
                         if (!project || !app) return;
                         await openInIde(project.path, {app});
                         rewriteToolError(
                             event,
-                            `该项目已在 ${IDE_LABELS[project.app] ?? 'IDE'} 中重新打开,请重试刚才的操作。`,
+                            '该项目已在 IntelliJ IDEA 中重新打开,请重试刚才的操作。',
                         );
                         return;
                     }
@@ -2001,13 +1855,6 @@ export default {
             if (toolTransformRegistration) {
                 try {
                     await toolTransformRegistration.dispose();
-                } catch {
-                    // best effort
-                }
-            }
-            if (configToolRegistration) {
-                try {
-                    await configToolRegistration.dispose();
                 } catch {
                     // best effort
                 }

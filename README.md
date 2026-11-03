@@ -1,6 +1,6 @@
 # opencode-idea
 
-OpenCode 插件,面向 JetBrains 项目 (IntelliJ IDEA / PyCharm / WebStorm 等),做两件事:
+OpenCode 插件,面向 JetBrains 项目 (IntelliJ IDEA),做两件事:
 
 1. **接入 IDE MCP** —— 把当前 JetBrains 项目在它的 IDE 里打开,并把这些 IDE 的 MCP 工具注册进 OpenCode。
    一个 OpenCode 会话只接入 **一个** 项目(当前 workspace root),MCP server 固定叫 `ide`,工具前缀固定 `ide_*`。
@@ -15,7 +15,7 @@ OpenCode 插件,面向 JetBrains 项目 (IntelliJ IDEA / PyCharm / WebStorm 等)
 
 | 命令 | 作用 |
 | --- | --- |
-| `/open-in-ide [ide]` | 接入当前项目;第一次**没有配置**时由 AI 问用户用哪个 IDE |
+| `/open-in-ide` | 接入当前项目:在 IntelliJ IDEA 里打开它,并把 IDE MCP 工具注册进来 |
 | `/delete-in-ide` | 删除配置并注销 IDE MCP |
 
 配置持久化在 `ctx.storage`(`project/<root 路径>`),重启 OpenCode 后仍在。之后**没有任何后台轮询**——恢复完全靠请求驱动:
@@ -30,19 +30,15 @@ OpenCode 插件,面向 JetBrains 项目 (IntelliJ IDEA / PyCharm / WebStorm 等)
 
 ```text
 setup(启动, 每 root 一次):
-  a. 读配置(ctx.storage: project/<root 路径>)—— { path, app }
-  b. 注册 2 个命令 + session context/prompt 钩子 + tool 钩子 + configure_ide_project 工具
+  a. 读配置(ctx.storage: project/<root 路径>)—— 只记"用户已接入过"
+  b. 注册 2 个命令 + session context/prompt 钩子 + tool 钩子
   不探测、不注册任何 MCP
 
 /open-in-ide(手动触发, 阻塞到就绪):
-  1. 还没有配置时:
-     - 带了 ide 参数 → 直接写入(直通逃生口,不经过模型)
-     - 没带参数   → 发给模型一条任务:请它问用户用 IDEA 还是 PyCharm,答复后调用
-                    configure_ide_project 回写;本次到此为止
-  2. 有配置时:
-     - 在 IDE 固定端口上调用 get_project_env,比较返回的 projectPath 与当前项目路径
+  1. 没有配置 → 写标记(只表示"用户已接入过")
+  2. 在 IntelliJ IDEA 的固定端口上调用 get_project_env,比较返回的 projectPath 与当前项目路径
        · 完全一致 → 已打开
-       · 不一致 / 没打开 → open -a <配置的 IDE> <项目目录>,再轮询等到一致(上限 60s)
+       · 不一致 / 没打开 → open -a "IntelliJ IDEA" <项目目录>,再轮询等到一致(上限 60s)
   3. 注册一个 MCP server(名字固定 `ide`)
   4. 等 IDE 工具进入注册表;拉项目环境;启用引导
   5. 发结果通知
@@ -68,29 +64,16 @@ setup(启动, 每 root 一次):
 **目录必须完全一致**:IDE 打开的项目目录必须等于 workspace root。IDE 打开父目录不算接入 ——
 插件的判定方式是调用 `get_project_env`,比较它返回的 `projectPath` 与当前项目路径。
 
-1. **第一次 (还没有配置)** —— 插件不猜:
-    - 不带参数 → 插件先按安装目录探一次本机装了哪些 IDE,把结论写进任务文本,再让模型问用户。
-      只有这一次需要用户回答;
-    - 带参数 (`/open-in-ide pycharm`) → 直通写入,不经过模型。
-2. **有配置后** —— 在配置的 IDE 固定端口上问「你打开着这个项目吗」:
+1. **第一次** —— 写标记（表示"用户已接入过"），然后继续往下走。**不需要问用户任何事**：只支持 IntelliJ IDEA。
+2. **接着** —— 在 IntelliJ IDEA 的固定端口上问「你打开着这个项目吗」:
     - 是 → 直接用;
-    - 否 → `open -a "<配置的 IDE>" <项目目录>` (复用已运行实例),再轮询到确认 (上限 60s)。
+    - 否 → `open -a "IntelliJ IDEA" <项目目录>` (复用已运行实例),再轮询到确认 (上限 60s)。
 3. 就绪后注册 MCP server (`ide`),重读项目环境,启用引导,并等 IDE 工具进入注册表才返回。
 
 > **非 macOS**:自动打开被跳过 (没有对应的启动命令),请先手动打开 IDE 和项目,再执行本命令。
 
 > **通知不触发 AI 干活**:默认 `feedback: "message"` 把结果作为通知发到会话里;用户看到干净气泡,模型只回"收到"。
-> `feedback: false` 则完全静默。唯一例外是"问用户用哪个 IDE"那条任务。
-
-### 让模型回写:`configure_ide_project`
-
-插件注册的一个自己的工具,是"用户选的 IDE"回到配置里的唯一通道:
-
-```text
-configure_ide_project({ ide: "<idea|pycharm>" })
-```
-
-它常驻在工具列表里;该不该被调用由工具描述约束 —— "仅当用户明确回答了用哪个 IDE 之后调用"。
+> `feedback: false` 则完全静默。
 
 ## 删除接入 (`/delete-in-ide`)
 
@@ -168,7 +151,7 @@ server 级作用于此机器所有 deployment,deployment 级叠加在它之上�
 ## 按能力选工具 (直接调用引导)
 
 IDE MCP 可用时,插件通过 **系统提示注入**告诉模型 **哪些事该走 IDE**;除下面「工具参数与输出」那几处刻意的接管
-(只做减法:从 schema 里删掉一个参数),不修改任何工具 (原生或 IDEA) 的定义、描述或可用性:
+(删一个参数、换一个描述),不修改任何工具 (原生或 IDEA) 的定义或可用性:
 
 1. **系统提示注入**:通过 `ctx.session.hook("context", …)` 往每次请求的 system 里追加一段引导。
    **文本本身在 `src/ide-guidance.template.md`** —— 它是一份要给人 review 的提示词文档,纯 Markdown,只有每条工具后面的
@@ -266,10 +249,13 @@ IDE MCP 可用时,插件通过 **系统提示注入**告诉模型 **哪些事该
 | 从模型的工具 schema 里**删掉** | `ctx.tool.transform` 改 input schema | 模型会设它、会据此推理,而那个值被无声丢弃 |
 | 每次调用**设成固定值** | `ctx.tool.hook("execute.before")` | 模型不传时拿到的是那个可能出错的默认值本身 |
 
-两半由 `src/mcp/idea-tool-defaults.js` 的**同一张表** `FORCED_ARGUMENTS` 驱动,所以不会漂移。目前一条:
-`ide_build_project` 的 `rebuild` 强制为 `true` —— 增量构建比对的是**IDE 自己那份文件新鲜度**,IDE 外部改的代码
-可能被判成"没有脏文件",构建于是变成 no-op 并报成功(实测 IntelliJ 2026.2.3:`build_project` 落到
-`ProjectTaskManager.createAllModulesBuildTask(project, isIncrementalBuild = !rebuild)`,6 个场景全部识别到外部改动)。
+两半由 `src/mcp/idea-tool-defaults.js` 的**同一张表** `FORCED_ARGUMENTS` 驱动,所以不会漂移。目前两条:
+
+- `ide_build_project` 的 `rebuild` 强制为 `true` —— 增量构建比对的是**IDE 自己那份文件新鲜度**,IDE 外部改的代码
+  可能被判成"没有脏文件",构建于是变成 no-op 并报成功(实测 IntelliJ 2026.2.3:`build_project` 落到
+  `ProjectTaskManager.createAllModulesBuildTask(project, isIncrementalBuild = !rebuild)`,6 个场景全部识别到外部改动)。
+- `ide_search_symbol` 的 `include_external` 强制为 `true` —— 它默认只搜项目符号,要搜 SDK / 依赖库得调用方
+  自己记得带这个开关。我们恒定打开并把参数从 schema 里拿掉:模型看不到这个旋钮,但拿到的永远是全的结果。
 
 - **强制**而不是"缺省才补":`rebuild: false` 请求的正是那个可能出错的答案,而调用方从结果里分辨不出来;`rebuild: true`
   唯一的代价是时间。调用方自己传了非空 `filesToRebuild` 时 IDE 走另一条分支、根本不读 `rebuild`,所以设不设都无副作用。
@@ -279,6 +265,23 @@ IDE MCP 可用时,插件通过 **系统提示注入**告诉模型 **哪些事该
 - **这是对早先「绝不改工具定义」那条规则的一次有意例外**,且刻意收得很窄:这里**只做减法,不发明、不解释** ——
   schema 变换**绝不能**用来加建议,那是引导文本的职责。
 - 只对**点名的工具**生效,其余工具的参数一字不改。两半都**不依赖项目配置**。
+
+### 描述覆盖（`DESCRIPTION_OVERRIDES`）
+
+除了参数,插件还**整段替换**一部分 IDE 自带工具的描述 —— 只在**原文说错了**、或者**该说清的关键事实没提**时才改。
+
+- **整段替换,不和原文拼接**:半原文半我们的句子读起来像两套口径,容易自相矛盾。
+- **只写事实**:这个工具做什么、返回什么、什么时候用不上。"你应该怎么用"是引导文本的职责。
+- 每条覆盖都记着**为什么必须改它**(例如 `search_symbol` 原文说"默认只搜项目符号" —— 我们恒定开着
+  `include_external`,那句话就成了假话)。
+- 覆盖的表在 `src/mcp/idea-tool-defaults.js` 的 `DESCRIPTION_OVERRIDES`,由 `applyDescriptionOverrides()`
+  在同一个 `ctx.tool.transform` 里应用,和隐藏工具、删参数是同一条路径。
+
+覆盖清单(**15 条**):`search_symbol`、`read_file`、`build_project`、`list_directory_tree`、`apply_patch`、
+`rename_refactoring`、`lint_files`、`get_file_problems`、`analyze_calls`、`get_symbol_info`、`reformat_file`、
+`get_all_open_file_paths`、`open_file_in_editor`、`execute_run_configuration`、`get_run_configurations`。
+
+`get_project_modules` / `get_project_dependencies` 保持 IDE 原文 —— 它们的描述没有说错的地方。
 
 ### 另两处只"抬下限 / 补提示",不固定值
 
@@ -590,7 +593,7 @@ PATH 不会丢。**env 拉不到 = 连接没做完**:`/open-in-ide` 报 `env-unr
 > SSE (POST 返回 405),V2 连不上。插件对 IDE 的 **探测**也走 `/stream`(一次项目作用域的 `get_project_modules` 调用),
 > 用来确认"这个 IDE 里打开着这个项目"。
 
-**端口是产品常量,不开放配置**:IDEA 的 MCP 在 **64342**,PyCharm 在 **64462**(见 `src/ide-projects.js` 的 `IDE_PORTS`)。
+**端口是产品常量,不开放配置**:IntelliJ IDEA 的 MCP 在 **64342**(见 `src/ide-projects.js` 的 `IDE_PORTS`)。
 "哪个 IDE 在哪个端口"跨版本不变,所以插件不需要扫描候选端口 —— 探哪个端口,由项目的 IDE 唯一决定,用户不需要填任何东西。
 
 ## 安装
@@ -668,7 +671,7 @@ export { default } from "/Users/yutao/IdeaProjects/opencode-idea/src/index.js";
 | 选项                 | 类型         | 默认     | 说明                                                                                           |                                                                  |
 | -------------------- | ------------ | -------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | `injectGuidance`     | `boolean`    | `true`   | 是否注入「工具使用规则」引导(IDE 段只在 IDE 可用时出现)                                      |                                                                  |
-| `openInIde`          | `boolean`    | `true`   | 是否允许自动拉起 IDE;`false` 时仍会连接**已经运行**的端点。**用哪个 IDE 由本项目的配置决定** |                                                                  |
+| `openInIde`          | `boolean`    | `true`   | 是否允许自动拉起 IDE;`false` 时仍会连接**已经运行**的端点                                  |                                                                  |
 | `launchCooldownMs`   | `number`     | `120000` | 启动保护冷却:冷却期内不重复 spawn                                                              |                                                                  |
 | `launchMaxAttempts`  | `number`     | `5`      | 单次会话内最多 spawn 次数,超出后停止重试                                                       |                                                                  |
 | `mcpProbeTimeoutMs`  | `number`     | `1000`   | 单个 MCP 端口的短探测超时                                                                      |                                                                  |
@@ -722,7 +725,8 @@ export { default } from "/Users/yutao/IdeaProjects/opencode-idea/src/index.js";
   IDE MCP 没有「打开项目」工具,因此打开动作走 OS/CLI,而非 MCP。
 - 插件热重载会断开 IDE 连接,需重跑 `/open-in-ide`。
 - IDE 工具以 `<项目前缀>_*` 直接暴露给模型(`codemode: false`),不用 `execute` 包裹;
-  插件不修改任何**它不接管**的工具定义或描述,唯一的例外是 `rebuild` 参数(见「工具参数与输出」)。
+  插件不修改任何**它不接管**的工具定义或描述,例外只有两条:`rebuild` / `include_external` 两个参数,以及
+  15 条描述覆盖(见「工具参数与输出」)。
 
 ## License
 

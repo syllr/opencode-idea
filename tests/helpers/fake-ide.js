@@ -12,8 +12,7 @@ import { createServer } from 'node:http';
  * Start a fake IDE MCP server. Resolves `{ server, port, streamRequests,
  * setProjectOpen }`. Pass `port` to bind a specific port (0 = random).
  *
- * 每个实例有**自己**的一份"已打开项目"集合：IDEA 与 PyCharm 是两个进程，一个认得
- * 一个项目，不该让另一个也跟着认得（多项目场景全靠这一点区分端口归属）。
+ * 每个实例有**自己**的一份"已打开项目"集合：不同实例之间互不可见。
  *
  * `setProjectOpen(path, open)`: live switch for whether a project path counts as
  * open. `setProjectOpen(false)` is shorthand for clearing this instance's set.

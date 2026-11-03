@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  FORCED_ARGUMENTS,
+  applyDescriptionOverrides,
   applyIdeToolDefaults,
   forcedToolNames,
   hideForcedArguments,
@@ -76,7 +76,9 @@ describe('applyIdeToolDefaults', () => {
 
 describe('forcedToolNames', () => {
   it('composes the real tool name for the IDE prefix', () => {
-    expect(forcedToolNames(PREFIXES)).toEqual(['ide_build_project']);
+    // 表里有什么就展开出什么；这里只盯"前缀被拼上了"。
+    for (const name of forcedToolNames(PREFIXES)) expect(name.startsWith('ide_')).toBe(true);
+    expect(forcedToolNames(PREFIXES).length).toBeGreaterThan(0);
     expect(forcedToolNames([])).toEqual([]);
   });
 });
@@ -235,9 +237,59 @@ describe('raiseMinimumArguments', () => {
   });
 });
 
-describe('FORCED_ARGUMENTS', () => {
-  it('names the tool by suffix, so it cannot be tied to one project prefix', () => {
-    // 同一个 IDE 工具在每个项目下都有一份,所以表里只能按后缀写。
-    expect(FORCED_ARGUMENTS).toEqual([{ suffix: 'build_project', argument: 'rebuild', value: true }]);
+describe('被插件接管的参数', () => {
+  it('search_symbol 的 include_external 对模型不可见，但每次调用都是开的', () => {
+    const tools = {
+      ide_search_symbol: {
+        description: 'original',
+        input: {
+          type: 'object',
+          properties: { q: { type: 'string' }, include_external: { type: 'boolean' } },
+          required: ['q'],
+        },
+      },
+    };
+    const editor = {
+      tools,
+      get: (id) => tools[id],
+      update: (id, update) => {
+        const draft = { ...tools[id] };
+        update(draft);
+        tools[id] = draft;
+      },
+    };
+
+    hideForcedArguments(editor, PREFIXES);
+    expect(tools.ide_search_symbol.input.properties.include_external).toBeUndefined();
+
+    const input = {};
+    expect(applyIdeToolDefaults('ide_search_symbol', input, PREFIXES)).toBe(true);
+    expect(input.include_external).toBe(true);
+  });
+});
+
+describe('applyDescriptionOverrides', () => {
+  it('整段替换被覆盖工具的描述，其他工具不动', () => {
+    const tools = {
+      ide_search_symbol: {description: 'original', input: {}},
+      ide_read_file: {description: 'original', input: {}},
+      ide_something_else: {description: 'original', input: {}},
+    };
+    const editor = {
+      tools,
+      get: (id) => tools[id],
+      update: (id, update) => {
+        const draft = { ...tools[id] };
+        update(draft);
+        tools[id] = draft;
+      },
+    };
+
+    applyDescriptionOverrides(editor, PREFIXES);
+
+    expect(tools.ide_search_symbol.description).not.toBe('original');
+    expect(tools.ide_read_file.description).not.toBe('original');
+    // 没被覆盖的工具保持原样
+    expect(tools.ide_something_else.description).toBe('original');
   });
 });

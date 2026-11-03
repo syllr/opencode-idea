@@ -4,7 +4,7 @@
 - **远端机器**：`remote_list_servers` 选服务器；命令用 `remote_exec`；文件同步用 `remote_upload` / `remote_download`。
 
 <!-- ide-only:start -->
-- **IDE 工具补原生工具做不到的**：`ide_search_symbol`（带 `include_external: true`）、`ide_analyze_calls`、
+- **IDE 工具补原生工具做不到的**：`ide_search_symbol`、`ide_analyze_calls`、
   `ide_rename_refactoring`、`ide_lint_files` / `ide_get_file_problems`、`ide_build_project`、
   `ide_apply_patch`、`ide_reformat_file`。IDE 工具只作用于当前项目。
 - **校验**：改一处收尾跑一次 `ide_lint_files`；改一大片 / 动接口 / 动依赖，全部改完跑一次

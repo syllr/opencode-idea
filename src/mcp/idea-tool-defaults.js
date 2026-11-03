@@ -60,6 +60,209 @@ export const FORCED_ARGUMENTS = [
     argument: 'rebuild',
     value: true,
   },
+  {
+    // `search_symbol` 默认只搜项目符号，要搜 SDK / 依赖库得模型自己记得带这个开关。
+    // 我们恒定打开并把参数从 schema 里拿掉：模型看不到这个旋钮，但拿到的永远是全的结果。
+    suffix: 'search_symbol',
+    argument: 'include_external',
+    value: true,
+  },
+];
+
+/**
+ * 覆盖 IDE 自带工具的描述。
+ *
+ * 只改**事实**：这个工具做什么、返回什么、什么时候用不上。不写"你应该怎么用"——那是引导的事。
+ *
+ * 为什么需要：IDE 的描述是 JetBrains 写的，参数含义、默认值、返回结构都可能随版本变；
+ * 我们只在**原文说错了**或**该说清的关键事实没提**时覆盖，并且只覆盖事实、不动参数。
+ *
+ * 覆盖是**整段替换**，不与原文拼接：半原文半我们的句子，读起来像两套口径，容易自相矛盾。
+ * 被覆盖的工具说明我们为什么必须改它。
+ *
+ * @type {ReadonlyArray<{ suffix: string, description: string, why: string }>}
+ */
+export const DESCRIPTION_OVERRIDES = [
+  {
+    suffix: 'search_symbol',
+    why: '原文说"默认只搜项目符号，不行再带 include_external" —— 我们恒定开着它，这句就变成假话。',
+    description: `Searches for symbols (classes, methods, fields) by name fragment.
+
+Returns the declaration position (1-based line/column). This searches symbol declarations, not
+"which text mentions it" — use \`grep\` for text. For call graphs, locate the target here first,
+then pass the fully qualified name to \`analyze_calls\`.
+
+Searches the project, SDK and library symbols alike. \`paths\` narrows it with project-relative
+globs.`,
+  },
+  {
+    suffix: 'read_file',
+    why: '原文没说它和原生 read 的分工，也没说包内条目的几种写法 —— 模型会拿它读普通文件。',
+    description: `Reads a file in the project, or a source file that lives inside a dependency.
+
+Use the native \`read\` for ordinary files — it is faster. Reach for this tool when the target is
+not a plain source file:
+
+- an entry inside a dependency jar: \`<path-to.jar>!/<entry>\` (relative or absolute), or
+  \`jar://<absolute-path-to.jar>!/<entry>\`
+- the JDK image: \`jrt://…\`
+- a \`.class\` file, which is decompiled to source
+
+Paths are resolved against the project, so a path returned by \`search_symbol\` can be passed
+through as is.
+
+Returns numbered lines (1-based). Reads up to 2000 lines from the start by default; pass \`offset\`
+and \`limit\` for a slice, and \`limit\` is capped at 5000.`,
+  },
+  {
+    suffix: 'build_project',
+    why: '原文读起来像增量构建；我们把 rebuild 恒定为 true，每次都是全量。',
+    description: `Triggers a build of the project — or of the given files — waits for completion, and returns
+compilation errors and warnings.
+
+Use it to check that edits compile. The build is always a full one: the incremental switch is not
+exposed, so expect it to take a while on a large project.`,
+  },
+  {
+    suffix: 'list_directory_tree',
+    why: '原文没说为什么用它而不是 ls，也没说树会被深度截断。',
+    description: `Lists a directory as a tree, the way the \`tree\` utility does.
+
+Prefer it over \`ls\` / \`dir\` / \`find\` for exploring a project: it respects the project's content
+roots and excluded paths, so build output and dependency folders do not show up as if they were
+source.
+
+Paths are relative to the project root. The tree is cut at \`maxDepth\`; when that happens the
+result says so explicitly, so a truncated tree is never mistaken for an empty directory.`,
+  },
+  {
+    suffix: 'apply_patch',
+    why: '原文只说格式；没说它用于多文件同改、按文本不按语义、部分应用要回头补。',
+    description: `Applies a patch that touches several files at once — the Codex apply_patch format or a unified
+git diff. \`edit\` and \`write\` change one file each, and the native \`patch\` tool is not available on
+every model, so this is the tool for "the same change in a dozen files".
+
+It matches text, not meaning: to rename a symbol use the IDE's rename refactoring instead.
+
+Only the lines the patch spells out are touched. When a hunk's context does not match, that file
+is left unchanged and the result reports \`N out of M operations applied\` — check which files are
+missing and re-apply them.`,
+  },
+  {
+    suffix: 'rename_refactoring',
+    why: '原文很长且重复；没提"只改代码"和 with N usages 的含义。',
+    description: `Renames a symbol and updates every real reference to it across the project — classes, methods,
+fields, variables. It matches meaning, not text, so it is the right tool whenever the thing being
+renamed is a declared symbol.
+
+It only touches code: comments, string literals and same-named symbols in other languages are
+left alone. \`with N usages\` reports how many real references were updated; a smaller number than
+you expect means some files are not in the IDE index yet.
+
+To change something that is not a symbol — a config key, a placeholder, a string in a doc — edit
+that text directly instead.`,
+  },
+  {
+    suffix: 'lint_files',
+    why: '原文罗列了部分结果机制，却没说"没被分析"不等于"没问题"。',
+    description: `Runs IntelliJ's inspections over a set of files and returns the problems it finds — severity,
+description and location.
+
+Use it on the files you changed; \`get_file_problems\` is the single-file version with the same
+detail.
+
+Only files inside the project are analyzed, and only the file types IntelliJ supports.
+\`min_severity\` is \`warning\` by default, or \`error\`.
+
+The batch can be partial: an entry with \`timedOut: true\` or a \`notAnalyzedReason\` was not
+analyzed, and a top-level \`more: true\` means files are missing from the result. Those files are
+**unchecked**, not clean.`,
+  },
+  {
+    suffix: 'get_file_problems',
+    why: '原文同一件事说三遍；没提和 lint_files 的分工。',
+    description: `Runs IntelliJ's inspections on one file and returns the problems it finds — severity, description
+and location. Lines and columns are 1-based.
+
+Use it for the single file you want the detail on; \`lint_files\` is the batch version. Files
+outside the project cannot be analyzed.`,
+  },
+  {
+    suffix: 'analyze_calls',
+    why: '原文很长；核心（比 grep 准、要有全限定名）在中间被参数细节埋掉了。',
+    description: `Builds the IDE call hierarchy for a symbol: who calls it (\`INCOMING_CALLS\`) or what it calls
+(\`OUTGOING_CALLS\`). It reads IDE call data, so it is more precise than grepping for usages.
+
+Pass \`symbolFqn\` as a fully qualified name (\`com.example.Service.run\`); if the name is ambiguous
+the tool returns the exact signatures to choose from. If you only have a short fragment, find the
+target with \`search_symbol\` first. Dependencies the IDE can resolve — source jars, decompiled
+classes — work too.
+
+The result is a tree: each node carries \`filePath\` and \`treePath\`, and passing a \`treePath\` back
+renders that subtree. \`depth\`, \`maxChildren\` and \`maxNodes\` bound the output; \`childOffset\`
+continues past a truncated \`… and n more\` line.`,
+  },
+  {
+    suffix: 'get_symbol_info',
+    why: '原文同一件事说三遍；没说它和 search_symbol 的分工。',
+    description: `Returns the symbol at a position in a file: name, signature, type and documentation — the same
+information the IDE's Quick Documentation shows. When the position is a reference, the
+declaration is included when the IDE can resolve it.
+
+Use it once you know where the symbol is; \`search_symbol\` is how you find that position when you
+only know the name.`,
+  },
+  {
+    suffix: 'reformat_file',
+    why: '原文只说"代码格式化规则"，丢掉了文档也能格式化、以及从磁盘重读这两个事实。',
+    description: `Reformats the given files with the IDE's code style. Paths are project-relative.
+
+Use it after writing code so the formatting matches the project. It handles documents too — for
+Markdown it fixes table alignment and line width — and it re-reads from disk, so files written
+outside the IDE can be formatted directly.`,
+  },
+  {
+    suffix: 'get_all_open_file_paths',
+    why: '原文的 "explore current open editors" 太含糊，容易被当成"最近改过哪些文件"。',
+    description: `Lists the files currently open in IDE editors — the active one and any others — as
+project-relative paths.
+
+It reflects the editors only: a file the user edited but has not opened is not in the list. Use
+it to find out what the user is looking at right now.`,
+  },
+  {
+    suffix: 'open_file_in_editor',
+    why: '原文没说它不返回内容 —— 模型可能以为"打开"能顺便读到文件。',
+    description: `Opens a file in the IDE editor and focuses that tab.
+
+This is for showing the user a file — it returns no content. Use \`read\` to read one.`,
+  },
+  {
+    suffix: 'execute_run_configuration',
+    why: '原文很长；更关键的是没和我们的 rerun_run_configuration 划清界限 —— 误用会多起一个实例。',
+    description: `Runs a run configuration — by name, or a temporary one built from a code location (\`filePath\` +
+\`line\`) — and waits for it to finish.
+
+Its niche is one-off jobs: a task, a test, a script — something that ends by itself. For a
+long-running service use \`rerun_run_configuration\` instead: this tool always starts a **new**
+instance, so it does not restart what is already running, and \`waitForExit\` would block on a
+service that never exits.
+
+\`programArguments\`, \`workingDirectory\` and \`envs\` override the configured values for this run
+only — pass them only when the configuration reports \`supportsDynamicLaunchOverrides\`.`,
+  },
+  {
+    suffix: 'get_run_configurations',
+    why: '原文很长；且没说"看单个配置全貌"该用 inspect。',
+    description: `Lists the project's run configurations — names plus launch details when the IDE knows them
+(program arguments, working directory, environment).
+
+With \`filePath\` instead, it finds the run points in that file — test methods, main methods, the
+places the IDE shows a Run gutter icon — and returns their line numbers.
+
+To see one configuration in full (options, before-launch steps, raw XML, history), use
+\`inspect_run_configuration\`.`,
+  },
 ];
 
 /** 由前缀集合拼出这张表涉及的**全部**真实工具名。 */
@@ -148,6 +351,31 @@ export function raiseMinimumArguments(tool, input, prefixes) {
     changed = true;
   }
   return changed;
+}
+
+/**
+ * 把 DESCRIPTION_OVERRIDES 里的描述盖到 IDE 自带工具上。
+ *
+ * 整段替换，不与原文拼接。工具没注册（IDE 没连上）时什么也不做。
+ *
+ * @param {{
+ *   get: (id: string) => { description?: unknown } | undefined,
+ *   update: (id: string, update: (tool: { description?: unknown }) => void) => void,
+ * }} editor
+ * @param {readonly string[]} prefixes
+ */
+export function applyDescriptionOverrides(editor, prefixes) {
+  for (const override of DESCRIPTION_OVERRIDES) {
+    for (const prefix of prefixes) {
+      const name = `${prefix}${override.suffix}`;
+      const tool = editor.get(name);
+      if (!tool) continue;
+      if (tool.description === override.description) continue;
+      editor.update(name, (draft) => {
+        draft.description = override.description;
+      });
+    }
+  }
 }
 
 /**

@@ -12,96 +12,19 @@
 // unavailable; this module only requests opening/activating the project.
 
 import { spawn } from 'node:child_process';
-import { readdirSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 
-/** 兜底 macOS 应用名：调用方没给 app 时用它。 */
+/** 唯一的 IDE：IntelliJ IDEA。macOS 应用名。 */
 export const DEFAULT_IDE_APP = 'IntelliJ IDEA';
 
 /**
- * 每个 IDE 选项值对应的 macOS 应用名。
+ * 自动拉起时的 macOS 应用名，`undefined` 表示"这个平台不能自动拉起"。
  *
- * 只包含受支持的 IDE（见 `ide-projects.js` 的 `SUPPORTED_IDES`）—— 应用名由项目
- * 配置决定，不再由用户在 `openInIde` 里自由指定，所以这里是一张封闭的表。
- */
-export const IDE_APPS = {
-  idea: 'IntelliJ IDEA',
-  pycharm: 'PyCharm',
-};
-
-/**
- * 该 IDE 的 macOS 应用名，`undefined` 表示"不能自动拉起"。
- *
- * `undefined` 有两种原因，调用方用 `autoLaunchSupported()` 区分：这个平台没有
- * 启动器，或这个 IDE 不在支持列表里。两者给用户的建议不同，不能混为一谈。
- *
- * @param {string} app
  * @param {{ platform?: string }} [options]
  * @returns {string | undefined}
  */
-export function appNameFor(app, { platform = process.platform } = {}) {
+export function ideAppName({ platform = process.platform } = {}) {
   if (platform !== 'darwin') return undefined;
-  return IDE_APPS[app];
-}
-
-/**
- * 各平台上看"装了哪些 IDE"的目录。
- *
- * macOS 那两个位置是**实测**的（这台机器上就是这么装的）；Windows / Linux 列的是各自最
- * 常见的安装位置（Toolbox 默认 + 系统级目录），**未在真机上验证过** —— 探错的后果只是少一
- * 行提示、让模型照常问用户，不会挡住任何选择，所以先按常见值给出来。
- */
-function ideInstallDirs(platform = process.platform) {
-  const home = homedir();
-  if (platform === 'darwin') return ['/Applications', join(home, 'Applications')];
-  if (platform === 'win32') {
-    const local = process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local');
-    return [
-      join(local, 'Programs', 'JetBrains'),
-      join(local, 'JetBrains', 'Toolbox', 'apps'),
-      'C:\\Program Files\\JetBrains',
-    ];
-  }
-  return [join(home, '.local', 'share', 'JetBrains', 'Toolbox', 'apps'), '/opt', '/usr/local'];
-}
-
-/**
- * 本机装了哪些受支持的 IDE（`IDE_APPS` 的键）。
- *
- * 按**安装目录**判断，不看进程 —— 用 `ps aux` 之类探进程只能发现"正在运行"的 IDE，装了
- * 但没打开就会漏（实测踩过：PyCharm 明明装着，进程探测报"未发现"）。一次目录读取就够，
- * 比模型自己去跑命令快几个数量级。
- *
- * 返回空数组表示"**没探测出来**"，不能当成"没装"：调用方要么照常问用户，要么在提示里说明
- * 是"没找到"。
- *
- * @param {{ platform?: string, dirs?: string[] }} [options] 仅供测试注入。
- * @returns {string[]}
- */
-export function detectInstalledIdes(options = {}) {
-  const platform = options.platform ?? process.platform;
-  const dirs = options.dirs ?? ideInstallDirs(platform);
-  /** @type {Set<string>} */
-  const found = new Set();
-  for (const dir of dirs) {
-    let entries;
-    try {
-      entries = readdirSync(dir);
-    } catch {
-      // 目录不存在（例如没有 ~/Applications）就是没装，继续看下一个。
-      continue;
-    }
-    for (const entry of entries) {
-      const bundle = entry.endsWith('.app') ? entry.slice(0, -'.app'.length) : entry;
-      for (const [app, label] of Object.entries(IDE_APPS)) {
-        // `IntelliJ IDEA.app` 精确匹配；`PyCharm CE.app`、`PyCharm 2026.2`、Toolbox 的
-        // `PyCharm` 目录都是产品名开头，按前缀匹配。
-        if (bundle === label || bundle.startsWith(label)) found.add(app);
-      }
-    }
-  }
-  return [...found];
+  return DEFAULT_IDE_APP;
 }
 
 /**
@@ -123,11 +46,11 @@ export function autoLaunchSupported() {
  * Never throws; resolves `true` when `open` reported success.
  *
  * @param {string} directory
- * @param {{ app?: string, spawnImpl?: typeof spawn }} [options]
+ * @param {{ spawnImpl?: typeof spawn }} [options]
  * @returns {Promise<boolean>}
  */
 export function openInIde(directory, options = {}) {
-  const app = options.app || DEFAULT_IDE_APP;
+  const app = DEFAULT_IDE_APP;
   const spawnImpl = options.spawnImpl || spawn;
   return new Promise((resolve) => {
     let child;

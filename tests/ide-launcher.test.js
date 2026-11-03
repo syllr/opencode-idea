@@ -2,11 +2,8 @@
 // per-directory launch guard.
 
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { appNameFor, createLaunchGuard, detectInstalledIdes, openInIde } from '../src/ide-launcher.js';
+import { createLaunchGuard, ideAppName, openInIde } from '../src/ide-launcher.js';
 
 /** A spawn stub that records calls and closes with `code`. */
 function fakeSpawn(code = 0) {
@@ -20,50 +17,13 @@ function fakeSpawn(code = 0) {
   return { impl, calls };
 }
 
-/** 造一个假的应用目录，里面放给定的 bundle。 */
-function fakeApps(bundles) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'apps-'));
-  for (const bundle of bundles) mkdirSync(path.join(dir, `${bundle}.app`));
-  return dir;
-}
-
-describe('appNameFor', () => {
-  it('maps each supported IDE to its macOS app name, and nothing else', () => {
-    expect(appNameFor('idea')).toBe('IntelliJ IDEA');
-    expect(appNameFor('pycharm')).toBe('PyCharm');
-    expect(appNameFor('vscode')).toBeUndefined();
-    expect(appNameFor('')).toBeUndefined();
+describe('ideAppName', () => {
+  it('returns the IDEA app name on macOS only', () => {
+    expect(ideAppName()).toBe('IntelliJ IDEA');
     // 只实现了 macOS 的 `open -a`。别的平台上 spawn `open` 会 ENOENT,所以解析不出 app,
     // 由用户手动打开 —— 这正是 `autoLaunchSupported()` 用来区分两者的。
-    expect(appNameFor('idea', { platform: 'win32' })).toBeUndefined();
-    expect(appNameFor('pycharm', { platform: 'linux' })).toBeUndefined();
-  });
-});
-
-describe('detectInstalledIdes', () => {
-  it('finds installed IDEs by application bundle, not by process', () => {
-    // 进程探测只能看到"正在运行"的 IDE,装了没开就漏 —— 这里按安装目录找,与是否运行无关。
-    const dir = fakeApps(['IntelliJ IDEA', 'PyCharm']);
-    expect(detectInstalledIdes({ dirs: [dir] }).sort()).toEqual(['idea', 'pycharm']);
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it('recognises the CE, versioned and Toolbox directory names too', () => {
-    // Windows / Linux 的安装目录形如 `PyCharm 2026.2`、Toolbox 的 `PyCharm`,没有 .app 后缀。
-    const dir = fakeApps(['PyCharm CE', 'IntelliJ IDEA CE', 'PyCharm 2026.2', 'IntelliJ IDEA 2026.2']);
-    expect(detectInstalledIdes({ dirs: [dir] }).sort()).toEqual(['idea', 'pycharm']);
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it('reports only what is installed, and ignores unrelated bundles', () => {
-    const dir = fakeApps(['IntelliJ IDEA', 'Safari', 'Visual Studio Code']);
-    expect(detectInstalledIdes({ dirs: [dir] })).toEqual(['idea']);
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it('returns nothing when no known directory can be read', () => {
-    // 空数组是"没探测出来",不是"没装" —— 调用方必须照常问用户。
-    expect(detectInstalledIdes({ dirs: ['/no/such/dir'] })).toEqual([]);
+    expect(ideAppName({ platform: 'win32' })).toBeUndefined();
+    expect(ideAppName({ platform: 'linux' })).toBeUndefined();
   });
 });
 

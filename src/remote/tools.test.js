@@ -125,7 +125,8 @@ describe('工具定义', () => {
         });
         const exec = remoteExecTool(toolset);
         expect(exec.name).toBe('remote_exec');
-        expect(exec.input.required).toEqual(['server', 'command']);
+        // server 可选：不传就返回机器列表
+        expect(exec.input.required).toEqual([]);
 
         const list = remoteListServersTool(toolset);
         expect(list.name).toBe('remote_list_servers');
@@ -226,6 +227,34 @@ describe('文件同步工具', () => {
         const {content} = await remoteListServersTool(toolset).execute({});
         expect(content).toContain('- dev  h:22  u  [全局]');
         expect(content).toContain('app  /local/app ↔ /srv/app');
+    });
+});
+
+describe('remote_exec 的机器发现', () => {
+    it('不传 server 时返回可用机器列表，不猜机器', async () => {
+        const {root, globalPath} = projectWith({
+            globalHosts: {dev: {host: '10.0.0.9', username: 'u'}},
+        });
+        const toolset = createRemoteToolset({
+            projectPath: root,
+            globalHostsPath: globalPath,
+            fetchIdeServers: async () => [],
+        });
+        const {content} = await remoteExecTool(toolset).execute({});
+        expect(content).toContain('10.0.0.9');
+    });
+
+    it('给了机器但没给命令时明确报错', async () => {
+        const {root, globalPath} = projectWith({
+            globalHosts: {dev: {host: '10.0.0.9', username: 'u'}},
+        });
+        const toolset = createRemoteToolset({
+            projectPath: root,
+            globalHostsPath: globalPath,
+            fetchIdeServers: async () => [],
+        });
+        const {content} = await remoteExecTool(toolset).execute({server: 'dev'});
+        expect(content).toContain('command 不能为空');
     });
 });
 

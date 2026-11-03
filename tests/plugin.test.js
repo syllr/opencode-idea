@@ -9,7 +9,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 const openCalls = vi.hoisted(() => []);
 // The platform the mocked launcher pretends to run on. Tests that need a
 // platform without a launcher set this to e.g. 'win32'; afterEach restores it.
-const launcher = vi.hoisted(() => ({ platform: 'darwin', onOpen: null, installedIdes: ['idea'] }));
+const launcher = vi.hoisted(() => ({ platform: 'darwin', onOpen: null }));
 vi.mock('../src/ide-launcher.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
@@ -17,9 +17,8 @@ vi.mock('../src/ide-launcher.js', async (importOriginal) => {
     // Only macOS has `open -a`. Everywhere else no app resolves, and the
     // command asks the user to open the IDE by hand.
     autoLaunchSupported: () => launcher.platform === 'darwin',
-    appNameFor: (app) => (launcher.platform === 'darwin' ? actual.appNameFor(app) : undefined),
+    ideAppName: () => (launcher.platform === 'darwin' ? actual.ideAppName() : undefined),
     // 本机装了哪些 IDE:测试里固定成"只装了 IDEA",好断言提问文本里那句探测结论。
-    detectInstalledIdes: () => launcher.installedIdes,
     openInIde: async (...args) => {
       openCalls.push(args);
       // A real `open -a` makes the IDE open the project, which is what the
@@ -32,7 +31,7 @@ vi.mock('../src/ide-launcher.js', async (importOriginal) => {
 });
 
 import plugin, { ideFeedback, ideServersFromResult, projectEnvFromResult, sameProjectPath } from '../src/plugin.js';
-import { IDE_PORTS } from '../src/ide-projects.js';
+import { IDE_PORTS, MARK_VERSION } from '../src/ide-projects.js';
 import { startFakeIde } from './helpers/fake-ide.js';
 
 /** 端口是硬编码的固定值；测试会把 `IDE_PORTS` 指到假端口，用完必须还原。 */
@@ -41,12 +40,12 @@ const REAL_IDE_PORTS = { ...IDE_PORTS };
 const projectPath = mkdtempSync(path.join(tmpdir(), 'ojbm-'));
 
 /**
- * 一个已接入的配置：当前项目用某个 IDE。
+ * 一个已接入的配置。
  *
  * 只认当前格式（见 `src/ide-projects.js`），所以每个需要"已接入"前提的测试都用它预置 storage。
  */
-function ideConfig(rootPath, { app = 'idea' } = {}) {
-  return { version: 3, path: rootPath, app };
+function ideConfig() {
+  return { version: MARK_VERSION };
 }
 
 /**
@@ -63,9 +62,7 @@ afterEach(async () => {
   openCalls.length = 0;
   launcher.platform = 'darwin';
   launcher.onOpen = null;
-  launcher.installedIdes = ['idea'];
   IDE_PORTS.idea = REAL_IDE_PORTS.idea;
-  IDE_PORTS.pycharm = REAL_IDE_PORTS.pycharm;
   if (running) {
     // Most tests run one fake IDE; multi-project tests run two.
     const servers = Array.isArray(running) ? running : [running];
@@ -102,7 +99,7 @@ function fakeCtx(options = {}) {
     toolsReadyAfter = 1,
     directory = projectPath,
     // 端口在生产代码里按 IDE 硬编码(`IDE_PORTS`),不开放配置;测试把假端口指进去,
-    // 一个值就同时给 idea 与 pycharm,两个值则分别对应。
+    // IDEA 内置 MCP 的端口（唯一支持的 IDE）。
     ports,
     // What the IDE's MCP catalog exposes. Overridable so a test can pin what
     // "the IDE is serving" means without depending on tool names.
@@ -111,7 +108,6 @@ function fakeCtx(options = {}) {
   } = options;
   if (ports) {
     IDE_PORTS.idea = ports[0];
-    IDE_PORTS.pycharm = ports[1] ?? ports[0];
   }
   const state = {
     mcp: 0,
@@ -136,7 +132,7 @@ function fakeCtx(options = {}) {
     /** 每一次注册里 `set` 过的全部 server（多项目会一次 set 多个）。 */
     mcpConfigs: [],
     mcpDisposed: 0,
-    /** 插件自己注册的工具（`configure_ide_project`）。 */
+    /** 插件自己注册的工具（remote_*）。 */
     registeredTools: {},
   };
   return {
