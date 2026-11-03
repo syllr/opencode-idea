@@ -273,9 +273,8 @@ const PLUGIN_TOOL_NAMES = new Set(['configure_ide_project']);
 /**
  * IDE MCP tools that must never reach the model, listed by **suffix**.
  *
- * 存后缀而不是完整工具名:每个项目注册一个 server,同一个工具会以 `ide_git_status` /
- * `modelserver_git_status` 等多份出现,写死任何一个前缀都只能清掉一个项目。展开由
- * `removeIdeToolDefinitions` 按当前前缀集合完成。
+ * 存后缀而不是完整工具名:IDE 工具都以 `ide_` 开头,写死 `idea_...` 会永远命中不了。
+ * 展开由 `removeIdeToolDefinitions` 按当前前缀完成。
  *
  * Grouped by the IDE's Exposed Tools page so the list stays auditable. Anything
  * listed here is stripped from every model request, even while the IDE is up.
@@ -744,7 +743,7 @@ export default {
 
         const options = ctx.options || {};
         const injectGuidance = options.injectGuidance !== false;
-        // 自动拉起 IDE 的总开关。用哪个 IDE 由**每个项目自己的配置**决定
+        // 自动拉起 IDE 的总开关。用哪个 IDE 由**本项目的配置**决定
         // （`project.app`），这个选项不再指定应用名，只决定"允不允许拉起"。
         const launchEnabled = options.openInIde !== false;
         const mcpProbeTimeoutMs = asPositiveNumber(options.mcpProbeTimeoutMs, DEFAULT_MCP_PROBE_TIMEOUT_MS);
@@ -1217,10 +1216,10 @@ export default {
         };
 
         /**
-         * 每个项目各自的启动状态：in-flight、拉起冷却、是否已发过通知。
+         * 本项目的启动状态：in-flight、拉起冷却、是否已发过通知。
          *
-         * 按项目分开是必需的：IDEA 与 PyCharm 是两个独立进程，一个的冷却不能拖住另一个；
-         * 而同一个项目的重复调用仍然共享一次拉起（re-entrant）。
+         * 按项目路径分开：不同项目的插件实例互不影响；同一个项目的重复调用仍然共享
+         * 一次拉起（re-entrant）。
          */
         const launchStates = new Map();
         const launchStateFor = (path) => {
@@ -1955,7 +1954,7 @@ export default {
                         // and send the model round after round after a call that can only
                         // fail. Leave the IDE's own message, which names the real cause.
                         if (!launchEnabled) return;
-                        // 只有这个工具所属的那个项目的 IDE 需要重开（多项目下别去动别的项目）。
+                        // 只有当前项目的 IDE 需要重开。
                         const project = projectForTool(event.tool);
                         const app = project ? appNameFor(project.app) : undefined;
                         if (!project || !app) return;

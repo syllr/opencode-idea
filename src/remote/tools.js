@@ -1,5 +1,5 @@
 // 远程工具：`remote_exec` / `remote_list_servers` / `remote_upload` / `remote_download`。
-// 远端进程的启停不在这里：直接用 IDE 的 run configuration 工具（带项目前缀）。
+// 远端进程的启停不在这里：直接用 IDE 的 run configuration 工具。
 
 
 //

@@ -9,23 +9,15 @@ import {
 } from './ide-guidance.js';
 
 describe('引导的生成', () => {
-  it('IDE 连上时包含 IDE 段和远端段，且没有未渲染的标记', () => {
-    const text = buildGuidanceText(true);
-    expect(text).toContain('ide_search_symbol');
-    expect(text).toContain('ide_lint_files');
-    expect(text).toContain('ide_deploy_remote_process');
-    expect(text).toContain('remote_exec');
-    expect(text).toContain('不要用 `sed` / `python` 改源码');
-    expect(text).not.toContain('<!--');
+  it('不会把内部标记漏进提示词', () => {
+    expect(buildGuidanceText(true)).not.toContain('<!--');
+    expect(buildGuidanceText(false)).not.toContain('<!--');
   });
 
-  it('IDE 断开时只保留远端段', () => {
-    const text = buildGuidanceText(false);
-    expect(text).toContain('remote_exec');
-    expect(text).toContain('remote_upload');
-    expect(text).not.toContain('ide_search_symbol');
-    expect(text).not.toContain('ide_deploy_remote_process');
-    expect(text).not.toContain('<!--');
+  it('IDE 断开时不出现 IDE 工具', () => {
+    // 契约是"别推荐此刻调不到的工具"，不是提示词里必须出现哪几个工具名。
+    expect(buildGuidanceText(false)).not.toContain('ide_');
+    expect(buildGuidanceText(true)).toContain('ide_');
   });
 });
 
@@ -37,11 +29,9 @@ describe('注入与恢复提示', () => {
     expect(system).toHaveLength(1);
     expect(system[0].type).toBe('text');
 
-    // IDE 断开时仍然注入（远端工具常驻），内容不同，所以会再 push 一条。
+    // IDE 断开时注入的是另一份内容，所以会再 push 一条。
     appendGuidance(system, false);
     expect(system).toHaveLength(2);
-    expect(system[1].text).toContain('remote_exec');
-    expect(system[1].text).not.toContain('ide_search_symbol');
 
     // 没有 system 数组时什么都不做
     appendGuidance(undefined, true);

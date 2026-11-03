@@ -35,9 +35,9 @@ export function remoteDeploymentPrompt(request) {
     return [
         '【远程部署】本次部署走 IDE 的 deploy_remote_process，不要自己拼 ssh / scp / rsync。',
         '',
-        '1. 配置名不确定 → 先调带项目前缀的 list_remote_processes（项目里所有 Remote Process 配置 + 远端状态）；',
+        '1. 配置名不确定 → 先调 list_remote_processes（项目里所有 Remote Process 配置 + 远端状态）；',
         '   也可以看 get_run_configurations 的定义列表。不要猜配置名。',
-        '2. 部署 → 带项目前缀的 deploy_remote_process(configurationName)',
+        '2. 部署 → deploy_remote_process(configurationName)',
         '   · 它同步 deployment、启动进程 / 容器，并打开一个 Run 标签页给用户看日志',
         '   · deploy-only：点 Stop 只关闭日志跟随，不 kill 远端；已在运行会直接替换',
         '3. 返回 fullOutputPath（本机聚合日志：进度 + 远端 stdout/stderr）',

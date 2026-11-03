@@ -499,7 +499,7 @@ IDE 没开时自动退到 2 / 3,所以 `remote_exec` 在 IDE 之外也能用。�
 ## 远端进程 (直接用 IDE 的 run configuration)
 
 远端进程**不在 opencode 侧重写**：启停、查重、deployment 同步、日志全部由 IDE 的 `Remote Process` 配置实现，
-opencode 直接调 IDE MCP 的 run configuration 工具（工具名带项目前缀）。
+opencode 直接调 IDE MCP 的 run configuration 工具（工具名带 `ide_` 前缀）。
 
 | 动作 | IDE 工具 |
 | --- | --- |
@@ -579,7 +579,7 @@ PATH 不会丢。**env 拉不到 = 连接没做完**:`/open-in-ide` 报 `env-unr
 }
 ```
 
-项目通过 `IJ_MCP_SERVER_PROJECT_PATH` 头选择,所以一个 IDE 能同时服务多个项目,而 **不需要为每个项目起一个子进程**。
+项目通过 `IJ_MCP_SERVER_PROJECT_PATH` 头选择,所以一个 IDE 能服务多个项目,而 **不需要为每个项目起一个子进程**。
 
 > **为什么不用 IDE 的 stdio 桥**(`idea stdioMcpServer`,子进程管道):它的故障是"沉默"的——IDE 连接断掉后子进程只挂起、
 > 不回任何错误,只能靠后台心跳兜;而 Location 空闲 60 分钟被驱逐时,桥进程与注册一起消失—— **两种传输都躲不过**。
@@ -650,9 +650,9 @@ export { default } from "/Users/yutao/IdeaProjects/opencode-idea/src/index.js";
     {
       "package": "opencode-idea",
       "options": {
-        "injectGuidance": true, // IDE 可用时注入逐项目的「优先使用 IDE 工具」引导
+        "injectGuidance": true, // 是否注入「工具使用规则」引导
         "openInIde": true, // 是否允许自动拉起 IDE;false 只连已运行的端点
-        "launchCooldownMs": 120000, // 启动保护冷却(按项目各自计)
+        "launchCooldownMs": 120000, // 启动保护冷却
         "launchMaxAttempts": 5,
         "mcpProbeTimeoutMs": 1000, // 单次「这个 IDE 里打开着这个项目吗」探测的超时
         "executionTimeoutMs": 600000, // 单次 IDE 工具调用硬上限;默认 10 分钟(OpenCode 默认 12 小时)
@@ -667,27 +667,27 @@ export { default } from "/Users/yutao/IdeaProjects/opencode-idea/src/index.js";
 
 | 选项                 | 类型         | 默认     | 说明                                                                                           |                                                                  |
 | -------------------- | ------------ | -------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `injectGuidance`     | `boolean`    | `true`   | IDE 可用时是否注入逐项目的「优先使用 IDE 工具」引导                                            |                                                                  |
-| `openInIde`          | `boolean`    | `true`   | 是否允许自动拉起 IDE;`false` 时仍会连接**已经运行**的端点。**用哪个 IDE 由每个项目的配置决定** |                                                                  |
-| `launchCooldownMs`   | `number`     | `120000` | 启动保护冷却:冷却期内不重复 spawn(每个项目各算各的)                                            |                                                                  |
-| `launchMaxAttempts`  | `number`     | `5`      | 单次会话内最多 spawn 次数,超出后停止重试(每个项目各算各的)                                     |                                                                  |
+| `injectGuidance`     | `boolean`    | `true`   | 是否注入「工具使用规则」引导(IDE 段只在 IDE 可用时出现)                                      |                                                                  |
+| `openInIde`          | `boolean`    | `true`   | 是否允许自动拉起 IDE;`false` 时仍会连接**已经运行**的端点。**用哪个 IDE 由本项目的配置决定** |                                                                  |
+| `launchCooldownMs`   | `number`     | `120000` | 启动保护冷却:冷却期内不重复 spawn                                                              |                                                                  |
+| `launchMaxAttempts`  | `number`     | `5`      | 单次会话内最多 spawn 次数,超出后停止重试                                                       |                                                                  |
 | `mcpProbeTimeoutMs`  | `number`     | `1000`   | 单个 MCP 端口的短探测超时                                                                      |                                                                  |
 | `executionTimeoutMs` | `number`     | `600000` | 单次 IDE 工具调用的硬上限(毫秒);防止端点卡住后无限等待(OpenCode 默认 12 小时)                  |                                                                  |
 | `feedback`           | `"message" \ | false`   | `"message"`                                                                                    | 结果反馈:`message` 会话通知(用户可见,AI 只回"收到");`false` 静默 |
 
 ## 行为
 
-- **未配置的 root**:不改环境、不注册、不注入任何 IDE 提示(每请求零开销;setup 时只做一次配置读取)。
-- **已配置的 root**:启动读回配置,全部 IDE MCP 由 `/open-in-ide` 注册。
+- **未配置的项目**:不改环境、不注册、不注入任何 IDE 提示(每请求零开销;setup 时只做一次配置读取)。
+- **已配置的项目**:启动读回配置,IDE MCP 由 `/open-in-ide` 注册。
 - **`context` 钩子是请求的纯函数**:按「每次模型调用」触发(含工具续跑),只看本次请求自带的工具快照 ——
-  有任一项目前缀的工具就**按每个前缀**剥离隐藏工具并注入**逐项目**引导;没有则只在已配置时给恢复提示。
+  请求里带 IDE 工具就剥离隐藏工具并注入引导;没带则只在已配置时给恢复提示。
   该钩子本身**不做任何 I/O**。
 - **错误分类只认传输层专有标记**(`MCP server "<名>" is not available` / `MCP server is not connected` /
   `Error POSTing to endpoint`),**不认**工具输出里出现的通用串(例如 SQL 工具报的 `Connection refused`) ——
   MCP 工具错误的 message 就是工具自己的输出,认通用串会把正常业务失败误判成掉线并重建。
-  业务错误(`File not found` 等)、非 IDE 工具、未配置的 root 都不动作。
+  业务错误(`File not found` 等)、非 IDE 工具、未配置的项目都不动作。
 - 恢复是**每个 Location(项目)各一份**;没有任何定时器,插件在不使用时完全静止。
-  启动保护(`launchCooldownMs` / `launchMaxAttempts`)限制重复拉起 IDE,**按项目各自计**。
+  启动保护(`launchCooldownMs` / `launchMaxAttempts`)限制重复拉起 IDE。
 
 ## 限制
 

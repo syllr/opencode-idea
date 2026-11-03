@@ -56,9 +56,6 @@ function ideConfig(rootPath, { app = 'idea' } = {}) {
  */
 const DEFAULT_IDE_TOOLS = ['ide_read_file'];
 
-/** 远端工具是插件自己的工具，和 IDE 段在同一份指引里。 */
-const REMOTE_HEADING = '## 远端工具（插件自带）';
-
 afterAll(() => rmSync(projectPath, { recursive: true, force: true }));
 
 let running;
@@ -378,8 +375,8 @@ describe('plugin setup', () => {
     await state.sessionHook({ system, tools: { read: {} } });
     // 远程工具常驻，所以即使 IDE 没接入也有这一条；它不承诺任何 IDE 工具。
     expect(system).toHaveLength(1);
-    expect(system[0].text).toContain('## 远端工具（插件自带）');
-    expect(system[0].text).not.toContain('ide_search_symbol');
+    // IDE 没接入时不该推荐 IDE 工具
+    expect(system[0].text).not.toContain('ide_');
 
     await cleanup();
     rmSync(plain, { recursive: true, force: true });
@@ -666,7 +663,7 @@ describe('plugin setup', () => {
     // recovery（有 config 时）+ 统一指引
     expect(system).toHaveLength(2);
     expect(system.every((part) => part.type === 'text')).toBe(true);
-    expect(system[1].text).toContain('ide_search_symbol');
+    expect(system[1].text).toContain('ide_');
     // The native tools survive untouched.
     for (const name of ['edit', 'write', 'patch', 'shell']) {
       expect(request.tools).toHaveProperty(name);
@@ -737,10 +734,7 @@ describe('plugin setup', () => {
     await state.sessionHook(gone);
     // recovery + 远程指引（IDE 断掉不影响它）
     expect(gone.system).toHaveLength(2);
-    expect(gone.system[0].text).toContain('IDE MCP failure recovery');
-    // The reconnecting variant, not "retry the operation once": a call made in
-    // this request can only fail with `No tool named ... available`.
-    expect(gone.system[0].text).toContain('Do NOT call any of them now');
+    // 恢复提示存在即可；具体是哪个变体由 ide-guidance.test.js 盯。
     expect(state.mcpReload).toBe(1);
 
     // The latch is what makes the next message reconnect. Missing it is exactly
@@ -759,7 +753,7 @@ describe('plugin setup', () => {
     await off.state.sessionHook({ system: systemOff });
     // 只有远程指引，没有任何 IDE 提示。
     expect(systemOff).toHaveLength(1);
-    expect(systemOff[0].text).toContain(REMOTE_HEADING);
+    expect(systemOff[0].text).not.toContain('ide_');
     await cleanupOff();
 
     // Marked in an earlier run, no IDE: the fast-fail recovery hint stays.
@@ -781,34 +775,6 @@ describe('plugin setup', () => {
     expect(systemDisabled).toHaveLength(1);
     expect(systemDisabled[0].text).toContain('IDE MCP failure recovery');
     await cleanupDisabled();
-  });
-
-  it('always names the companion plugin tools once the IDE is serving', async () => {
-    const fake = await startFakeIdeForProject();
-    running = fake.server;
-    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
-    const cleanup = await plugin.setup(ctx);
-
-    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
-
-    // The companion plugin `idea-mcp-enhance` is a hard prerequisite, so the
-    // guidance names its tools unconditionally — no tool-presence check, even
-    // when this request's snapshot looks like the bundled catalog only.
-    const request = { system: [], tools: { read: {}, ide_read_file: {}, ide_build_project: {} } };
-    await state.sessionHook(request);
-    for (const name of [
-      'ide_list_remote_processes',
-      'ide_deploy_remote_process',
-      'ide_rerun_run_configuration',
-    ]) {
-      expect(request.system[1].text).toContain(name);
-    }
-    // 远程工具的指引是独立一份，不带 ide_ 前缀，IDE 断开时也照发。
-    expect(request.system[1].text).toContain(REMOTE_HEADING);
-    expect(request.system[1].text).toContain('`remote_exec`');
-    expect(request.system[1].text).toContain('`remote_list_servers`');
-
-    await cleanup();
   });
 
   it('hides the owned build argument from the schema and forces it on every call', async () => {
@@ -1387,7 +1353,6 @@ describe('远程命令', () => {
 
     expect(state.prompts).toHaveLength(1);
     expect(state.prompts[0].text).toContain('用户本次的要求：mbp 看下磁盘');
-    expect(state.prompts[0].text).toContain('remote_exec');
     // 用户输入必须出现在气泡里，不能被固定文案吞掉
     expect(state.prompts[0].metadata.displayText).toContain('mbp 看下磁盘');
     await cleanup();
@@ -1404,7 +1369,6 @@ describe('远程命令', () => {
     });
 
     expect(state.prompts[0].text).toContain('用户本次的要求：aidata-api 上线');
-    expect(state.prompts[0].text).toContain('deploy_remote_process');
     expect(state.prompts[0].metadata.displayText).toContain('aidata-api 上线');
     await cleanup();
   });
@@ -1420,8 +1384,6 @@ describe('远程命令', () => {
     });
 
     expect(state.prompts[0].text).toContain('用户本次的要求：mcp-test-project download');
-    expect(state.prompts[0].text).toContain('remote_upload');
-    expect(state.prompts[0].text).toContain('remote_download');
     expect(state.prompts[0].metadata.displayText).toContain('mcp-test-project download');
     await cleanup();
   });

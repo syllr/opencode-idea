@@ -11,7 +11,7 @@
 //
 // ## Why an argument can be owned at all
 //
-// `<prefix>build_project`(每个项目前缀各一份,例如 `ide_build_project`)是模型判断
+// `ide_build_project` 是模型判断
 // 刚写的代码能否编译的唯一手段,而它的结论依赖模型看不到的文件新鲜度:
 // an INCREMENTAL build compares against the IDE's own view of the files and
 // recompiles only what that view calls dirty. When the edit happened OUTSIDE the
@@ -49,10 +49,8 @@
 /**
  * Arguments this plugin sets on every call, and therefore must not advertise.
  *
- * 工具用**后缀**标识，不写完整名字：同一个 IDE 工具会以每个项目的前缀各出现一次
- * (`ide_build_project` / `modelserver_build_project` / ...)，写死 `idea_...` 会让
- * 多项目场景里只有 root 被命中，子项目那几份原样漏过去 —— 那正是这个模块要避免的
- * "schema 说一套、调用做另一套"。
+ * 工具用**后缀**标识，不写完整名字：IDE 工具都以 `ide_` 开头，写死 `idea_...` 会
+ * 永远命中不了 —— 那正是这个模块要避免的"schema 说一套、调用做另一套"。
  *
  * @type {ReadonlyArray<{ suffix: string, argument: string, value: unknown }>}
  */
@@ -192,7 +190,7 @@ export function removeSchemaProperty(schema, name) {
  * function of what it is given — which is also what makes it testable without a
  * runtime.
  *
- * 每个项目前缀各处理一遍：同一个 IDE 工具会在工具表里以多份出现，漏掉任何一份都会
+ * 每个前缀各处理一遍：同一个 IDE 工具会在工具表里出现多份，漏掉任何一份都会
  * 让那一份的 schema 继续广告这个旋钮。
  *
  * Safe to run when the IDE is absent: `get` returns undefined for a tool that is
