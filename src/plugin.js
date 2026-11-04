@@ -84,14 +84,14 @@ import {
 import {syncRemoteConfig} from './remote/persist.js';
 import {projectHostsPath} from './remote/hosts.js';
 import {
-    MANAGE_REMOTE_CONFIG_DISPLAY,
-    REMOTE_DEPLOYMENT_DISPLAY,
+    REMOTE_CONFIG_MANAGE_DISPLAY,
+    REMOTE_DEPLOY_DISPLAY,
     REMOTE_SHELL_DISPLAY,
-    REMOTE_SYNC_DISPLAY,
-    manageRemoteConfigPrompt,
-    remoteDeploymentPrompt,
+    REMOTE_FILES_DISPLAY,
+    remoteConfigManagePrompt,
+    remoteDeployPrompt,
     remoteShellPrompt,
-    remoteSyncPrompt,
+    remoteFilesPrompt,
 } from './remote/prompts.js';
 
 const DEFAULT_LAUNCH_COOLDOWN_MS = 120000;
@@ -357,7 +357,7 @@ export const HIDDEN_IDE_TOOL_SUFFIXES = [
     'get_project_env',
     // Credential channel: consumed by this plugin's remote_exec (see the note above).
     'get_ssh_servers',
-    // Deployment writer: consumed by /sync-remote-config and the fingerprint reconcile.
+    // Deployment writer: consumed by /remote-config-sync and the fingerprint reconcile.
     'sync_deployments',
     // Debugger
     'xdebug_control_session',
@@ -1444,7 +1444,7 @@ export default {
                 // 双向对齐：IDE 的 SSH 配置写回 hosts.json，hosts.json 的 deployment 推到 IDE。
                 // IDE 没开时整条命令直接失败 —— 两个方向都需要 IDE。
                 editor.add({
-                    name: 'sync-remote-config',
+                    name: 'remote-config-sync',
                     description: '双向对齐 IDE 与 hosts.json：SSH 配置写回，deployment 推到 IDE 的 Deployment 面板',
                     execute: async (input) => {
                         let servers;
@@ -1538,7 +1538,7 @@ export default {
                     },
                 });
                 editor.add({
-                    name: 'remote-deployment',
+                    name: 'remote-deploy',
                     description: '远程部署模式：引导 AI 用 deploy_remote_process 同步并启动，而不是手动拼 ssh / scp',
                     execute: async (input) => {
                         if (typeof ctx.session?.prompt !== 'function') return;
@@ -1547,11 +1547,11 @@ export default {
                             await ctx.session.prompt({
                                 ...input.prompt,
                                 sessionID: input.sessionID,
-                                text: remoteDeploymentPrompt(request),
+                                text: remoteDeployPrompt(request),
                                 metadata: {
                                     displayText: request.trim()
                                         ? `【远程部署同步】${request.trim()}`
-                                        : REMOTE_DEPLOYMENT_DISPLAY,
+                                        : REMOTE_DEPLOY_DISPLAY,
                                     comments: [],
                                 },
                                 delivery: input.delivery,
@@ -1563,7 +1563,7 @@ export default {
                 });
                 // 纯文件同步：和部署分开，避免把 remote_upload 当成部署。
                 editor.add({
-                    name: 'remote-sync',
+                    name: 'remote-files',
                     description: '远程文件同步模式：引导 AI 用 remote_upload / remote_download，不启动进程',
                     execute: async (input) => {
                         if (typeof ctx.session?.prompt !== 'function') return;
@@ -1572,11 +1572,11 @@ export default {
                             await ctx.session.prompt({
                                 ...input.prompt,
                                 sessionID: input.sessionID,
-                                text: remoteSyncPrompt(request),
+                                text: remoteFilesPrompt(request),
                                 metadata: {
                                     displayText: request.trim()
                                         ? `【远程文件同步】${request.trim()}`
-                                        : REMOTE_SYNC_DISPLAY,
+                                        : REMOTE_FILES_DISPLAY,
                                     comments: [],
                                 },
                                 delivery: input.delivery,
@@ -1588,7 +1588,7 @@ export default {
                 });
                 // 纯提示词命令：AI 只改 hosts.json，改完由指纹对账自动推到 IDE。
                 editor.add({
-                    name: 'manage-remote-config',
+                    name: 'remote-config-manage',
                     description: '远程配置模式：引导 AI 修改 hosts.json（server / deployment / exclude）',
                     execute: async (input) => {
                         if (typeof ctx.session?.prompt !== 'function') return;
@@ -1597,11 +1597,11 @@ export default {
                             await ctx.session.prompt({
                                 ...input.prompt,
                                 sessionID: input.sessionID,
-                                text: manageRemoteConfigPrompt(request),
+                                text: remoteConfigManagePrompt(request),
                                 metadata: {
                                     displayText: request.trim()
                                         ? `【远程配置】${request.trim()}`
-                                        : MANAGE_REMOTE_CONFIG_DISPLAY,
+                                        : REMOTE_CONFIG_MANAGE_DISPLAY,
                                     comments: [],
                                 },
                                 delivery: input.delivery,
@@ -1691,8 +1691,8 @@ export default {
                     appendIdeRecoveryGuidance(event?.system, {marked: Boolean(config), serving});
                 }
                 if (!injectGuidance) return;
-                // 一个文件、两段内容：IDE 段只在 IDE 工具真的在本次请求里时出现；
-                // 远端工具段与连接状态无关，始终出现。
+                // 两份模板：IDE 段只在 IDE 工具真的在本次请求里时注入；
+                // 通用段（原生工具 + 远端工具）与连接状态无关，始终出现。
                 appendGuidance(event?.system, serving);
             });
 

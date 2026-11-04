@@ -1,4 +1,5 @@
-// 两条"提示词命令"的正文：`/remote-shell` 与 `/remote-deployment`。
+// 三条"提示词命令"的正文：`/remote-shell`、`/remote-deploy` 与 `/remote-files`。
+// 另有一条 `/remote-config-manage`（改 hosts.json）。
 //
 // 它们不执行任何东西，只往会话里注入一段规则，让模型走本插件的 remote_* 工具，
 // 而不是自己拼 ssh / scp。和 `~/.config/opencode/commands/readonly.md` 是同一个思路，
@@ -26,11 +27,11 @@ export function remoteShellPrompt(request) {
 }
 
 /**
- * `/remote-deployment` 注入的提示词：部署 = 同步 + 启动，走 IDE 的 `deploy_remote_process`。
+ * `/remote-deploy` 注入的提示词：部署 = 同步 + 启动，走 IDE 的 `deploy_remote_process`。
  *
  * @param {string} request
  */
-export function remoteDeploymentPrompt(request) {
+export function remoteDeployPrompt(request) {
     const ask = request.trim();
     return [
         '【远程部署】本次部署走 IDE 的 deploy_remote_process，不要自己拼 ssh / scp / rsync。',
@@ -42,7 +43,7 @@ export function remoteDeploymentPrompt(request) {
         '   · deploy-only：点 Stop 只关闭日志跟随，不 kill 远端；已在运行会直接替换',
         '3. 返回 fullOutputPath（本机聚合日志：进度 + 远端 stdout/stderr）',
         '   · 应用自己的业务日志在配置的 Application log directory 里，用 remote_exec 查看',
-        '4. 如果用户只要文件同步、不启动进程，用 /remote-sync，不要用部署',
+        '4. 如果用户只要文件同步、不启动进程，用 /remote-files，不要用部署',
         '',
         ask
             ? `用户没有指定配置名时先问清楚，不要自己挑一条。\n\n用户本次的要求：${ask}`
@@ -51,11 +52,11 @@ export function remoteDeploymentPrompt(request) {
 }
 
 /**
- * `/remote-sync` 注入的提示词：只做文件上传 / 下载，不启动、不重启远端进程。
+ * `/remote-files` 注入的提示词：只做文件上传 / 下载，不启动、不重启远端进程。
  *
  * @param {string} request
  */
-export function remoteSyncPrompt(request) {
+export function remoteFilesPrompt(request) {
     const ask = request.trim();
     return [
         '【远程文件同步】本次只做文件上传 / 下载，不启动、不重启远端进程。',
@@ -64,7 +65,8 @@ export function remoteSyncPrompt(request) {
         '2. 上传 → remote_upload；下载 → remote_download',
         '3. mode 默认 overwrite（只覆盖 / 新增）；mirror 会删掉目标端多出来的文件，**不可逆**，只在明确要求镜像时用',
         '4. 传输同步返回 files / dirs / bytes，没有进度条、没有 handle 要轮询',
-        '5. 要部署（同步 + 启动）用 /remote-deployment，不要用这个命令',
+        '5. 要部署（同步 + 启动）用 /remote-deploy，不要用这个命令',
+        '6. 同步只走这两个工具；Remote Process 的 run 会启动进程，同步只是它的前置动作',
         '',
         ask
             ? `如果用户没有指定要同步的 deployment，先问清楚再调用，不要自己挑一条。\n\n用户本次的要求：${ask}`
@@ -74,18 +76,18 @@ export function remoteSyncPrompt(request) {
 
 /** 用户看到的简短提示（`metadata.displayText`）。 */
 export const REMOTE_SHELL_DISPLAY = '【远程执行】已切到 remote_exec；没指定服务器或命令时会先问你。';
-export const REMOTE_DEPLOYMENT_DISPLAY = '【远程部署】已切到 deploy_remote_process；没指定 Remote Process 配置时会先问你。';
-export const REMOTE_SYNC_DISPLAY = '【远程文件同步】已切到 remote_upload / remote_download；没指定 deployment 时会先问你。';
+export const REMOTE_DEPLOY_DISPLAY = '【远程部署】已切到 deploy_remote_process；没指定 Remote Process 配置时会先问你。';
+export const REMOTE_FILES_DISPLAY = '【远程文件同步】已切到 remote_upload / remote_download；没指定 deployment 时会先问你。';
 
 /**
- * `/manage-remote-config` 注入的提示词。
+ * `/remote-config-manage` 注入的提示词。
  *
  * 纯提示词命令：AI 只改项目里的 `hosts.json`，改完由插件的指纹对账自动推到 IDE，
  * 不需要它再调用任何工具。
  *
  * @param {string} request
  */
-export function manageRemoteConfigPrompt(request) {
+export function remoteConfigManagePrompt(request) {
     const ask = request.trim();
     return [
         '【远程配置】本次只改项目里的 `.opencode/remote-shell/hosts.json`，不要动 IDE 的设置、不要手写别的配置文件。',
@@ -121,4 +123,4 @@ export function manageRemoteConfigPrompt(request) {
 }
 
 /** 用户看到的简短提示（`metadata.displayText`）。 */
-export const MANAGE_REMOTE_CONFIG_DISPLAY = '【远程配置】直接改 hosts.json；改完自动对齐到 IDE。';
+export const REMOTE_CONFIG_MANAGE_DISPLAY = '【远程配置】直接改 hosts.json；改完自动对齐到 IDE。';

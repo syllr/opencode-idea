@@ -328,12 +328,14 @@ function transferTool(toolset, direction) {
             '名字来自 remote_list_servers。' +
             '只传「大小或修改时间变了」的文件，没变的根本不传，所以重复同步很便宜。' +
             '默认 overwrite：只覆盖 / 新增，目标端多出来的文件保留。' +
-            'mode=mirror：目标端多出来的文件会被删掉 —— 不可逆，只在明确要求镜像时用。'
+            'mode=mirror：目标端多出来的文件会被删掉 —— 不可逆，只在明确要求镜像时用。' +
+            '**只传文件，不启动任何进程** —— 要启动 / 部署远端进程走 IDE 的 run configuration。'
             : '把一条 deployment 的远程目录同步到它的本地目录 —— deployment 就是一条「本地目录 ↔ 远端目录」的映射，' +
             '名字来自 remote_list_servers。' +
             '只传「大小或修改时间变了」的文件，没变的根本不传，所以重复同步很便宜。' +
             '默认 overwrite：只覆盖 / 新增，目标端多出来的文件保留。' +
-            'mode=mirror：本地多出来的文件会被删掉 —— 不可逆，只在明确要求镜像时用。',
+            'mode=mirror：本地多出来的文件会被删掉 —— 不可逆，只在明确要求镜像时用。' +
+            '**只传文件，不启动任何进程。**',
         input: {
             type: 'object',
             properties: {

@@ -357,13 +357,13 @@ describe('plugin setup', () => {
     expect(state.mcp).toBe(0);
     expect(state.commands.has('open-in-ide')).toBe(true);
     expect(state.commands.has('delete-in-ide')).toBe(true);
-    expect(state.commands.has('sync-remote-config')).toBe(true);
-    expect(state.commands.has('manage-remote-config')).toBe(true);
+    expect(state.commands.has('remote-config-sync')).toBe(true);
+    expect(state.commands.has('remote-config-manage')).toBe(true);
     expect(state.commands.has('remote-shell')).toBe(true);
-    expect(state.commands.has('remote-deployment')).toBe(true);
-    expect(state.commands.has('remote-sync')).toBe(true);
+    expect(state.commands.has('remote-deploy')).toBe(true);
+    expect(state.commands.has('remote-files')).toBe(true);
     // The skills are static knowledge and go in as soon as the plugin loads.
-    expect([...state.skills.keys()].sort()).toEqual(['idea-standalone', 'run-job-manager']);
+    expect([...state.skills.keys()].sort()).toEqual(['idea-run-config-manager', 'idea-standalone', 'run-job-manager']);
 
     // Never marked, so no per-request prompt may mention IDEA. Nothing probes,
     // ever: the plugin only reacts to the request it sees.
@@ -1190,7 +1190,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
     const registered = [...state.skills.keys()].sort();
-    expect(registered).toEqual(['idea-standalone', 'run-job-manager']);
+    expect(registered).toEqual(['idea-run-config-manager', 'idea-standalone', 'run-job-manager']);
 
     await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     expect([...state.skills.keys()].sort()).toEqual(registered);
@@ -1354,11 +1354,11 @@ describe('远程命令', () => {
     await cleanup();
   });
 
-  it('remote-deployment 走 deploy_remote_process', async () => {
+  it('remote-deploy 走 deploy_remote_process', async () => {
     const { ctx, state } = fakeCtx({});
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('remote-deployment').execute({
+    await state.commands.get('remote-deploy').execute({
       sessionID: 's1',
       prompt: { text: 'aidata-api 上线' },
       delivery: 'steer',
@@ -1369,11 +1369,11 @@ describe('远程命令', () => {
     await cleanup();
   });
 
-  it('remote-sync 只做文件同步', async () => {
+  it('remote-files 只做文件同步', async () => {
     const { ctx, state } = fakeCtx({});
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('remote-sync').execute({
+    await state.commands.get('remote-files').execute({
       sessionID: 's1',
       prompt: { text: 'mcp-test-project download' },
       delivery: 'steer',
@@ -1384,11 +1384,11 @@ describe('远程命令', () => {
     await cleanup();
   });
 
-  it('sync-remote-config 在 IDE 不可用时报错并提示先 /open-in-ide', async () => {
+  it('remote-config-sync 在 IDE 不可用时报错并提示先 /open-in-ide', async () => {
     const { ctx, state } = fakeCtx({ ports: [1], mcpProbeTimeoutMs: 10 });
     const cleanup = await plugin.setup(ctx);
 
-    await state.commands.get('sync-remote-config').execute({
+    await state.commands.get('remote-config-sync').execute({
       sessionID: 's1',
       prompt: { text: '' },
       delivery: 'steer',

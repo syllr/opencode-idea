@@ -36,71 +36,92 @@ skill 一律不动。
 
 **配置、端口、热重载有变化时,本块要跟着改** —— 做法见 `idea-standalone` skill。
 
-## 二、standalone 下启动哪些应用 (必须经 IDEA run configuration)
+## 二、应用与环境
 
 <!-- 生成提示:begin -->
 
-一条一个 **run configuration**(服务化 / 常驻的那种)—— **应用只是它的一个属性**:同一个应用有多条配置 (前端 dev server +
-后端服务)就写多条,别合并成一条。 **括号里的项目是这条配置的归属**(当前项目写 `ide`)。 **条目开头的名字填真实 base 名**(不带任何 `@` 段)—— 名字文法与变体怎么选
-见 IDE 引导的「运行配置」。 **只登记 base,变体不另起一条**:写一条 base 就够,有哪些变体写进 `desc`。
+**按应用分章节，应用下按环境分小节。** 不要按 run configuration 平铺 —— 同一个应用在几个环境里跑，就有几个小节。
 
-**下面是两个示例**,照这个形状写 —— 一条把长的地方展开,一条全是短句 (生成产物时把示例删掉):
+- **应用名**用用户认得的（console / platform / gateway）。
+- **环境**就是配置名的 `@env` 段（`base@env` 的 env）：一台服务器、一台本地电脑都算一个环境（`py` / `cmaitest` / `mbp`）。
+  没有 `@env` 段的配置记作「默认」，照实写，不为好看另编环境名。
 
-- `console-web`(项目 ide)
-    - 应用:console
-    - before run:先起 platform-server:`/api` 代理到平台服务端地址
-    - run:ide_rerun_run_configuration
-    - 端口:5173,被占用时 Vite 自动顺延
-    - 热重载:有(Vite HMR) —— 改前端源码自动热更新,无需重启
-    - after run:无
-    - desc:前端控制台 (React + Vite dev server)
+**每个应用先写应用级事实**（所有环境共用，不要在小节里重复；没有就整条删掉）：
 
-- `platform-server`(项目 ide)
-    - 应用:platform
-    - before run:
-        - 确认 Tailscale 已连到 dev-mac
-        - 确认 apps/platform/.env 存在
-    - run:ide_rerun_run_configuration
-    - 端口:8080,被占用即启动失败
-    - 热重载:有(`node --watch` 自动重启);改了 .env 或依赖才需重启
-    - after run:无
-    - desc:平台服务端 (Node + Fastify);起不来时先查 Tailscale 与 .env
+- `是什么` —— 它是什么、什么技术栈、干什么。
+- `依赖` —— 起它之前必须先起谁（另一个应用 / 中间件 / VPN）。
+- `产物` —— **可选，只有部署型环境才写**。本地 run / debug 直接跑源码，不需要构建产物；只有「同步到远端再启动」的
+  环境才写清：在哪个目录跑什么构建命令、产物落在哪。run configuration 只负责同步 + 启动，**不替你编译**。
 
-`run configuration` **必须是 `ide_get_run_configurations` 里真实存在的 base 名**,不凭印象写;缺配置就
-**先问用户要不要建**,
-再用 `ide_create_run_configuration` 建 (建之前把"配置名、干什么、为什么值得留"摊开给用户看,同意才建);工具列表里没有它时,
-请用户自己在 IDE 里建。不要手搓启动命令,也不要自己写配置文件。 **应用** 写它服务的是哪个应用 (前端 / 后端 / 网关这类用户认得的名字) —— 同一个名字可以出现在多条配置里,这正是本块按配置
-而不按应用列的原因。 **before run** 写 **跑之前要先做的事**:**多数应用写 `无`**
-(这一项始终在,不留空)。只有确实"得先做点什么才能起"时才写,而且 **一条一步、按顺序排**(例如
-`1. 装依赖 2. 构建 3. 起前置服务`);
-这些事 **用文字写出来**(AI 照这段文本自己按序去做)。这类前置事项往往没被写成 run configuration,所以必须在这里说明,否则 AI
-直接 rerun 会拿到一个起不来的进程。 **哪条配置必须先起来**也要写明 (例如前端 dev server 的 proxy 指向本机后端)。
-与本项目无关的配置不写。 **run** 写走哪条工具:常驻 / 服务化的配置一律 `rerun`(在跑就重启、没在跑就启动), **不要**用
-`execute` —— 它是 Run 路径,对常驻进程会起出重复实例;细节见「跑应用只用 rerun」那条。 **端口** 写清"固定 / 默认 /
-被占用即启动失败";读不到就 **问用户**,不要编。 **服务化的应用一定有端口**,这一项是它区别于固定流程的地方。 **after run** 写
-**起来之后才知道的结果**:日志落在哪 / 什么时候才算 ready / 起来之后要接着做什么 (要跑迁移、要把地址交给谁); **多数写
-`无`**。 **热重载** 写**有没有、以及 AI 改代码后要不要重启**:有(Vite HMR / `node --watch` 这类)写清机制、改完自动生效;
-无(`go run .` 这类)写明 **必须重启**。判定要有依据(运行方式 → 有没有 HMR), **不确定就问用户,不猜**。
-**没有热重载的应用改完之后,不得在没有提示的情况下宣称"改动完成 / 可以去验证了"** —— 重启动作由用户做。
-**desc** 写剩下的坑与依赖关系 (依赖谁、跟别的应用什么先后),以及例外 (**只在联调 / 某个流程之前才需要起**之类)。
-**目录**这类配置里本来就有的字段不要单开一项 —— 会跟配置变旧而对不上。 **有 `@` 变体就在这里补一句**:有哪些变体 (如
-`console-web@dev`)。 **项名与顺序**与 `idea-run-config-manager` 那个块 **同名同序**(`before run` / `run` /
-`after run` / `desc`);
-本块多 `应用` / `端口` / `热重载`,少一项 `when` —— 服务化配置就是"改完代码要起它来测"的时候起,没有别的时机可写。两个块住在同一份
-`AGENTS.md` 里,名字与顺序对上了才看得出哪些是服务、哪些是固定流程。 **某项确实没有内容就写 `无`**(不省略、也不写 `-`)。
+**每个环境小节写四到六项**，标题是 `#### <env> —— \`<配置名>\``：
+
+- `run` —— 怎么跑（常驻一律 `ide_rerun_run_configuration`）。
+- `before run` —— **这个环境特有**、起之前要先做的事（先构建、先同步）；没有写 `无`。与应用级 `依赖` 不重复。
+- `端口` —— 固定 / 默认 / 被占用即启动失败；读不到就问用户。
+- `热重载` —— 有没有、什么机制、AI 改完代码要不要重启。
+- `after run` —— 日志落在哪、什么算就绪、起来之后还要做什么；多数写 `无`。
+- `差异` —— 可选：这个环境和默认环境的区别（换脚本、换 `.env`、少开某个中间件）。
+
+**配置名必须是 `ide_get_run_configurations` 里真实存在的那个**，照实写，不为好看改配置名。缺配置就**先问用户要不要建**，
+再用 `idea-run-config-manager` skill 建。
+
+**变体不再另写一条** —— 环境就是小节的维度，`@env` 的不同本来就已经分开写了。
+
+下面是示例（生成产物时删掉）：
+
+```markdown
+### console
+
+- **是什么**：前端控制台（React + Vite dev server）
+- **依赖**：先起 `platform`
+
+#### 默认 —— `console-dev`
+
+- run：`ide_rerun_run_configuration`
+- before run：无
+- 端口：5173，被占用时 Vite 自动顺延
+- 热重载：有（Vite HMR）；改前端源码自动更新，无需重启
+- after run：日志出现 `ready in` 即就绪
+
+#### py —— `win@console-dev@py`
+
+- run：`ide_rerun_run_configuration`
+- before run：无
+- 端口：5173
+- 热重载：有（Vite HMR）
+- after run：日志出现 `ready in` 即就绪
+- 差异：Windows 个人变体，跑 `dev:py`，读 `apps/console/.env.py`
+
+### platform
+
+- **是什么**：平台服务端（Node + Fastify），经 Tailscale 连部署机上的中间件
+- **依赖**：Tailscale 已连部署机
+
+#### 默认 —— `platform-dev`
+
+- run：`ide_rerun_run_configuration`
+- before run：确认 `apps/platform/.env` 存在
+- 端口：8080，被占用即启动失败
+- 热重载：有（`node --watch`）；改 apps/platform 与 domains 源码自动重启；改 `.env` 或依赖需 rerun
+- after run：日志出现 `Server listening at http://127.0.0.1:8080` 即就绪
+```
+
 <!-- 生成提示:end -->
 
-### 服务化配置
+`base@env`：base 是应用本体，env 是跑在哪台机器；换平台（Windows / Mac）也算换环境的一种。
 
-一条一个 run configuration;`应用` 是它的属性 —— 同一个应用可以有多条配置。括号里的项目是它的归属。
+### {应用}
 
-- {base 名} (项目 ide)
-    - 应用:{应用名}
-    - before run:{第 1 步 / 第 2 步 / 无}
-    - run:{ide_rerun_run_configuration}
-    - 端口:{固定 / 默认 / 被占用即启动失败}
-    - 热重载:{有(什么机制) / 无};AI 改代码后:{自动生效 / 必须重启}
-    - after run:{日志落在哪 / ready 判据 / 无}
-    - desc:{它是什么 + 有什么坑 + 有哪些 @ 变体}
+- **是什么**：{这是什么服务 / 什么技术栈}
+- **依赖**：{先起谁 / 无}
+- **产物**：{仅部署型环境才写：构建命令 → 产物路径；本地跑源码就整条删掉}
+
+#### {env} —— `{配置名}`
+
+- run：{ide_rerun_run_configuration}
+- before run：{这个环境特有的事 / 无}
+- 端口：{固定 / 默认 / 被占用即启动失败}
+- 热重载：{有（什么机制） / 无}；AI 改代码后：{自动生效 / 必须重启}
+- after run：{日志落在哪 / ready 判据 / 无}
 
 <!-- idea-standalone:end -->

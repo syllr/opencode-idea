@@ -50,39 +50,30 @@
 // 一个 OpenCode 会话只对应一个 JetBrains 项目（workspace root），MCP server 固定叫
 // `ide`。模板是静态 Markdown，工具名直接写 `ide_xxx`。
 //
-// 同一个文件里有两段：IDE 工具段用 `<!-- ide-only:start/end -->` 包起来，IDE 没连上时
-// 整段去掉；远端工具段（插件自带）与连接状态无关，始终保留。
+// 两个文件，各自就是一段完整的提示词：
+//   * `tool-guidance.template.md` —— 原生工具与远端工具，**始终注入**；
+//   * `ide-guidance.template.md`  —— IDE 工具，**只在本次请求真的带着 IDE 工具时**注入。
+//
+// 拆成两个文件而不是在一个文件里用标记切段：模板渲染出来就等于模型收到的内容，
+// 不必再解释一套只有渲染器认识的标记语法。
 
 import { readFileSync } from 'node:fs';
 
-/** The prompt document, next to this module so it ships with it. */
-const TEMPLATE_PATH = new URL('ide-guidance.template.md', import.meta.url);
-
-/** Read once: the file is fixed for the life of the process, and this runs per request. */
-const TEMPLATE = readFileSync(TEMPLATE_PATH, 'utf8');
-
-/** IDE 专属段落的标记；IDE 没连上时整段去掉，只留常驻的远端工具说明。 */
-const IDE_ONLY_START = '<!-- ide-only:start -->';
-const IDE_ONLY_END = '<!-- ide-only:end -->';
+/** 两份文档都在本模块旁边，跟着它一起发布。 */
+const TOOL_TEMPLATE = readFileSync(new URL('tool-guidance.template.md', import.meta.url), 'utf8');
+const IDE_TEMPLATE = readFileSync(new URL('ide-guidance.template.md', import.meta.url), 'utf8');
 
 /**
  * 渲染引导。
  *
- * 一个文件、两段内容：IDE 工具只在 IDE 连上时出现；远端工具与 IDE 状态无关，
- * 始终出现。标记本身不进入提示词。
+ * IDE 连上时是「通用段 + IDE 段」；没连上就只有通用段 —— 不推荐此刻调不到的
+ * `ide_*` 工具。
  *
  * @param {boolean} ideConnected
  * @returns {string}
  */
 export function buildGuidanceText(ideConnected) {
-  let text = TEMPLATE;
-  const start = text.indexOf(IDE_ONLY_START);
-  const end = text.indexOf(IDE_ONLY_END);
-  if (start !== -1 && end !== -1) {
-    text = ideConnected
-      ? text.slice(0, start) + text.slice(start + IDE_ONLY_START.length, end) + text.slice(end + IDE_ONLY_END.length)
-      : text.slice(0, start) + text.slice(end + IDE_ONLY_END.length);
-  }
+  const text = ideConnected ? `${TOOL_TEMPLATE.trimEnd()}\n\n${IDE_TEMPLATE.trimStart()}` : TOOL_TEMPLATE;
   return text.replace(/\n{3,}/g, '\n\n').trim() + '\n';
 }
 

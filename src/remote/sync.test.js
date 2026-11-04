@@ -11,7 +11,7 @@ import {afterAll, describe, expect, it} from 'vitest';
 
 import {downloadDirectory, uploadDirectory} from './sftp.js';
 
-const workDir = mkdtempSync(join(tmpdir(), 'remote-sync-'));
+const workDir = mkdtempSync(join(tmpdir(), 'remote-files-'));
 afterAll(() => rmSync(workDir, {recursive: true, force: true}));
 
 /**

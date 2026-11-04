@@ -1,4 +1,4 @@
-// `/sync-remote-config`：把 IDE 的 SSH 配置与项目 `hosts.json` 做双向对齐。
+// `/remote-config-sync`：把 IDE 的 SSH 配置与项目 `hosts.json` 做双向对齐。
 //
 // 方向：
 //

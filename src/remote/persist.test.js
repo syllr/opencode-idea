@@ -1,4 +1,4 @@
-// `/sync-remote-config` 的纯函数测试：只更新连接字段、保留 deployment / exclude 等已有字段。
+// `/remote-config-sync` 的纯函数测试：只更新连接字段、保留 deployment / exclude 等已有字段。
 
 import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';

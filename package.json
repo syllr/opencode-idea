@@ -9,6 +9,7 @@
     "src/index.js",
     "src/plugin.js",
     "src/template.js",
+    "src/tool-guidance.template.md",
     "src/ide-guidance.template.md",
     "src/ide-projects.js",
     "src/mcp/idea.js",
