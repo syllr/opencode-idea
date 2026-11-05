@@ -1,6 +1,6 @@
 ---
 name: idea-run-config-manager
-description: "管理本项目的 run configuration：新建 / 修改 / 删除 / 改名都直接读写项目 `.run/<名字>.run.xml`；写完用 `ide_inspect_run_configuration` 做静态检查，需要时再真跑一次。覆盖本地类型（shell / maven / gradle / npm / python / go / node）与远端 `RemoteProcess`（server + deployment）。凡是涉及 run configuration、Run/Debug 配置、`.run/*.run.xml`、部署到服务器 / MBP / 远端、发布、docker compose、容器化、Before launch、构建产物、一键把应用发上去、或给某条配置改 server / deployment / workingDirectory 时，都先用它。并把配置档案同步进项目根 `AGENTS.md` 的 `idea-run-config-manager` 标记块。要建 / 改 / 删 run configuration、要判断一条固定流程该不该固化成配置、要部署到远端、或要一份「这个项目有哪些配置、哪条能自己跑」的说明时使用。"
+description: "管理本项目的 run configuration：新建 / 修改 / 删除 / 改名都直接读写项目 `.run/<名字>.run.xml`；写完用 `ide_inspect_run_configuration` 做静态检查，需要时再真跑一次。覆盖本地类型（shell / maven / gradle / npm / python / go / node）与远端 `RemoteProcess`（server + deployment）。凡是涉及 run configuration、Run/Debug 配置、`.run/*.run.xml`、部署到服务器 / MBP / 远端、发布、docker compose、容器化、Before launch、构建产物、一键把应用发上去、或给某条配置改 server / deployment / workingDirectory 时，都先用它。并把配置档案同步进项目根 `AGENTS.md` 的 `idea-run-config-manager` 标记块 —— 本机配置和远端配置都登记在这唯一一块里。要建 / 改 / 删 run configuration、要判断一条固定流程该不该固化成配置、要部署到远端、要一份「这个项目有哪些配置、哪条能自己跑」的说明，或要定「本机跑哪几个应用」「启停走哪个工具」「哪些应用改了必须重启」这类项目级纪律时使用。"
 ---
 
 # idea-run-config-manager — 读写 `.run/` + 维护配置档案
@@ -8,10 +8,13 @@ description: "管理本项目的 run configuration：新建 / 修改 / 删除 / 
 一条配置就是项目根 `.run/<名字>.run.xml` 里的一个文件：新增、修改、改名、删除都是直接改文件。
 
 IDE 侧只有读和跑：`ide_get_run_configurations` 列出现有配置，`ide_inspect_run_configuration` 看一条的全貌，
-`ide_rerun_run_configuration` 跑（长驻进程只走这条），`ide_execute_run_configuration` 跑完等退出（只给一次性任务），
-`ide_deploy_remote_process` 按发布语义跑一条远端配置（同步 + 启动 + 打开 Run 标签页），
+`ide_rerun_run_configuration` 跑（job 等进程退出并回 `exitCode`；server 只等启动被**触发**就返回），
+`ide_deploy_remote_process` 按发布语义跑一条远端配置（同步 + 启动 + 打开 Run 标签页；同样只等启动被触发），
 `ide_list_running_configurations` 看在跑的会话。连 `ide_get_run_configurations` 都调不到，说明项目还没接入 IDE，
 让用户执行 `/open-in-ide`；在那之前不要手写文件假装做完。
+
+**选哪条工具由配置类型决定**：发布型的远端配置用 `ide_deploy_remote_process`（Stop 只关日志、不 kill 远端），
+其余一律 `ide_rerun_run_configuration`（Stop 会 kill）。项目侧只需要记这一条，不需要临场判断。
 
 本地配置和远端配置的区别只有一处：**远端多一步「同步 deployment」**，所以它的触发权限更严
 （见 `AGENTS.md` 的档案章节）。下面两条是完整路径。
@@ -25,7 +28,8 @@ IDE 侧只有读和跑：`ide_get_run_configurations` 列出现有配置，`ide_
    （本机配置不写 `@env`）。模板里没有的字段不要写：`type` 写错 IDE 会静默忽略整个文件，字段名写错会静默用默认值，都不报错。
 3. **静态检查**。`ide_inspect_run_configuration`：报 unknown 是文件没被 IDE 加载（`type` / 文件名不对，
    IDE 有 1–2 秒延迟）；`typeKnown: false` 是类型 id 写错；`warnings` 非空或 `options` 缺字段是字段名写错。
-4. **真跑**。跑完即退的用 `ide_execute_run_configuration`，长驻的用 `ide_rerun_run_configuration`。
+4. **真跑**。统一用 `ide_rerun_run_configuration`：job 会等到进程退出并回 `exitCode`；server 只等到
+   启动被**触发**（`triggered: true` + `started: null`），进程起没起要按工具描述里的退避节奏再查。
 5. **同步档案**。按 [assets/AGENTS.template.md](assets/AGENTS.template.md) 写进标记块，块外一字不动。
 
 ## 远端配置（`RemoteProcess`）：从零到能跑
@@ -52,14 +56,14 @@ IDE 侧只有读和跑：`ide_get_run_configurations` 列出现有配置，`ide_
    没授权就停在 inspect 通过。跑起来之后告诉用户“已在远端启动”，或者停掉，别留个进程没人知道。
 6. **同步档案**。同上，构建配置与部署配置各登记一条。
 
-## job 还是 server：`IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG`
+## build 还是 server：`IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG`
 
 `ide_rerun_run_configuration` 对两种配置的行为不同：
 
 | 配置 | 行为 | 怎么标 |
 | --- | --- | --- |
-| **job**（构建脚本、测试、迁移：跑完就退） | 等到进程退出，返回 `exitCode` 与完整输出 | **缺省就是 job**，不用标 |
-| **server**（dev server、长驻进程：永不退出） | 进程一起来就返回，日志路径给你自己读 | 在配置的 `<envs>` 里加 `IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG=true` |
+| **build**（构建脚本、测试、迁移：跑完就退；工具返回的 `runKind` 是 `job`） | 等到进程退出，返回 `exitCode` 与完整输出 | **缺省就是 build / job**，不用标 |
+| **server**（dev server、长驻进程：永不退出） | 只等启动被**触发**就返回（`triggered: true` + `started: null`），进程起没起自己退避查 | 在配置的 `<envs>` 里加 `IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG=true` |
 
 ```xml
 <envs>
@@ -115,16 +119,28 @@ IDE 侧只有读和跑：`ide_get_run_configurations` 列出现有配置，`ide_
 不等于建不了：用 `ide_inspect_run_configuration` 看一条**同类型的现成配置**的 `configurationXml`，照它的字段抄；
 连一条现成的都没有，就交给用户在 IDE 里建，你只负责把档案补上。
 
-## 档案块怎么生成
+## 档案：`AGENTS.md` 里唯一的一块
 
-模板在 [assets/AGENTS.template.md](assets/AGENTS.template.md)，整段写进项目根 `AGENTS.md` 的
-`<!-- idea-run-config-manager:begin -->` 与 `<!-- idea-run-config-manager:end -->` 之间，**块外一字不动**
-（尤其不要碰 `idea-standalone` 的块）。生成时：
+产物是项目根 `AGENTS.md` 中 `<!-- idea-run-config-manager:begin -->` 与 `:end -->` 之间的一段，骨架见
+[assets/AGENTS.template.md](assets/AGENTS.template.md)。**本机配置和远端配置都登记在这同一块里**，分「应用配置」与
+「非应用配置」两类，不再有第二块、也不按性质拆到别处。
 
-- `{...}` 是待替换的元变量，产物里不留；
-- 未涉及的条目与小节整块删掉，不留空标题；
-- `<!-- 生成提示:begin/end -->` 之间的内容是给生成过程的说明，**产物里整块删掉** —— 产物是给 AI 当规则读的，
-  里面不该留指令。
+- **新增**：文件里还没有标记块 → 在 `AGENTS.md` **末尾追加**，既有内容原样保留；文件不存在则创建。
+- **更新**：只替换 `begin` 与 `end` 之间的内容，**块外一字不动** —— 尤其不要碰其它 skill 的标记块（例如
+  `project-scaffold`）。
+- 改文件用原生 `edit` 替换那一段，**不要整文件重写**。
+- 写完复读核对：块内逐段与模板一致，块外与改动前逐字一致，报告产物清单。
+
+**归组**（细节在模板的生成提示里）：
+
+- **应用配置**：按应用分章节、应用下按环境分小节（配置名的 `@env` 段）；本机配置写「默认」。
+- **非应用配置**：构建、迁移、测试、一次性任务，平铺，不塞进任何应用。
+- 配置名必须是 `ide_get_run_configurations` 里真实存在的那个。
+
+**缺配置**：列表里没有某个应用 → **先问用户要不要建**（建配置是项目资产：把「名字、干什么、为什么值得留」摊开给
+用户看，同意才建），建完重新查一次再登记。不要手搓启动命令，也不要自己编一条。
+
+**临时配置不登记**：验证某条命令时临时建的、跑完就删的不进档案。
 
 ## 路径：本地 vs 服务端
 

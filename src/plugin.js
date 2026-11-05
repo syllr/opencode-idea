@@ -344,8 +344,8 @@ export const HIDDEN_IDE_TOOL_SUFFIXES = [
     // Process session follows remote logs and never terminates, so on that configuration type
     // it blocks forever and the caller cannot tell success from failure (measured: the remote
     // container was up while the tool call was still pending). `rerun_run_configuration` covers
-    // it: it returns as soon as the process is up, and for job-type configurations it waits for
-    // the exit code itself. It also has no "run a temporary configuration from a code location"
+    // it: it returns as soon as the start is TRIGGERED, and for job-type configurations it waits
+    // for the exit code itself. It also has no "run a temporary configuration from a code location"
     // (filePath + line) mode — that mode is not needed here, and keeping the tool around only
     // gives the model a way to hang.
     'execute_run_configuration',
@@ -1376,9 +1376,9 @@ export default {
         };
 
         // The shipped skills are static knowledge (`skills/<id>/SKILL.md`) that write
-        // a project's own rules into its `AGENTS.md`: `idea-standalone` fixes how
-        // resident apps are started, `idea-run-config-manager` fixes which repeated
-        // flows are solidified into configurations.
+        // a project's own rules into its `AGENTS.md`: `idea-run-config-manager` owns the
+        // run configurations themselves (creating / editing them) and the single archive
+        // block that records which ones exist and how they are run.
         //
         // They are registered **once, when the plugin loads** — with no condition on
         // the project config and none on the IDE's tool catalog. That is a deliberate

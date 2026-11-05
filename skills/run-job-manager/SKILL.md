@@ -11,7 +11,7 @@ AI 加载后逐步用 `shell` 跑，任一步失败即停。
 ## 判据
 
 同一件事会不会以同样的形态再发生？会（构建、生成、迁移、发布、批处理）→ 固化成 job；不会（查一条数据、看一次日志）→ 就地跑完。
-常驻应用（dev server）不是 job，启停归 `idea-standalone`。
+常驻应用（dev server）不是 job，启停归 `idea-run-config-manager`（配置与其档案都在那里）。
 
 ## 布局
 

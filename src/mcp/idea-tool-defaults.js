@@ -238,20 +238,6 @@ it to find out what the user is looking at right now.`,
 This is for showing the user a file — it returns no content. Use \`read\` to read one.`,
   },
   {
-    suffix: 'execute_run_configuration',
-    why: '原文很长；更关键的是没和我们的 rerun_run_configuration 划清界限 —— 误用会多起一个实例。',
-    description: `Runs a run configuration — by name, or a temporary one built from a code location (\`filePath\` +
-\`line\`) — and waits for it to finish.
-
-Its niche is one-off jobs: a task, a test, a script — something that ends by itself. For a
-long-running service use \`rerun_run_configuration\` instead: this tool always starts a **new**
-instance, so it does not restart what is already running, and \`waitForExit\` would block on a
-service that never exits.
-
-\`programArguments\`, \`workingDirectory\` and \`envs\` override the configured values for this run
-only — pass them only when the configuration reports \`supportsDynamicLaunchOverrides\`.`,
-  },
-  {
     suffix: 'get_run_configurations',
     why: '原文很长；且没说"看单个配置全貌"该用 inspect。',
     description: `Lists the project's run configurations — names plus launch details when the IDE knows them

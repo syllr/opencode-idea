@@ -4,122 +4,143 @@
 
 <!-- 生成提示:begin -->
 
-标记之外是项目自己在 `AGENTS.md` 里维护的内容，本 skill 一律不动；也只写这个项目 —— 不写全局配置目录，不另建规则文件。
+本块由 `idea-run-config-manager` skill 生成与维护，是**唯一**一块：本机配置和远端配置都写在这里。
+标记之外是项目自己在 `AGENTS.md` 里维护的内容，一律不动；只写这个项目 —— 不写全局配置目录，不另建规则文件。
+
+`{...}` 是待替换的元变量，产物里不留。未涉及的条目与小节整块删掉，不留空标题。
+`<!-- 生成提示:begin/end -->` 之间是给生成过程的说明，**产物里整块删掉** —— 产物是给 AI 当规则读的，里面不该留指令。
+
+**枚举以工具为准**：`ide_get_run_configurations` 直接调用、不传参数 —— 它给出 IDE 真正认的配置，包括存在 IDE
+自己存储里、翻文件看不到的那些。**项目里真正存在、该登记的都要有**；块里有、项目里已经没有的整条删掉。
+
+**临时配置不登记**：为了验证某条命令临时建的、跑完就删的配置不进档案；只登记「以后还会再用」的。
 
 <!-- 生成提示:end -->
-
-本项目里 **除服务化应用之外** 的 run configuration：每个配置 **是什么、怎么跑、什么时候跑**；服务化（长驻应用）的配置
-登记在 `idea-standalone` 块里，不在这里。 **配置增删改之后，本块要跟着加 / 删 / 改条目** —— 做法见
-`idea-run-config-manager` skill；块里和项目对不上，比没有块更糟。
 
 **谁能起它，只有三种** —— 读这个块的人照它决定动不动手：
 
 - **用户手动触发**：用户自己在 IDE 里跑，AI **完全不碰**。这类只登记在末尾「用户手动触发」一节，**只有名字**。
 - **用户授权触发**：用户开口之后 AI 才跑（也可以在这个会话里一次性授权）；**AI 不自己挑时机**。
-- **AI 自己触发**：AI 判断到场景就自己跑；这类条目的 `when` **必须把场景写具体**。
+- **AI 自己触发**：AI 判断到场景就自己跑；这类条目的 `when` **必须把场景写具体**，不写“需要时”“合适时”。
 
-**先分清本地和远端**：
-
-- **远端配置** = `type="RemoteProcess"`。一次 run = 同步 deployment（overwrite）+ 在远端启动进程，误触发的代价是线上被替换。
-- **本地配置** = 其余全部（shell / maven / gradle / npm / node / python / go …），只动这台机器。
-
-**远程配置一律只能是「用户授权触发」** —— AI 不得自己挑时机，包括“顺手验证一下”“跑一次看看”；
-例外只有一条：用户在那次会话里明确说了“这次可以自己跑”。新建完要验证，先问用户；没授权就停在 `inspect` 通过。
-
-**本地配置**可以是「AI 自己触发」，但**有副作用的**（发版、推迁移、动线上数据）同样按「用户授权触发」处理。
-
-## run configuration 一览
+## 运行纪律
 
 <!-- 生成提示:begin -->
 
-**先过滤**：服务化 / 常驻应用的配置 **一律不进本块**（它们归 `idea-standalone`，端口与热重载写在那边）。有
-`idea-standalone` 的标记块时，再把它登记过的名字一并排除；没有那个块也照样按性质过滤。
+只保留本项目**实际成立**的条目。项目里若还有手搓命令、容器编排等不经过 run configuration 的入口，如实改写
+（例如「除 X 外，其余应用的启动入口是 run configuration」），不要照抄成一句绝对的话。
 
-**按应用分章节，应用下按环境分小节** —— 不要按配置平铺。不属于任何单个应用的固定流程（全仓 lint、仓库级生成）放
-`### 通用`，它下面同样按 `本机` / 远端环境分小节。
+<!-- 生成提示:end -->
 
-- **应用名**用用户认得的（console / platform / gateway）。
-- **环境**就是配置名里的 `@env` 段，**只对远端配置有意义**：值是 `hosts.json` 里的 server 名（`mbp` / `handwrite`）。
-- **本机配置没有环境段**，统一归到 `本机` —— 例如 `本机 —— \`console-web\``；不分环境的固定流程也写 `本机`，
-  例如 `本机 —— \`db-migrate\``。
+本项目的启动入口是 IDEA run configuration：**本机进程和远端进程都一样**，不用 `pnpm dev` / `go run` / `docker run`
+这类裸命令起。
 
-**枚举以工具为准**：`ide_get_run_configurations` 直接调用、不传参数，它给出 IDE 真正认的配置（含存在 IDE 自己存储里、
-不在项目目录的那些 —— 翻文件看不到）。**项目里真正存在的、过滤后剩下的都要有。** 条目里的配置名必须是真实存在的
-名字，不凭印象写；块里有、项目里已经没有的 **整个条目删掉**。
+- **入口唯一**：每个应用的启动入口就是 IDE 的 run configuration（Run / Debug），不是手搓命令行。
+- **形态不限**：配置可以起本机进程、容器（Compose / K8s）、或同步到远端再启动 —— 怎么起是配置的事。哪些应用不在本机跑、
+  或本机起不来（需要 GPU、直连远端数据库、只能部署后验证），写在对应应用条目里。
+- **只启动其中一部分是常态**：不要求所有应用都起来，用户可能只开一两个。
+- **跑应用只用 `ide_rerun_run_configuration`**：在跑就重启、没在跑就启动 —— 不必分辨是启动还是重启。它认得 server 语义：
+  只等启动被**触发**就返回，进程起没起按 2s / 4s / 8s / 16s 退避查（`running: true` 只代表 Run 会话存在，不代表服务可用）。
+- **不要绕过 IDEA**：更不要 `kill` / `pkill` 业务进程 —— 外部杀掉的进程 IDE 并不知道（Run 窗口仍显示运行中，下次启动撞端口）。
+- **重启不必先问**：改完代码要重启哪个应用，直接 rerun —— 这条链是无人化的，先征求同意只会把重启卡住。
+- **远程配置一律「用户授权触发」**：`RemoteProcess` 一次 run 就替换线上；新建完要验证也先问用户，没授权就停在 `inspect` 通过。
+- **工具列表里没有 `ide_rerun_run_configuration`**（没装配套插件）：交回用户，请他在 IDEA 里手动跑，AI 不动手。
 
-**每个小节写这几项**，标题是 `#### <env> —— \`<配置名>\``（本机配置的 env 写 `本机`）：
+## 应用配置
 
-- `类型` —— `本地` 或 `远端（RemoteProcess）`。远端的一律补一句「一次 run = 同步 deployment + 远端启动」，
-  让人一眼知道这条会不会动线上。
-- `when` —— 只写两种，先把是哪一种写明（见上）。**必须把场景写具体**，不写“需要时”“合适时”。
-- `before run` —— 跑之前要先做的事（先装依赖 / 先构建 / 先同步 / 先起某个服务），**一条一步、按顺序排**；
-  多数没有 —— 写 `无`（这一项始终在）。部署型配置这里必须写上 **Before launch 跑的那条配置名**，例如
-  `由 Before launch 跑 \`platform-build@mbp\`（产物落到 docs/deployment/mbp/app）` —— 只写“先构建”等于没说。
-- `run` —— 走哪条工具：跑完即退的用 `ide_execute_run_configuration`；长驻进程用 `ide_rerun_run_configuration`。
-  **不要**用 `execute` 跑长驻进程 —— 它会给常驻进程起出重复实例，`waitForExit` 也会一直挂着。
-- `after run` —— 跑完之后的结果：产物落在哪、接下来要不要做什么；**没有就写 `无`**。
-- `说明` —— 它是什么、干什么；坑（要先备份 / 只对某个环境生效）；依赖关系。
+<!-- 生成提示:begin -->
 
-**本地配置不需要写产物** —— 本地 run / debug 直接跑源码；只有部署型（Remote Process）才在 `before run` 里写明
-构建来源。**构建本身是一条独立配置**（`{应用}-build@{env}`），它也要按本地配置登记一条，`when` 写
-“由 `{应用}@{env}` 的 Before launch 触发，不单独跑”。
+**按应用分章节，应用下按环境分小节**，不要按配置平铺。应用名用用户认得的（console / platform / gateway）。
+不承载某个应用启动的固定流程（构建、迁移、测试）放后面的「非应用配置」，不要硬塞进某个应用。
 
-**部署链上的配置名一律带 `@env`**：`platform-build@mbp` 服务 `platform@mbp`，两者 env 相同；档案里看到
-一条不带 env 的 `build` 且被 Remote Process 挂着，先改名字再登记。
-
-**环境就是区分维度的方式，不要再写“变体”** —— `@env` 不同本来就已经分成小节了。
-**目录、端口这类配置里本来就有的字段不抄进来** —— 会跟配置变旧而对不上。
-**`说明` 与 `before run` 是本块的主要价值**：下次办同类事情先在这里搜关键词，找得到就直接用，**别再建一个重复的**。
-
-**与 `idea-standalone` 块同名同序**：配置级的那几项（`before run` / `run` / `after run`）两边写成一样的名字与顺序；
-本块多 `when`，那边多 `是什么` / `产物` / `依赖` / `端口` / `热重载`。两个块住在同一份 `AGENTS.md` 里，
-名字对上了才看得出哪些是服务、哪些是固定流程。
+- **环境**就是配置名的 `@env` 段：一台服务器算一个环境（`mbp` / `handwrite`）；本机配置没有 `@env`，统一写 `默认`。
+  换平台（Windows / Mac）也算换环境，照实写，不为好看另编名字。
+- **应用级事实**（所有环境共用，不要在小节里重复；没有就整条删掉）：`是什么` / `依赖` / `产物`。
+  `产物` 只在「同步到远端再启动」时写：在哪个目录跑什么构建命令、产物落在哪 —— run configuration 只负责同步 + 启动，
+  **不替你编译**。
+- **配置名必须是 `ide_get_run_configurations` 里真实存在的那个**，不为好看改名字。缺配置就**先问用户要不要建**，
+  同意后按本 skill 的流程建，建完重新查一次再登记。
+- **变体不另写一条**：`@env` 不同本来就已经分小节了。
+- **`run` 只按配置类型选**：发布型的远端配置（`RemoteProcess`，整条部署链的最后一环）写
+  `ide_deploy_remote_process`；其余（本机调试、构建、迁移）一律 `ide_rerun_run_configuration`。
+  不需要按场景临场判断。- **`端口` / `热重载` 只对 server 有意义**，`kind: build` 的条目整行删掉。
+- **`说明` 与 `before run` 是本块的主要价值**：下次办同类事情先在这里搜关键词，找得到就直接用，别再建一个重复的。
 
 示例（生成产物时删掉）：
 
 ```markdown
-### platform
+### console
 
-#### 本机 —— `db-migrate`
+- **是什么**：前端控制台（React + Vite dev server）
+- **依赖**：先起 `platform`
 
-- 类型：本地
-- when：用户授权触发 —— 改了 `packages/db` 的 schema 后要重新生成客户端并推迁移
-- before run：无
-- run：`ide_execute_run_configuration`
-- after run：数据库结构更新，生成的客户端代码落在 `packages/db`
-- 说明：先 `pnpm -C packages/db generate` 再 `migrate:deploy`；动远端数据，不由 AI 自行触发
-
-#### mbp —— `platform@mbp`
-
-- 类型：远端（`RemoteProcess`）—— 一次 run = 同步 deployment + 远端启动
-- when：用户授权触发 —— 要把 platform 发到 mbp 时
-- before run：由 Before launch 跑 `platform-build@mbp`（产物落到 `docs/deployment/mbp/app`）
-- run：`ide_deploy_remote_process`
-- after run：远端进程起来；Stop 只关日志，不 kill 远端
-- 说明：只做同步 + 启动；构建在 Before launch 里，不写进 command
-
-#### mbp —— `platform-build@mbp`
+#### 默认 —— `console-dev`
 
 - 类型：本地
-- when：由 `platform@mbp` 的 Before launch 触发，不单独跑
+- kind：server
+- when：AI 自己触发 —— 改完前端代码要本地看效果时
 - before run：无
-- run：`ide_execute_run_configuration`（仅排查构建时单独跑）
-- after run：产物落到 `docs/deployment/mbp/app`，接着被 deploy 同步上去
-- 说明：Node.js 配置，脚本只收 argv 参数、不读环境变量，一份代码在所有 OS 上跑
+- run：`ide_rerun_run_configuration`
+- 端口：5173，被占用时 Vite 自动顺延
+- 热重载：有（Vite HMR）；改前端源码自动更新，无需重启
+- after run：日志出现 `ready in` 即就绪
+- 说明：起它之前 `platform` 已经在跑，否则接口全 502
 ```
 
 <!-- 生成提示:end -->
 
 ### {应用}
 
+- **是什么**：{这是什么服务 / 什么技术栈}
+- **依赖**：{先起谁 / 无}
+- **产物**：{仅部署型环境才写：构建命令 → 产物路径；本地跑源码就整条删掉}
+
 #### {env} —— `{配置名}`
 
 - 类型：{本地 / 远端（`RemoteProcess`）—— 一次 run = 同步 deployment + 远端启动}
+- kind：{build / server}（`build` = 跑完就退，工具返回的 `runKind` 是 `job`；`server` = 常驻。远端的 `RemoteProcess` 恒为 `server`）
 - when：{用户授权触发 / AI 自己触发} —— {什么场景}
 - before run：{第 1 步 / 第 2 步 / 无}
-- run：{ide_execute_run_configuration / ide_rerun_run_configuration / ide_deploy_remote_process}
-- after run：{产物落在哪 / 接下来要做什么 / 无}
+- run：{ide_rerun_run_configuration / ide_deploy_remote_process}
+- 端口：{固定 / 默认 / 被占用即启动失败}（只有 server 写）
+- 热重载：{有（什么机制）/ 无}；AI 改代码后：{自动生效 / 必须重启}（只有 server 写）
+- after run：{产物落在哪 / 日志落在哪、什么算就绪 / 无}
 - 说明：{它是什么 + 有什么坑 + 依赖谁}
+
+## 非应用配置
+
+<!-- 生成提示:begin -->
+
+构建、迁移、测试、一次性任务 —— **不承载某个应用的启动**。平铺，`####` 直接写配置名；超过五条再按用途分
+`###` 小节，不要一上来就分组，也不要把它们塞回某个应用底下。
+
+`端口` / `热重载` 一般不适用，整行删掉；`kind` 仍然要写 —— 少数常驻的（本地 mock 服务、本地中间件）是 `server`。
+
+示例（生成产物时删掉）：
+
+```markdown
+#### `aidata-build@mbp`
+
+- 类型：本地
+- kind：build
+- when：由 `aidata@mbp` 的 Before launch 触发，不单独跑
+- before run：无
+- run：`ide_rerun_run_configuration`（仅排查构建时单独跑）
+- after run：产物落到 `docs/deployment/mbp/app`，接着被 deploy 同步上去
+- 说明：Node.js 配置，脚本只收 argv 参数、不读环境变量，一份代码在所有 OS 上跑
+```
+
+<!-- 生成提示:end -->
+
+#### `{配置名}`
+
+- 类型：{本地 / 远端（`RemoteProcess`）}
+- kind：{build / server}
+- when：{用户授权触发 / AI 自己触发 / 由 `{父配置}` 的 Before launch 触发，不单独跑}
+- before run：{… / 无}
+- run：{ide_rerun_run_configuration / ide_deploy_remote_process}
+- after run：{产物落在哪 / 无}
+- 说明：{它是什么 + 有什么坑}
 
 ## 用户手动触发（线下，AI 不跑）
 
