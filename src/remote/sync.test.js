@@ -1,7 +1,7 @@
 // 目录同步的沙箱测试：真实的 uploadDirectory / downloadDirectory，配一个内存 SFTP。
 //
 // 这里盯的是 **mapping 语义**：本地目录内容落到远程目录、嵌套层级、overwrite 不删多余、
-// mirror 删多余。传输出错（认证、断线）不在这里测。
+// mirror 删多余；以及传输行为本身（并发度分档、单文件重试）。认证、断线不在这里测。
 
 import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -241,6 +241,82 @@ describe('downloadDirectory', () => {
         await downloadDirectory(sftp, '/srv/app', local, 'mirror');
         expect(readFileSync(join(local, 'a.txt'), 'utf8')).toBe('new');
         expect(() => readFileSync(join(local, 'stale.txt'), 'utf8')).toThrow();
+    });
+});
+
+/**
+ * 给内存 SFTP 的 fastPut / fastGet 加人工延迟，并记录同时在途的最大任务数。
+ *
+ * 并发是这套实现的核心收益，但要断言的是「确实同时在传」，不是具体用了几个 worker。
+ *
+ * @param {ReturnType<typeof memorySftp>} sftp
+ * @param {{delay?: number, failOnce?: (remotePath: string) => boolean}} [options]
+ */
+function trackedSftp(sftp, {delay = 15, failOnce} = {}) {
+    const state = {maxInFlight: 0};
+    let inFlight = 0;
+    const failed = new Set();
+
+    const wrap = (name) => (...args) => {
+        const callback = args[args.length - 1];
+        const remotePath = args[1];
+        inFlight += 1;
+        state.maxInFlight = Math.max(state.maxInFlight, inFlight);
+        setTimeout(() => {
+            inFlight -= 1;
+            if (name === 'fastPut' && failOnce?.(remotePath) && !failed.has(remotePath)) {
+                failed.add(remotePath);
+                callback(new Error('模拟的单次失败'));
+                return;
+            }
+            sftp[name](...args);
+        }, delay);
+    };
+
+    return {
+        state,
+        ...sftp,
+        fastPut: wrap('fastPut'),
+        fastGet: wrap('fastGet'),
+    };
+}
+
+describe('并发传输', () => {
+    it('多个小文件同时在传，不是逐个排队', async () => {
+        const files = {};
+        for (let index = 0; index < 8; index += 1) files[`f${index}.txt`] = `F${index}`;
+        const local = localTree(files);
+        const sftp = trackedSftp(memorySftp());
+
+        await uploadDirectory(sftp, local, '/srv/app', 'overwrite');
+
+        expect(sftp.state.maxInFlight).toBeGreaterThan(1);
+        expect(Object.keys(snapshot(sftp, '/srv/app'))).toHaveLength(8);
+    });
+
+    it('大文件按低并发档跑，避免同时开太多缓冲', async () => {
+        const content = 'x'.repeat(2 * 1024 * 1024);
+        const local = localTree(Object.fromEntries(
+            Array.from({length: 8}, (_, index) => [`big${index}.bin`, content]),
+        ));
+        const sftp = trackedSftp(memorySftp());
+
+        await uploadDirectory(sftp, local, '/srv/app', 'overwrite');
+
+        expect(sftp.state.maxInFlight).toBeLessThanOrEqual(4);
+        expect(sftp.state.maxInFlight).toBeGreaterThan(1);
+    });
+
+    it('单个文件失败会自动重试，不连累整次同步', async () => {
+        const local = localTree({'a.txt': 'A', 'b.txt': 'B'});
+        const sftp = trackedSftp(memorySftp(), {
+            failOnce: (remotePath) => remotePath.endsWith('/a.txt'),
+        });
+
+        const stats = await uploadDirectory(sftp, local, '/srv/app', 'overwrite');
+
+        expect(snapshot(sftp, '/srv/app')['a.txt']).toBe('A');
+        expect(stats.files).toBe(2);
     });
 });
 

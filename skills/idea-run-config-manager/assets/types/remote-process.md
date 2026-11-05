@@ -5,13 +5,13 @@ run configuration —— 本地的 shell / maven / gradle 都不该用它。
 
 > **它一定会启动进程。** 只想把文件同步到远端时，用 `remote_upload` / `remote_download`。
 >
-> **它不负责构建。** 需要编译 / 打包的应用，先在本地把产物做出来，它只把产物同步上去再启动。
+> **它不负责构建。** 需要编译 / 打包的应用，构建挂在 **Before launch** 上（见下），它只把产物同步上去再启动。
 
 两种 `kind`，字段要求不同：
 
 | `kind` | 干什么 | 启动前会做什么 |
 | --- | --- | --- |
-| `process` | 在宿主机上起一个进程 | 先差量同步 `deployment`（overwrite），再 `cd workingDirectory && nohup <command>` |
+| `process` | 在宿主机上起一个进程 | 先把 `deployment` 同步上去（overwrite），再 `cd workingDirectory && nohup <command>` |
 | `docker` | `docker run` 一个容器 | 不同步文件；用 `container` 名判断容器是否已经在跑 |
 
 `kind` 留空时按命令推断：`docker run …` → `docker`，其余 → `process`。**建议显式写**，不要靠猜。
@@ -66,31 +66,56 @@ run configuration —— 本地的 shell / maven / gradle 都不该用它。
 
 `docker` 不需要 `deployment`，`workingDirectory` 也不参与启动。
 
-## 已废弃字段：旧文件里见过，现在**没有**
+## Before launch：构建 + 铺产物
 
-早期版本的插件支持过 `compose`，现在代码里已经删干净。照抄旧文件会写出**被静默丢弃**的配置：
+`process` 型配置几乎都有产物：先在本地构建，把结果铺到 deployment 的 `localPath`，再由 run 同步上去。
+这一步挂在 `<method v="2">` 里，**不写进 `command`**：
 
-| 旧字段 | 现在 |
-| --- | --- |
-| `logSource` | 已删除，没有任何替代 |
-| `service` / `composeFile` | 已删除，compose 不再支持 |
-| `kind="compose"` | 不支持，只认 `process` / `docker` |
-| `deployOnly` | 运行时一次性标记，**不持久化**，写进 XML 只会误导读者 |
+```xml
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="aidata@mbp" type="RemoteProcess" factoryName="RemoteProcess">
+    <option name="server" value="mbp" />
+    <option name="deployment" value="aidata-app" />
+    <option name="kind" value="process" />
+    <option name="command" value="docker compose up -d --force-recreate platform web" />
+    <option name="workingDirectory" value="/Users/yutao/Desktop/data/aidata-platform/app" />
+    <method v="2">
+      <option name="RunConfigurationTask" enabled="true"
+              run_configuration_name="aidata-build@mbp"
+              run_configuration_type="NodeJSConfigurationType" />
+    </method>
+  </configuration>
+</component>
+```
 
-`idea-mcp-testproject/.run/` 下的三个文件都是旧版产物，只能参考**骨架**（`component` / `configuration` /
-`method`），字段必须按上表裁剪。
+- `run_configuration_name` 必须与那条 `.run/<名字>.run.xml` 的 `name` **逐字一致**，且**带 `@env`**；
+  一条部署链上的 build / deploy 用同一个 env。
+- `run_configuration_type` 是**被挂那条配置自己的类型 id**：node 构建填 `NodeJSConfigurationType`。
+- 构建配置的产物要落到**该 deployment 的 `localPath`** —— 那才是同步的源目录；落到别处等于没构建。
+- 挂上没挂上，看 `ide_inspect_run_configuration` 的 `beforeRunTasks` 数量。
+- 多个构建步骤就写多个 `RunConfigurationTask`，**按执行顺序排列**（IDE 从上到下跑）。
 
-## 路径：不要用 IDE 宏
+谁来构建（node 脚本的三条硬规矩）见 [node.md](node.md#构建脚本before-launch-用)。
 
-`workingDirectory` / `logDir` / `command` 都是**远端路径**，会原样传给远端 shell。
+## 常见错误（真实踩过）
 
-`$PROJECT_DIR$` / `$USER_HOME$` 这类 IDE 宏**不会被展开**（只有 deployment 的 `localPath` 和 SSH 的
-`keyPath` 会展开）。`$USER_HOME$` 在远端语境里没有任何意义 —— 写它等于写了一个字面目录名。
+| 写错的 | 为什么错 | 正确写法 |
+| --- | --- | --- |
+| `workingDirectory="$USER_HOME$/Desktop/data/..."` | 插件**不展开宏**，会 `cd` 到一个名字就叫 `$USER_HOME$` 的目录 | 写远端绝对路径 `/Users/yutao/Desktop/data/...` |
+| 为了“少写绝对路径”把远端路径改成 `$PROJECT_DIR$/…` | `$PROJECT_DIR$` 是**本机**项目根，远端没有这个目录 | 远端路径本来就该是绝对的 |
+| 把构建命令塞进 `command` | 构建在远端跑，而源码根本没上传 | 构建挂 Before launch（见上） |
+| Before launch 里挂的配置名少了 `@env` | 同名的可能有多份，IDE 找不到或挂到别的环境 | `{应用}-build@{env}`，env 与 deploy 一致 |
 
-- `workingDirectory` 写远端绝对路径（通常 = deployment 的 `deployPath`）
-- `logDir` 可以相对 `workingDirectory`（`logs` → `<workingDirectory>/logs`），也可以写绝对路径
+## 路径
+
+`workingDirectory` / `logDir` / `command` 都是**服务端路径**，写绝对路径（`$PROJECT_DIR$` / `$USER_HOME$`
+这类 IDE 宏不会被展开）。`logDir` 可以相对 `workingDirectory`（`logs` → `<workingDirectory>/logs`），
+也可以写绝对路径。
+
+本地路径与服务端路径的完整划分见 [../../SKILL.md](../../SKILL.md) 的「路径：本地 vs 服务端」一节。
 
 ## 写完之后
 
-按 [../../SKILL.md](../../SKILL.md) 的流程：先 `inspect` 看 `canRun` / `warnings`，再真跑一次。
-Remote Process 的 run 会**同步 deployment 并在远端启动**，属于有副作用的操作 —— 触发条件见 SKILL.md 的红线。
+按 [../../SKILL.md](../../SKILL.md) 的流程：先 `inspect` 看 `canRun` / `warnings` 与 `beforeRunTasks`。
+**真跑要先拿到用户授权** —— 一次 run 就同步 deployment 并在远端启动，属于有副作用的操作；
+授权规则写在项目 `AGENTS.md` 的档案章节里。

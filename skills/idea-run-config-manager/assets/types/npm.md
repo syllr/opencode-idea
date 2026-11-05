@@ -52,6 +52,9 @@
 </method>
 ```
 
+这是 **npm 脚本之间**的顺序。**部署链的「先构建再部署」不走这里** —— 那是 Remote Process 的 Before launch
+挂一条独立的构建配置（`RunConfigurationTask`），写法见 [remote-process.md](remote-process.md#before-launch构建--铺产物)。
+
 ## 坑
 
 - **`<package-manager>` 决定实际用哪个包管理器跑**:项目用 pnpm 而这里写 `npm`,脚本里 `pnpm xxx` 的调用会跟外层打架。

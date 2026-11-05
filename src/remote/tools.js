@@ -164,6 +164,7 @@ export function createRemoteToolset({projectPath, fetchIdeServers, globalHostsPa
 
         // 项目级 localPath 是相对的，传给文件系统前按项目根解析。
         const localPath = resolveLocalPath(projectPath, target.localPath);
+        const startedAt = Date.now();
         const outcome = await withServer(target.server.name, async (server) => {
             const conn = await connect(server);
             try {
@@ -176,8 +177,9 @@ export function createRemoteToolset({projectPath, fetchIdeServers, globalHostsPa
                 conn.end();
             }
         });
+        const elapsedMs = Date.now() - startedAt;
         if (outcome.kind !== 'ok') return outcome;
-        return {kind: 'ok', deployment: target, stats: outcome.value, retried: outcome.retried};
+        return {kind: 'ok', deployment: target, stats: outcome.value, elapsedMs, retried: outcome.retried};
     };
 
     return {
@@ -374,10 +376,11 @@ function transferTool(toolset, direction) {
                     const verb = isUpload ? '上传' : '下载';
                     const stats = outcome.stats;
                     const unchanged = stats.unchanged ?? 0;
+                    const elapsed = typeof outcome.elapsedMs === 'number' ? `, ${(outcome.elapsedMs / 1000).toFixed(1)}s` : '';
                     const head = `[${outcome.deployment.name}] ${verb}完成 (${mode})`;
                     const lines = [
                         `${stats.files} files${unchanged > 0 ? ` (${unchanged} unchanged)` : ''}, ` +
-                        `${stats.dirs} dirs, ${formatBytes(stats.bytes)}`,
+                        `${stats.dirs} dirs, ${formatBytes(stats.bytes)}${elapsed}`,
                     ];
                     if (stats.skipped > 0) lines.push(`skipped (symlink/other): ${stats.skipped}`);
                     if (stats.deleted > 0) lines.push(`deleted: ${stats.deleted}`);
