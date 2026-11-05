@@ -1,6 +1,6 @@
 ---
 name: idea-run-config-manager
-description: "管理本项目的 run configuration：新建 / 修改 / 删除 / 改名都直接读写项目 `.run/<名字>.run.xml`；写完用 `ide_inspect_run_configuration` 做静态检查，需要时再真跑一次。覆盖本地类型（shell / maven / gradle / npm / python / go / node）与远端 `RemoteProcess`（server + deployment）。凡是涉及 run configuration、Run/Debug 配置、`.run/*.run.xml`、部署到服务器 / MBP / 远端、发布、docker compose、容器化、Before launch、构建产物、一键把应用发上去、或给某条配置改 server / deployment / workingDirectory 时，都先用它。并把配置档案同步进项目根 `AGENTS.md` 的 `idea-run-config-manager` 标记块 —— 本机配置和远端配置都登记在这唯一一块里。要建 / 改 / 删 run configuration、要判断一条固定流程该不该固化成配置、要部署到远端、要一份「这个项目有哪些配置、哪条能自己跑」的说明，或要定「本机跑哪几个应用」「启停走哪个工具」「哪些应用改了必须重启」这类项目级纪律时使用。"
+description: "管理本项目的 run configuration：新建 / 修改 / 删除 / 改名都直接读写项目 `.run/<名字>.run.xml`，写完用 `ide_inspect_run_configuration` 做静态检查，必要时再真跑一次。覆盖本地类型（shell / npm / node / maven / gradle / python / go）与远端 `RemoteProcess`。创建或修改配置、部署到远端、处理 Before launch 与构建产物时使用；同时把配置档案同步进项目根 `AGENTS.md` 的 `idea-run-config-manager` 标记块（本机与远端配置都在这唯一一块里）。"
 ---
 
 # idea-run-config-manager — 读写 `.run/` + 维护配置档案
@@ -8,7 +8,7 @@ description: "管理本项目的 run configuration：新建 / 修改 / 删除 / 
 一条配置就是项目根 `.run/<名字>.run.xml` 里的一个文件：新增、修改、改名、删除都是直接改文件。
 
 IDE 侧只有读和跑：`ide_get_run_configurations` 列出现有配置，`ide_inspect_run_configuration` 看一条的全貌，
-`ide_rerun_run_configuration` 跑（job 等进程退出并回 `exitCode`；server 只等启动被**触发**就返回），
+`ide_rerun_run_configuration` 跑（build 等进程退出并回 `exitCode`；server 只等启动被**触发**就返回），
 `ide_deploy_remote_process` 按发布语义跑一条远端配置（同步 + 启动 + 打开 Run 标签页；同样只等启动被触发），
 `ide_list_running_configurations` 看在跑的会话。连 `ide_get_run_configurations` 都调不到，说明项目还没接入 IDE，
 让用户执行 `/open-in-ide`；在那之前不要手写文件假装做完。
@@ -28,7 +28,7 @@ IDE 侧只有读和跑：`ide_get_run_configurations` 列出现有配置，`ide_
    （本机配置不写 `@env`）。模板里没有的字段不要写：`type` 写错 IDE 会静默忽略整个文件，字段名写错会静默用默认值，都不报错。
 3. **静态检查**。`ide_inspect_run_configuration`：报 unknown 是文件没被 IDE 加载（`type` / 文件名不对，
    IDE 有 1–2 秒延迟）；`typeKnown: false` 是类型 id 写错；`warnings` 非空或 `options` 缺字段是字段名写错。
-4. **真跑**。统一用 `ide_rerun_run_configuration`：job 会等到进程退出并回 `exitCode`；server 只等到
+4. **真跑**。统一用 `ide_rerun_run_configuration`：build 会等到进程退出并回 `exitCode`；server 只等到
    启动被**触发**（`triggered: true` + `started: null`），进程起没起要按工具描述里的退避节奏再查。
 5. **同步档案**。按 [assets/AGENTS.template.md](assets/AGENTS.template.md) 写进标记块，块外一字不动。
 
@@ -71,13 +71,13 @@ IDE 侧只有读和跑：`ide_get_run_configurations` 列出现有配置，`ide_
 </envs>
 ```
 
-- 变量名只标注**例外的那一类**（server）：不写就是 job，和缺省语义同向，读的时候不用取反。
-- `false` / `0` / `no` / `off` 会被当成 job —— 标记可以留着，临时想按 job 跑时不用删配置。
+- 变量名只标注**例外的那一类**（server）：不写就是 build，和缺省语义同向，读的时候不用取反。
+- `false` / `0` / `no` / `off` 会被当成 build —— 标记可以留着，临时想按 build 跑时不用删配置。
 - 为什么写在 `<envs>` 里：它是配置类型**自己序列化**的字段，IDE 改配置、点 OK 都不会丢。
   自定义 `<option>` 不行 —— 平台每次保存都从空元素重拼，未知标签会**静默消失**。
 - 代价：这个变量会真的注入进程环境；好处是它在 IDE 的 Environment variables 字段里**可见可编辑**。
 - `RemoteProcess` 类型不用标：它恒为 server（Run 会话跟随远端日志，等退出就是等死）。
-- 判错的代价不对称：job 误判成 server 只是少等一次；server 误判成 job 会白等满 300 秒才返回。
+- 判错的代价不对称：build 误判成 server 只是少等一次；server 误判成 build 会白等满 300 秒才返回。
 
 ## 命名文法：`base@env`
 
@@ -97,8 +97,6 @@ IDE 侧只有读和跑：`ide_get_run_configurations` 列出现有配置，`ide_
 **本机配置不需要 `@env`**：脚本本身要求跨 OS 行为一致（见 [node](assets/types/node.md#构建脚本before-launch-用)），
 同一份配置在哪台电脑上都能跑，加个后缀只会让同一个 base 分裂成好几条。
 
-**旧的 `win@base` 写法已废弃**（IDE 侧解析器仍兼容，但新配置不要再产生）。
-
 `@env` 也管整条部署链：Before launch 里挂的构建配置要带 `@env`，而且 build / deploy / 迁移脚本用**同一个 env**。
 档案里只登记 `base`，各 env 收在同一条条目里。
 
@@ -114,10 +112,6 @@ IDE 侧只有读和跑：`ide_get_run_configurations` 列出现有配置，`ide_
 | Python | `PythonConfigurationType` | [python](assets/types/python.md) |
 | Go Build | `GoApplicationRunConfiguration` | [go-build](assets/types/go-build.md) |
 | Node.js | `NodeJSConfigurationType` | [node](assets/types/node.md) |
-
-**矩阵之外没有模板**（JUnit / TestNG / Kotlin / Docker Compose / Spring Boot / Tomcat …）。
-不等于建不了：用 `ide_inspect_run_configuration` 看一条**同类型的现成配置**的 `configurationXml`，照它的字段抄；
-连一条现成的都没有，就交给用户在 IDE 里建，你只负责把档案补上。
 
 ## 档案：`AGENTS.md` 里唯一的一块
 

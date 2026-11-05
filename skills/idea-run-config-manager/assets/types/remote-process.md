@@ -7,14 +7,16 @@ run configuration —— 本地的 shell / maven / gradle 都不该用它。
 >
 > **它不负责构建。** 需要编译 / 打包的应用，构建挂在 **Before launch** 上（见下），它只把产物同步上去再启动。
 
-两种 `kind`，字段要求不同：
+`kind` 有两种，**一条配置只对应一个应用**：
 
-| `kind`    | 干什么                | 启动前会做什么                                                                       |
-|-----------|-----------------------|--------------------------------------------------------------------------------------|
-| `process` | 在宿主机上起一个进程  | 先把 `deployment` 同步上去（overwrite），再 `cd workingDirectory && nohup <command>` |
-| `docker`  | `docker run` 一个容器 | 不同步文件；用 `container` 名判断容器是否已经在跑                                    |
+| `kind`    | 干什么                          | 启动前会做什么                                                                       | 必填        |
+|-----------|---------------------------------|--------------------------------------------------------------------------------------|-------------|
+| `process` | 在宿主机上起**一个进程**        | 先把 `deployment` 同步上去（overwrite），再 `cd workingDirectory && nohup <command>` | `deployment` |
+| `docker`  | 起**一个容器**（`docker run`）  | 不同步文件；用 `container` 名判断容器是否已经在跑                                    | `container` |
 
-`kind` 留空时按命令推断：`docker run …` → `docker`，其余 → `process`。 **建议显式写**，不要靠猜。
+**一个 run configuration = 一个应用 = 一个进程 / 一个容器。** 多个应用就是多条配置。
+
+`kind` 留空时按命令推断：`docker run …` → `docker`，其余 → `process`。
 
 ## 字段：只有这 7 个
 
@@ -32,6 +34,9 @@ run configuration —— 本地的 shell / maven / gradle 都不该用它。
 
 `logDir` **不是** stdout 的捕获位置 —— 输出由 IDE 自己记（`fullOutputPath`）。它只告诉工具
 “应用自己的日志在哪”，用于 `list_remote_processes` 这类查询。
+
+`workingDirectory` / `logDir` / `command` 都是**服务端路径**，写绝对路径 —— IDE 宏（`$PROJECT_DIR$` / `$USER_HOME$`）
+不会在远端展开。本地路径的规则见 [../../SKILL.md](../../SKILL.md) 的「路径：本地 vs 服务端」。
 
 ## XML 形状：process
 
@@ -66,7 +71,50 @@ run configuration —— 本地的 shell / maven / gradle 都不该用它。
 </component>
 ```
 
-`docker` 不需要 `deployment`，`workingDirectory` 也不参与启动。
+`docker run` 不需要 `deployment`，`workingDirectory` 也不参与启动。
+
+## `docker run` 的参数从哪来
+
+**先读代码、再查机器、最后才问用户。** 每一步都有确定的信息来源，不要跳过前两步直接问。
+
+**① 代码上下文**（仓库里就能读到）：
+
+| 参数 | 从哪读 |
+|---|---|
+| `-p` 端口 | `Dockerfile` 的 `EXPOSE`、应用配置里的 `PORT`、`.env*`、`docker-compose.yml` 的 `ports` |
+| `-v` 挂载 | 产物目录（deployment 的 `deployPath`）、配置文件、应用日志目录（同时写进 `logDir`） |
+| `-e` 环境变量 | `.env.<环境>`、代码里的默认值、compose 的 `environment` |
+| 镜像 | `Dockerfile` 所在目录、tag 约定、是否需要先本地 build 再传 |
+| `--network` | compose 里的 `networks`、容器之间用什么主机名互相访问 |
+
+**② 目标机器的现状**（`remote_exec` 直接查）：
+
+```bash
+docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Ports}}'   # 已有的容器与占用的端口
+docker network ls                                            # 可复用的网络
+docker volume ls                                             # 已有的数据卷
+lsof -nP -iTCP -sTCP:LISTEN                                  # 端口占用（macOS）
+ss -tlnp                                                     # 端口占用（Linux）
+df -h <deployPath>                                           # 磁盘余量
+```
+
+**③ 只剩真正拿不准的才问用户**，而且要把选项摊开：
+
+- ❌ “docker 参数怎么配？”
+- ✅ “6379 已经被 `aidata-redis-old` 占着，这条用 6380 还是先把旧的停掉？”
+
+`container` 字段必须与 `--name` 逐字一致。
+
+**重启策略（`--restart`）列出来问用户，不要自己定**：
+
+| 取值 | 行为 |
+|---|---|
+| 不写（默认 `no`） | 不自动重启；进程退出就是退出，工具能如实报 `stopped` |
+| `on-failure[:N]` | 非 0 退出才重启，可限次数 |
+| `always` | 退出就重启（`docker stop` 和 `docker rm -f` 除外） |
+| `unless-stopped` | 同 `always`，但 `docker stop` 之后保持停止 |
+
+把四个选项连行为一起摊给用户选。**默认不写**，除非用户明确要求。
 
 ## Before launch：构建 + 铺产物
 
@@ -80,7 +128,7 @@ run configuration —— 本地的 shell / maven / gradle 都不该用它。
         <option name="server" value="mbp"/>
         <option name="deployment" value="aidata-app"/>
         <option name="kind" value="process"/>
-        <option name="command" value="docker compose up -d --force-recreate platform web"/>
+        <option name="command" value="node dist/server.js"/>
         <option name="workingDirectory" value="/Users/yutao/Desktop/data/aidata-platform/app"/>
         <method v="2">
             <option name="RunConfigurationTask" enabled="true"
@@ -108,17 +156,4 @@ run configuration —— 本地的 shell / maven / gradle 都不该用它。
 | 为了“少写绝对路径”把远端路径改成 `$PROJECT_DIR$/…` | `$PROJECT_DIR$` 是**本机**项目根，远端没有这个目录                                                                                  | 远端路径本来就该是绝对的                                                 |
 | 把构建命令塞进 `command`                           | 构建在远端跑，而源码根本没上传                                                                                                      | 构建挂 Before launch（见上）                                             |
 | Before launch 里挂的配置名少了 `@env`              | 同名的可能有多份，IDE 找不到或挂到别的环境                                                                                          | `{应用}-build@{env}`，env 与 deploy 一致                                 |
-
-## 路径
-
-`workingDirectory` / `logDir` / `command` 都是 **服务端路径**，写绝对路径（`$PROJECT_DIR$` / `$USER_HOME$`
-这类 IDE 宏不会被展开）。`logDir` 可以相对 `workingDirectory`（`logs` → `<workingDirectory>/logs`），
-也可以写绝对路径。
-
-本地路径与服务端路径的完整划分见 [../../SKILL.md](../../SKILL.md) 的「路径：本地 vs 服务端」一节。
-
-## 写完之后
-
-按 [../../SKILL.md](../../SKILL.md) 的流程：先 `inspect` 看 `canRun` / `warnings` 与 `beforeRunTasks`。
-**真跑要先拿到用户授权** —— 一次 run 就同步 deployment 并在远端启动，属于有副作用的操作；
-授权规则写在项目 `AGENTS.md` 的档案章节里。
+| 一条配置用 `docker compose up -d` 起多个容器       | 一条配置对应一个应用；`container` 只能写一个，compose 起来的那组容器状态查不到、Stop 也停不掉                                      | 每个应用一条配置，各用 `docker run -d --name <容器名> …`                 |
