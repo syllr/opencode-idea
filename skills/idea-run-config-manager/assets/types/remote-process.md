@@ -105,6 +105,9 @@ run configuration —— 本地的 shell / maven / gradle 都不该用它。
 | 为了“少写绝对路径”把远端路径改成 `$PROJECT_DIR$/…` | `$PROJECT_DIR$` 是**本机**项目根，远端没有这个目录 | 远端路径本来就该是绝对的 |
 | 把构建命令塞进 `command` | 构建在远端跑，而源码根本没上传 | 构建挂 Before launch（见上） |
 | Before launch 里挂的配置名少了 `@env` | 同名的可能有多份，IDE 找不到或挂到别的环境 | `{应用}-build@{env}`，env 与 deploy 一致 |
+| 用 `ide_execute_run_configuration` 跑远端配置 | 它等到**进程退出**，而远端会话是「跟随日志」的、永不退出 → 调用一直挂着，还看不出远端早已成功（实测：容器已起，工具调用仍 pending） | 发布用 `ide_deploy_remote_process`，重启用 `ide_rerun_run_configuration` |
+| 以为 Before launch 的输出在 `fullOutputPath` 里 | Before launch 是**独立 Run 会话**，日志在它自己那个文件里；deploy 的聚合日志只有同步 + 远端输出 | 看返回的 `steps[]`：`beforeLaunch` 那条有自己的 `logFile`，直接读 |
+| 拿不到构建结果时去翻 IDE 临时目录猜日志 | 插件已经把构建日志按配置名归档，`inspect_run_configuration` 的 `beforeRunTasks[].recentRuns[].logFile` 就是它 | 先 `inspect` 父配置，再按 `logFile` 读 |
 
 ## 路径
 

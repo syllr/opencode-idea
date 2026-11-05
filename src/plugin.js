@@ -53,7 +53,7 @@ import {
     hideForcedArguments,
     raiseMinimumArguments,
 } from './mcp/idea-tool-defaults.js';
-import {appendDirectoryTreeTruncationNotice} from './mcp/idea-tool-output.js';
+import {appendDirectoryTreeTruncationNotice, appendIdeStructuredOutput} from './mcp/idea-tool-output.js';
 import {currentProjectPath} from './project.js';
 import {
     autoLaunchSupported,
@@ -340,6 +340,15 @@ export const HIDDEN_IDE_TOOL_SUFFIXES = [
     'get_repositories',
     // Router
     'execute_tool',
+    // Run: the built-in `execute_run_configuration` waits for the process to EXIT. A Remote
+    // Process session follows remote logs and never terminates, so on that configuration type
+    // it blocks forever and the caller cannot tell success from failure (measured: the remote
+    // container was up while the tool call was still pending). `rerun_run_configuration` covers
+    // it: it returns as soon as the process is up, and for job-type configurations it waits for
+    // the exit code itself. It also has no "run a temporary configuration from a code location"
+    // (filePath + line) mode — that mode is not needed here, and keeping the tool around only
+    // gives the model a way to hang.
+    'execute_run_configuration',
     // IDE terminal: no advantage over the native shell (see the note above).
     'execute_terminal_command',
     // Remote terminal / transfer: replaced by this plugin's remote_exec / remote_upload /
@@ -1784,15 +1793,23 @@ export default {
                     // hosts.json 可能被这次工具调用改过：一次 stat，变了就静默对齐。
                     reconcileHostsIfChanged();
                     if (event?.status === 'completed') {
+                        if (typeof event?.tool !== 'string' || !isIdeToolName(event.tool)) return;
                         // 输出侧:目录树顶到 maxDepth 边界时补一句看得见的截断提示
                         // (静默截断正是模型把"被切"读成"空目录"的原因,见 `mcp/idea-tool-output.js`)。
-                        if (typeof event?.tool !== 'string' || !isIdeToolName(event.tool)) return;
-                        const next = appendDirectoryTreeTruncationNotice(event.result, {
+                        const truncated = appendDirectoryTreeTruncationNotice(event.result, {
                             tool: event.tool,
                             input: event.input,
                             prefixes: prefixes(),
                         });
-                        if (next !== event.result) event.result = next;
+                        if (truncated !== event.result) event.result = truncated;
+                        // 输出侧:把结构化输出补成文本。IDE 工具的 JSON 放在 `structuredContent`,
+                        // 而送给模型的 tool-result 只带文本那一份 —— 不补,模型就看不到 `history[]`、
+                        // `beforeRunTasks` 这些字段(见 `mcp/idea-tool-output.js` 的说明)。
+                        const withStructured = appendIdeStructuredOutput(event.result, {
+                            tool: event.tool,
+                            prefixes: prefixes(),
+                        });
+                        if (withStructured !== event.result) event.result = withStructured;
                         return;
                     }
                     if (event?.status !== 'error') return;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appendDirectoryTreeTruncationNotice } from './idea-tool-output.js';
+import { appendDirectoryTreeTruncationNotice, appendIdeStructuredOutput } from './idea-tool-output.js';
 
 /** 本会话只有一个 IDE 项目，前缀固定 `ide_`。 */
 const PREFIXES = ['ide_'];
@@ -92,6 +92,53 @@ describe('appendDirectoryTreeTruncationNotice', () => {
     for (const bad of [undefined, null, 'text', 42]) {
       expect(() => appendDirectoryTreeTruncationNotice(bad, call('ide_list_directory_tree', 6))).not.toThrow();
       expect(appendDirectoryTreeTruncationNotice(bad, call('ide_list_directory_tree', 6))).toBe(bad);
+    }
+  });
+});
+
+describe('appendIdeStructuredOutput', () => {
+  /** IDE 工具的真实返回:text 摘要在 content 里,JSON 在 `structuredContent`。 */
+  function ideResult(summary, structured) {
+    return { content: [{ type: 'text', text: summary }], structuredContent: structured };
+  }
+
+  it('appends the structured output as text so the model can read it', () => {
+    // 这正是「工具返回了 history[].logFile,模型却说看不到」的根因:
+    // 模型只收到 content,structuredContent 被 OpenCode 的 MCP client 丢进了 output。
+    const result = ideResult('aidata@mbp (Remote Process): stored in .run/', {
+      configurationName: 'aidata@mbp',
+      history: [{ logFile: '/tmp/a.log', exitCode: 0 }],
+    });
+
+    const next = appendIdeStructuredOutput(result, { tool: 'ide_inspect_run_configuration', prefixes: PREFIXES });
+
+    expect(next).not.toBe(result);
+    expect(next.content).toHaveLength(2);
+    // 原有摘要原样保留。
+    expect(next.content[0]).toBe(result.content[0]);
+    expect(next.content[1].text).toContain('/tmp/a.log');
+    expect(next.content[1].text).toContain('aidata@mbp');
+  });
+
+  it('keeps the original result when there is no structured content', () => {
+    const result = { content: [{ type: 'text', text: 'ok' }] };
+    expect(appendIdeStructuredOutput(result, { tool: 'ide_read_file', prefixes: PREFIXES })).toBe(result);
+  });
+
+  it('does not duplicate content when the result has no text to begin with', () => {
+    // 纯 JSON 返回的工具,OpenCode 已经把 output 序列化成文本了,再补就重复。
+    const result = { content: [], structuredContent: { a: 1 } };
+    expect(appendIdeStructuredOutput(result, { tool: 'ide_x', prefixes: PREFIXES })).toBe(result);
+  });
+
+  it('only touches tools under a known IDE prefix', () => {
+    const result = ideResult('ok', { a: 1 });
+    expect(appendIdeStructuredOutput(result, { tool: 'bash', prefixes: PREFIXES })).toBe(result);
+  });
+
+  it('is safe on malformed results', () => {
+    for (const bad of [undefined, null, 'text', 42]) {
+      expect(() => appendIdeStructuredOutput(bad, { tool: 'ide_x', prefixes: PREFIXES })).not.toThrow();
     }
   });
 });

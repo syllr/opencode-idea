@@ -699,7 +699,11 @@ describe('plugin setup', () => {
     expect(request.tools).toHaveProperty('ide_apply_patch');
     // Kept: it is the only way to read inside a jar or the jrt:// image.
     expect(request.tools).toHaveProperty('ide_read_file');
-    expect(request.tools).toHaveProperty('ide_execute_run_configuration');
+    // Hidden: it waits for the process to EXIT, which never happens for a Remote
+    // Process session — the call hangs and the caller cannot tell success from
+    // failure. `ide_rerun_run_configuration` covers starting, and for job-type
+    // configurations it returns the exit code itself.
+    expect(request.tools).not.toHaveProperty('ide_execute_run_configuration');
 
     await cleanup();
   });

@@ -46,9 +46,34 @@ IDE 侧只有读和跑：`ide_get_run_configurations` 列出现有配置，`ide_
    [Before launch](assets/types/remote-process.md#before-launch构建--铺产物) 一节）。
    构建顺序由 Before launch 保证，**不要**把构建塞进远端 `command`，也不要指望使用者先手工跑一遍。
 4. **静态检查**。`ide_inspect_run_configuration`：`beforeRunTasks` 里有没有那条构建、`canRun` 是否为 true。
+   同一次返回里，`beforeRunTasks[].recentRuns[].logFile` 就是那条构建**最近几次**的日志（构建是独立
+   Run 会话，日志不在父配置的 `history[]` 里）；`exitCode` 直接告诉你上次构建成没成。
 5. **真跑**。远端配置一次 run 就替换线上，**必须用户当场授权**（规则写在 `AGENTS.md` 的档案章节）；
    没授权就停在 inspect 通过。跑起来之后告诉用户“已在远端启动”，或者停掉，别留个进程没人知道。
 6. **同步档案**。同上，构建配置与部署配置各登记一条。
+
+## job 还是 server：`IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG`
+
+`ide_rerun_run_configuration` 对两种配置的行为不同：
+
+| 配置 | 行为 | 怎么标 |
+| --- | --- | --- |
+| **job**（构建脚本、测试、迁移：跑完就退） | 等到进程退出，返回 `exitCode` 与完整输出 | **缺省就是 job**，不用标 |
+| **server**（dev server、长驻进程：永不退出） | 进程一起来就返回，日志路径给你自己读 | 在配置的 `<envs>` 里加 `IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG=true` |
+
+```xml
+<envs>
+  <env name="IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG" value="true" />
+</envs>
+```
+
+- 变量名只标注**例外的那一类**（server）：不写就是 job，和缺省语义同向，读的时候不用取反。
+- `false` / `0` / `no` / `off` 会被当成 job —— 标记可以留着，临时想按 job 跑时不用删配置。
+- 为什么写在 `<envs>` 里：它是配置类型**自己序列化**的字段，IDE 改配置、点 OK 都不会丢。
+  自定义 `<option>` 不行 —— 平台每次保存都从空元素重拼，未知标签会**静默消失**。
+- 代价：这个变量会真的注入进程环境；好处是它在 IDE 的 Environment variables 字段里**可见可编辑**。
+- `RemoteProcess` 类型不用标：它恒为 server（Run 会话跟随远端日志，等退出就是等死）。
+- 判错的代价不对称：job 误判成 server 只是少等一次；server 误判成 job 会白等满 300 秒才返回。
 
 ## 命名文法：`base@env`
 

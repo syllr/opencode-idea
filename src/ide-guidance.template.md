@@ -15,4 +15,9 @@
   说“跑一下 / 启动 / 调试 / 重启”用 `ide_rerun_run_configuration`。
 - **增删改 run configuration** 走 `idea-run-config-manager` skill：直接读写项目 `.run/*.run.xml`，
   写完 `inspect` 检查、再真跑。
+- **Before launch 是独立 Run 会话**：构建 / 另一个配置先跑，通常几秒就结束，之后
+  `ide_list_running_configurations` 里只剩父配置。**列表里看不到构建 ≠ 没执行** ——
+  构建的日志与退出码直接在这些工具的返回里：`ide_rerun_run_configuration` /
+  `ide_deploy_remote_process` 的 `beforeRunTasks[]` / `steps[]`（含 `output` 尾部预览与 `exitCode`），
+  或列表条目上的 `beforeRunTasks[].lastRun`。不用去临时目录按时间猜。
 - 启动 / 停止远端进程或部署用上面的 IDE 工具，不要自己拼 `nohup` / `docker run`。
