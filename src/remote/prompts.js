@@ -18,6 +18,9 @@ export function remoteShellPrompt(request) {
         '1. 服务器名不确定 → 先调 remote_list_servers（列出 IDE / 项目 / 全局三层，带来源）',
         '2. 跑命令 → remote_exec(server, command)，需要目录就传 workingDirectory',
         '   · 每条命令是独立 SSH 连接：cd / export 不跨命令保留',
+        '   · 常驻命令（docker run 不带 -d、compose up、tail -f、前台 server）不要直接跑：',
+        '     看已在跑的服务用 docker exec，要后台就 nohup … > 日志 2>&1 & 再单独读日志',
+        '   · & 只加在最后一条命令上：`a && b && nohup c &` 会把整条链扔进后台，后面的命令和它抢时序',
         '3. 名字传错时工具会列出全部候选，按列表重新调用，不要猜',
         '',
         ask

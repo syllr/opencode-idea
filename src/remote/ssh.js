@@ -10,7 +10,7 @@ import {join} from 'node:path';
 
 import {Client} from 'ssh2';
 
-/** 连接建立的上限。命令本身**不设超时**：卡住时由用户取消这次调用。 */
+/** 连接建立的上限。命令执行本身**不设超时**：卡住时由用户取消这次调用。 */
 const CONNECT_TIMEOUT_MS = 15000;
 
 /** @param {string} path */
@@ -128,10 +128,21 @@ export async function runRemoteCommand(server, command, options = {}) {
 }
 
 /**
+ * 命令退出后等 `close` 收尾输出的宽限期（毫秒）。
+ *
+ * `exit` 表示远端命令本身退出了，`close` 表示 channel 关闭（输出管道全部释放）。
+ * 正常命令两者只差 1ms 左右；但后台子进程经常还攥着 channel 的 stdout 管道 ——
+ * 比如 `a && b && nohup c > log 2>&1 &`，`&` 作用于整条链，后台子 shell 自己占着管道，
+ * sshd 要等后台任务全部跑完才发 `close`（实测能拖到几分钟）。所以只等 `exit` + 这点宽限，
+ * 超时就按 `exit` 的退出码收尾：正常命令走不到计时器，异常命令最多多等这么久。
+ */
+export const EXIT_GRACE_MS = 1000;
+
+/**
  * @param {import('ssh2').Client} conn
  * @param {string} command 已经包好 `cd` 的命令
  */
-function execOn(conn, command) {
+export function execOn(conn, command) {
     const encoded = Buffer.from(command, 'utf8').toString('base64');
     const execCommand = `printf '%s' '${encoded}' | (base64 -d 2>/dev/null || openssl base64 -d 2>/dev/null) | sh`;
 
@@ -139,11 +150,16 @@ function execOn(conn, command) {
         let settled = false;
         let stdout = '';
         let stderr = '';
+        /** 命令还没退出时一直是 null。 */
+        let exitCode = null;
+        /** @type {NodeJS.Timeout | undefined} */
+        let grace;
 
         /** @param {Error} [error] @param {{ exitCode: number | null }} [value] */
         const finish = (error, value) => {
             if (settled) return;
             settled = true;
+            if (grace) clearTimeout(grace);
             if (error) reject(error);
             else resolve({exitCode: value?.exitCode ?? null, stdout, stderr});
         };
@@ -160,9 +176,13 @@ function execOn(conn, command) {
             stream.stderr.on('data', (chunk) => {
                 stderr += chunk.toString('utf8');
             });
-            // 没有内部超时：命令会一直跑到自己结束或连接断掉。卡住的调用由用户取消。
+            // 命令自己退出了：先记下退出码，再给 close 一点时间把在途输出收完。
+            stream.on('exit', (code) => {
+                exitCode = typeof code === 'number' ? code : null;
+                grace = setTimeout(() => finish(undefined, {exitCode}), EXIT_GRACE_MS);
+            });
             stream.on('close', (code) => {
-                finish(undefined, {exitCode: typeof code === 'number' ? code : null});
+                finish(undefined, {exitCode: typeof code === 'number' ? code : exitCode});
             });
             stream.on('error', (streamError) => {
                 finish(streamError);

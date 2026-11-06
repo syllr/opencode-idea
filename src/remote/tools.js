@@ -202,10 +202,15 @@ export function remoteExecTool(toolset) {
         name: 'remote_exec',
         description:
             '在远程服务器上执行一条命令，返回输出与退出码。' +
-            '用户说“去某台机器上执行 / 看日志”、或提到部署机 / 开发机 / 测试机时用它 —— 不要自己拼 ssh / scp。' +
-            '每条命令是一条独立 SSH 连接：cd / export 不会跨命令保留，需要目录就传 workingDirectory。' +
-            '命令跑完才返回，没有增量输出、没有 Ctrl-C 通道；长任务自己在远端用 nohup / tmux。' +
-            '启动 / 停止远端进程或部署不归这里管，用 IDE 的 run configuration 工具。' +
+            '用户说“去某台机器上执行 / 看日志”、或提到部署机 / 开发机 / 测试机时用它 —— 不要自己拼 ssh / scp。\n' +
+            '- 每条命令是一条独立 SSH 连接：cd / export 不会跨命令保留，需要目录就传 workingDirectory。\n' +
+            '- 命令自己退出就返回，没有增量输出、没有 Ctrl-C；取消这次调用也不会杀掉远端进程，它会继续在后台跑。\n' +
+            '- 常驻型命令别直接调（docker run 不带 -d、compose up、tail -f、watch、前台 server）：' +
+            '看已在跑的服务用 docker exec；要放后台就 nohup <cmd> > <日志> 2>&1 &，工具会立刻返回，之后的输出不在结果里。\n' +
+            '- 管道不会终止上游：<cmd> | head 只是截断输出，上游照样跑到自己退出。\n' +
+            '- 多条命令别写成 `a && b && nohup c &` —— & 会作用到整条链，cd / 准备步骤一起被扔进后台，' +
+            '后面的命令就和它抢时序；要后台就单独一条，其它用 ; 分隔。\n' +
+            '- 启动 / 停止远端进程或部署不归这里管，用 IDE 的 run configuration 工具。\n' +
             '不传 server 时返回当前可用的机器列表；传错服务器名时也会返回全部可用服务器，按列表重新调用即可。',
         input: {
             type: 'object',
@@ -221,6 +226,7 @@ export function remoteExecTool(toolset) {
                 },
             },
             required: [],
+            additionalProperties: false,
         },
         execute: async (args) => {
             const server = typeof args?.server === 'string' ? args.server.trim() : '';
@@ -269,7 +275,7 @@ export function remoteListServersTool(toolset) {
             '每台机器带 [IDE] / [项目] / [全局] 标记：只有带 deployment 的机器才能做文件同步' +
             '（remote_upload / remote_download），只有 SSH 配置的机器只能执行命令（remote_exec）。' +
             '不确定机器名或 deployment 名时先调它；remote_exec 不传 server 时也会返回同一份清单。',
-        input: {type: 'object', properties: {}, required: []},
+        input: {type: 'object', properties: {}, required: [], additionalProperties: false},
         execute: async () => ({content: await serverListText(toolset)}),
     };
 }
@@ -352,6 +358,7 @@ function transferTool(toolset, direction) {
                 },
             },
             required: ['deployment'],
+            additionalProperties: false,
         },
         execute: async (args) => {
             const name = typeof args?.deployment === 'string' ? args.deployment.trim() : '';

@@ -132,6 +132,19 @@ describe('工具定义', () => {
         expect(list.name).toBe('remote_list_servers');
     });
 
+    it('四个远程工具都不接受未声明的参数', () => {
+        // 模型按别的工具的习惯补参数（比如 shell 工具的 timeout）时，schema 要把它挡掉，
+        // 而不是收下再静默忽略 —— 否则模型以为自己设了什么，实际什么也没设。
+        const toolset = createRemoteToolset({
+            projectPath: workDir,
+            globalHostsPath: join(workDir, 'none.json'),
+            fetchIdeServers: async () => [],
+        });
+        for (const build of [remoteExecTool, remoteListServersTool, remoteUploadTool, remoteDownloadTool]) {
+            expect(build(toolset).input.additionalProperties).toBe(false);
+        }
+    });
+
     it('名字传错时返回全部候选，而不是一句"不存在"', async () => {
         const {root, globalPath} = projectWith({globalHosts: {5090: {host: 'h', username: 'u'}}});
         const toolset = createRemoteToolset({
