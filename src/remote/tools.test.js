@@ -14,6 +14,7 @@ import {
     remoteExecTool,
     remoteListServersTool,
     remoteUploadTool,
+    truncateOutput,
 } from './tools.js';
 
 const workDir = mkdtempSync(join(tmpdir(), 'remote-tools-'));
@@ -302,5 +303,24 @@ describe('认证方式', () => {
         // 会去连 SSH（私钥不存在 → 读文件失败），但错误不是"没有凭据"
         const {content} = await remoteUploadTool(toolset).execute({deployment: 'app'});
         expect(content).not.toContain('没有可用于 SSH 的凭据');
+    });
+});
+
+describe('truncateOutput', () => {
+    it('短输出原样返回', () => {
+        expect(truncateOutput('a\nb\n')).toEqual({text: 'a\nb\n', truncated: false});
+        expect(truncateOutput('')).toEqual({text: '', truncated: false});
+    });
+
+    it('超过 2000 行时保留头 200 与尾部，中间标省略', () => {
+        const lines = Array.from({length: 5000}, (_, i) => `line ${i}`);
+        const {text, truncated} = truncateOutput(lines.join('\n'));
+        const out = text.split('\n');
+        expect(truncated).toBe(true);
+        expect(out[0]).toBe('line 0');
+        expect(out[199]).toBe('line 199');
+        expect(out[200]).toContain('省略');
+        expect(out.at(-1)).toBe('line 4999');
+        expect(out.length).toBe(2001);
     });
 });

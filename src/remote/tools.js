@@ -19,12 +19,24 @@ import {
     serverNotFoundText,
     GLOBAL_HOSTS_PATH,
 } from './hosts.js';
-import {describeSshError, runRemoteCommand} from './ssh.js';
+import {createRemoteRun, describeSshError, runRemoteCommand, withWorkingDirectory} from './ssh.js';
 import {downloadDirectory, openSftp, uploadDirectory} from './sftp.js';
 import {connect} from './ssh.js';
 
 /** 服务器列表的缓存时长。命中就不打 IDE MCP；miss / 连接失败会强制刷新。 */
 export const SERVER_CACHE_TTL_MS = 60000;
+
+/** 第一次等命令结束的时间：超过就转成“后台运行 + runID”。有续等兜底，不必等太久。 */
+export const FIRST_WAIT_MS = 15000;
+
+/** 续查时的服务端退避：第 1 次 2s、第 2 次 4s、之后每次 8s。 */
+export const RUN_BACKOFF_MS = [2000, 4000, 8000];
+
+/** 已结束的 run 保留多久（供迟到的续查取结果）。 */
+export const RUN_KEEP_MS = 5 * 60 * 1000;
+
+/** 同时保留多少个 run。 */
+export const RUN_MAX = 20;
 
 /**
  * @param {{
@@ -182,9 +194,93 @@ export function createRemoteToolset({projectPath, fetchIdeServers, globalHostsPa
         return {kind: 'ok', deployment: target, stats: outcome.value, elapsedMs, retried: outcome.retried};
     };
 
+    /**
+     * 进行中的远程执行：`runID → { server, run, polls }`。
+     *
+     * 命令超时后不杀进程，连接也保持打开 —— 下一次带 `runID` 的调用直接挂在同一个 run 上等，
+     * 而不是重跑。只保留最近若干条，避免长会话里无限堆积。
+     */
+    /** @type {Map<string, { server: import('./hosts.js').RemoteServer, run: ReturnType<typeof createRemoteRun>, polls: number, doneAt: number | null, reported: boolean }>} */
+    const runs = new Map();
+
+    const pruneRuns = () => {
+        const now = Date.now();
+        for (const [id, entry] of runs) {
+            if (entry.run.done && entry.doneAt === null) entry.doneAt = now;
+            if (entry.doneAt !== null && now - entry.doneAt > RUN_KEEP_MS) runs.delete(id);
+        }
+        while (runs.size > RUN_MAX) {
+            const oldest = runs.keys().next().value;
+            if (oldest === undefined) break;
+            runs.delete(oldest);
+        }
+    };
+
+    /**
+     * 启动一条命令，但**不等到结束**：调用方拿 run 和 runID 自己决定等多久。
+     *
+     * @param {string} name
+     * @param {string} command
+     * @param {string | undefined} workingDirectory
+     */
+    const startExec = async (name, command, workingDirectory) => {
+        const outcome = await withServer(name, async (server) => {
+            const conn = await connect(server);
+            try {
+                return createRemoteRun(conn, withWorkingDirectory(command, workingDirectory));
+            } catch (error) {
+                conn.end();
+                throw error;
+            }
+        });
+        if (outcome.kind !== 'ok') return outcome;
+        const runID = `r-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        runs.set(runID, {server: outcome.server, run: outcome.value, polls: 0, doneAt: null, reported: false});
+        pruneRuns();
+        return {kind: 'ok', server: outcome.server, runID, run: outcome.value, retried: outcome.retried};
+    };
+
+    /**
+     * 挂到一个已有的 run 上，等它结束或等满这一轮的退避时间。
+     *
+     * 退避是**服务端**的事：第 1 次 2s、第 2 次 4s、之后每次 8s。模型只需要“马上再调一次”，
+     * 不需要自己 sleep，也不需要传等待时长。
+     *
+     * @param {string} runID
+     */
+    const continueExec = async (runID) => {
+        const entry = runs.get(runID);
+        if (!entry) return {kind: 'missing', runID};
+        // 结束结果已经交给模型了：再传同一个 runID 只可能是模型没意识到它已经结束，
+        // 必须明确拒绝，而不是把 exitCode 再回一遍 —— 否则它会一直轮询下去。
+        if (entry.reported) return {kind: 'finished', entry};
+        const waitedMs = RUN_BACKOFF_MS[Math.min(entry.polls, RUN_BACKOFF_MS.length - 1)];
+        entry.polls += 1;
+        const ended = await entry.run.wait(waitedMs);
+        if (ended) entry.reported = true;
+        pruneRuns();
+        return {kind: 'ok', entry, ended, waitedMs};
+    };
+
+    /**
+     * 把“这个 run 的结束结果已经交出去了”记下来。
+     *
+     * 第一次调用（不带 runID）自己等到结束时，也要标记 —— 否则模型随后再传 runID 会再拿到一次
+     * `exitCode`，而它分不清“这是新的结果”还是“旧的又给了一遍”。
+     *
+     * @param {string} runID
+     */
+    const finishRun = (runID) => {
+        const entry = runs.get(runID);
+        if (entry) entry.reported = true;
+    };
+
     return {
         load,
         exec,
+        startExec,
+        continueExec,
+        finishRun,
         upload: (name, mode) => sync(name, mode, 'upload'),
         download: (name, mode) => sync(name, mode, 'download'),
         /** 最近一次 IDE 读取失败的原因；成功时为 undefined。 */
@@ -204,9 +300,12 @@ export function remoteExecTool(toolset) {
             '在远程服务器上执行一条命令，返回输出与退出码。' +
             '用户说“去某台机器上执行 / 看日志”、或提到部署机 / 开发机 / 测试机时用它 —— 不要自己拼 ssh / scp。\n' +
             '- 每条命令是一条独立 SSH 连接：cd / export 不会跨命令保留，需要目录就传 workingDirectory。\n' +
-            '- 命令自己退出就返回，没有增量输出、没有 Ctrl-C；取消这次调用也不会杀掉远端进程，它会继续在后台跑。\n' +
+            '- 命令在 15s 内没结束时返回 `runID` 和 `stillRunning`：命令仍在远端运行，**不会因为这次超时被杀**。\n' +
+            '- 接着看后续输出就**直接再调 remote_exec 并传 `runID`**。**不要 sleep、不要等待、不要重跑原命令** —— ' +
+            '服务端自己按 2s → 4s → 8s 退避等待，命令一结束就立刻返回。\n' +
+            '- 返回里出现 `exitCode` = 命令**已经结束**，结果已经给全了：**不要再用这个 runID 调用**。\n' +
             '- 常驻型命令别直接调（docker run 不带 -d、compose up、tail -f、watch、前台 server）：' +
-            '看已在跑的服务用 docker exec；要放后台就 nohup <cmd> > <日志> 2>&1 &，工具会立刻返回，之后的输出不在结果里。\n' +
+            '看已在跑的服务用 docker exec；要放后台就 nohup <cmd> > <日志> 2>&1 &，工具会立刻返回。\n' +
             '- 管道不会终止上游：<cmd> | head 只是截断输出，上游照样跑到自己退出。\n' +
             '- 多条命令别写成 `a && b && nohup c &` —— & 会作用到整条链，cd / 准备步骤一起被扔进后台，' +
             '后面的命令就和它抢时序；要后台就单独一条，其它用 ; 分隔。\n' +
@@ -224,11 +323,18 @@ export function remoteExecTool(toolset) {
                     type: 'string',
                     description: '可选：先 cd 到这个远程目录再执行（支持 ~ 与绝对路径）。',
                 },
+                runID: {
+                    type: 'string',
+                    description: '上一次返回的 runID：命令还没结束时用它接着看结果，不要重跑原命令。',
+                },
             },
             required: [],
             additionalProperties: false,
         },
         execute: async (args) => {
+            const runID = typeof args?.runID === 'string' ? args.runID.trim() : '';
+            if (runID) return {content: await continueRunText(toolset, runID)};
+
             const server = typeof args?.server === 'string' ? args.server.trim() : '';
             const command = typeof args?.command === 'string' ? args.command : '';
             // 没给机器就当在问“有哪些机器可用”：直接给清单，别让它猜。
@@ -236,7 +342,7 @@ export function remoteExecTool(toolset) {
             if (!command.trim()) return {content: 'command 不能为空。'};
             const workingDirectory = typeof args?.workingDirectory === 'string' ? args.workingDirectory : undefined;
 
-            const outcome = await toolset.exec(server, command, workingDirectory);
+            const outcome = await toolset.startExec(server, command, workingDirectory);
             switch (outcome.kind) {
                 case 'missing': {
                     const ideError = toolset.ideError();
@@ -254,10 +360,117 @@ export function remoteExecTool(toolset) {
                             describeSshError(outcome.error, outcome.server),
                     };
                 default:
-                    return {content: formatRunSummary(outcome.server, outcome.result, outcome.retried === true)};
+                    break;
             }
+
+            const ended = await outcome.run.wait(FIRST_WAIT_MS);
+            const output = outcome.run.take();
+            if (ended) {
+                toolset.finishRun(outcome.runID);
+                return {content: finishedText(outcome.server, outcome.run.exitCode, output, outcome.retried === true)};
+            }
+            return {
+                content: runningText(outcome.server, outcome.runID, output, FIRST_WAIT_MS),
+            };
         },
     };
+}
+
+/**
+ * 带 `runID` 的续查：服务端按 2s → 4s → 8s 退避等待，结束时立刻返回。
+ *
+ * @param {ReturnType<typeof createRemoteToolset>} toolset
+ * @param {string} runID
+ */
+async function continueRunText(toolset, runID) {
+    const outcome = await toolset.continueExec(runID);
+    if (outcome.kind === 'finished') {
+        return (
+            `runID "${runID}" 对应的命令**已经结束**，结果也返回过了。不要再传这个 runID；\n` +
+            '要重跑就重新调用 remote_exec（不带 runID）。'
+        );
+    }
+    if (outcome.kind === 'missing') {
+        return (
+            `找不到 runID "${runID}"：可能它已经结束并清理（只保留 5 分钟），或者这属于另一个会话。\n` +
+            '需要的话重新调用 remote_exec（不带 runID）重跑。'
+        );
+    }
+    const {entry, ended, waitedMs} = outcome;
+    const output = entry.run.take();
+    if (ended) return finishedText(entry.server, entry.run.exitCode, output);
+    return runningText(entry.server, runID, output, waitedMs);
+}
+
+/**
+ * 命令结束时的文本。
+ *
+ * @param {import('./hosts.js').RemoteServer} server
+ * @param {number | null} exitCode
+ * @param {string} output
+ * @param {boolean} [retried]
+ */
+function finishedText(server, exitCode, output, retried = false) {
+    const head = [`[${server.name}] 命令已结束，exitCode ${exitCode ?? 'null'}`];
+    if (retried) head.push('retried');
+    const {text, truncated} = truncateOutput(output);
+    const body = text.trimEnd() || '（这段没有新输出；更早的输出已经在上一次返回里）';
+    return `${head.join(', ')}\n${body}${truncated ? '\n\n（输出已截断：只保留头 200 行与尾部）' : ''}`;
+}
+
+/**
+ * 命令还在跑时的文本。
+ *
+ * @param {import('./hosts.js').RemoteServer} server
+ * @param {string} runID
+ * @param {string} output
+ * @param {number} waitedMs
+ */
+function runningText(server, runID, output, waitedMs) {
+    const {text, truncated} = truncateOutput(output);
+    const lines = [
+        `[${server.name}] 命令仍在运行（本轮等了 ${Math.round(waitedMs / 1000)}s），进程没有被杀。`,
+        `接着看就再调 remote_exec 并传 runID="${runID}"；不要 sleep、不要等待、不要重跑原命令 —— 服务端会自己退避等待。` +
+            '返回里出现 `exitCode` 就说明结束了，不要再用这个 runID。',
+    ];
+    lines.push('', text.trimEnd() || '（这段时间没有新输出）');
+    if (truncated) lines.push('', '（输出已截断：只保留头 200 行与尾部）');
+    return lines.join('\n');
+}
+
+/** 单次返回的输出上限。 */
+const MAX_OUTPUT_LINES = 2000;
+const MAX_OUTPUT_BYTES = 256 * 1024;
+const HEAD_OUTPUT_LINES = 200;
+
+/**
+ * 截断超长输出：保留头 200 行 + 尾部，中间标注省略。
+ *
+ * @param {string} output
+ * @returns {{ text: string, truncated: boolean }}
+ */
+export function truncateOutput(output) {
+    if (!output) return {text: '', truncated: false};
+    let text = output;
+    let truncated = false;
+
+    if (Buffer.byteLength(text, 'utf8') > MAX_OUTPUT_BYTES) {
+        const buffer = Buffer.from(text, 'utf8');
+        text = buffer.subarray(buffer.length - MAX_OUTPUT_BYTES).toString('utf8').replace(/^\uFFFD+/, '');
+        truncated = true;
+    }
+
+    const lines = text.split('\n');
+    if (lines.length > MAX_OUTPUT_LINES) {
+        const removed = lines.length - MAX_OUTPUT_LINES;
+        text = [
+            ...lines.slice(0, HEAD_OUTPUT_LINES),
+            `… 省略 ${removed} 行 …`,
+            ...lines.slice(-(MAX_OUTPUT_LINES - HEAD_OUTPUT_LINES)),
+        ].join('\n');
+        truncated = true;
+    }
+    return {text, truncated};
 }
 
 /**

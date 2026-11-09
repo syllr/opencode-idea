@@ -8,6 +8,8 @@ import {readFileSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 
+import {StringDecoder} from 'node:string_decoder';
+
 import {Client} from 'ssh2';
 
 /** 连接建立的上限。命令执行本身**不设超时**：卡住时由用户取消这次调用。 */
@@ -142,9 +144,17 @@ export const EXIT_GRACE_MS = 1000;
  * @param {import('ssh2').Client} conn
  * @param {string} command 已经包好 `cd` 的命令
  */
-export function execOn(conn, command) {
+export function encodeExecCommand(command) {
     const encoded = Buffer.from(command, 'utf8').toString('base64');
-    const execCommand = `printf '%s' '${encoded}' | (base64 -d 2>/dev/null || openssl base64 -d 2>/dev/null) | sh`;
+    return `printf '%s' '${encoded}' | (base64 -d 2>/dev/null || openssl base64 -d 2>/dev/null) | sh`;
+}
+
+/**
+ * @param {import('ssh2').Client} conn
+ * @param {string} command 已经包好 `cd` 的命令
+ */
+export function execOn(conn, command) {
+    const execCommand = encodeExecCommand(command);
 
     return new Promise((resolve, reject) => {
         let settled = false;
@@ -189,6 +199,192 @@ export function execOn(conn, command) {
             });
         });
     });
+}
+
+/**
+ * 把一条命令的输出转成“终端里看到的样子”。
+ *
+ * 三件事，缺一不可：
+ * 1. **UTF-8 解码** —— chunk 是 Buffer，按字节切，多字节字符常被切在边界上；
+ *    `chunk.toString('utf8')` 会把它变成 U+FFFD，所以必须用 StringDecoder 续着解。
+ * 2. **剥离 ANSI** —— 颜色 / 光标控制对模型是纯噪音。不完整的序列（chunk 切在中间）
+ *    挂起到下一块再拼，避免把 `\x1b[3` 当成正文吐出去。
+ * 3. **`\r` 行内覆盖** —— 进度条靠回车刷同一行；终端只显示最后状态，
+ *    直接拼接会留下 `10%\r50%\r…` 这样一串回车。
+ *
+ * 输出是**流式**的：`write()` 只返回已经定稿的行（`\n` 之后），
+ * 当前还没换行的那一行由 `flushLine()` 取走 —— 超时读队列时正好把进度条的最后状态带上。
+ */
+export class TerminalText {
+    constructor() {
+        this.decoder = new StringDecoder('utf8');
+        /** 被 chunk 切断、还没收完的 ANSI 序列。 */
+        this.pending = '';
+        /** 还没遇到 `\n` 的当前行（`\r` 会把它清空重写）。 */
+        this.line = '';
+    }
+
+    /**
+     * @param {Buffer | string} chunk
+     * @returns {string} 可以立刻追加到输出的文本（不含未完成的当前行）
+     */
+    write(chunk) {
+        const bytes = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+        let text = this.pending + this.decoder.write(bytes);
+        this.pending = '';
+
+        // 末尾如果是半个 CSI/OSC 序列，留到下一块；否则 `\x1b[3` 会被当成正文。
+        const tail = /\x1b(?:\[[0-9;?]*|[\]P][^\x07\x1b]*)?$/.exec(text);
+        if (tail) {
+            this.pending = tail[0];
+            text = text.slice(0, -tail[0].length);
+        }
+
+        text = text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
+        text = text.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
+
+        let out = '';
+        for (const ch of text) {
+            if (ch === '\r') {
+                this.line = '';
+                continue;
+            }
+            if (ch === '\n') {
+                out += `${this.line}\n`;
+                this.line = '';
+                continue;
+            }
+            this.line += ch;
+        }
+        return out;
+    }
+
+    /** 取走“还没换行的那一行”（进度条的最后状态）。 */
+    flushLine() {
+        if (!this.line) return '';
+        const line = this.line;
+        this.line = '';
+        return line;
+    }
+
+    /** 收尾：把解码器里不够一个完整字符的残余吐出来。 */
+    end() {
+        const rest = this.decoder.end();
+        return rest + this.flushLine();
+    }
+}
+
+const EXIT_MARKER = /^=== exited (-?\d+) ===$/;
+
+/**
+ * 一次**可续等**的远程执行。
+ *
+ * 和 `runRemoteCommand` 的区别只有一条：它不把结果一次交出去，而是把输出攒在队列里，
+ * 由调用方分次取走（`take()`）。命令照旧原样执行 —— 不包 `nohup`、不改 `cd` 语义。
+ *
+ * @param {import('ssh2').Client} conn 已经建好的连接，run 结束时由这里关闭
+ * @param {string} command 已经包好 `cd` 的命令
+ */
+export function createRemoteRun(conn, command) {
+    const text = new TerminalText();
+    let queue = '';
+    let exitCode = null;
+    let ended = false;
+    /** @type {Array<() => void>} */
+    let waiters = [];
+    /** @type {NodeJS.Timeout | undefined} */
+    let grace;
+
+    const settle = () => {
+        if (ended) return;
+        ended = true;
+        if (grace) clearTimeout(grace);
+        queue += text.end();
+        conn.end();
+        const pending = waiters;
+        waiters = [];
+        for (const resolve of pending) resolve(true);
+    };
+
+    conn.exec(encodeExecCommand(command), (error, stream) => {
+        if (error) {
+            queue += `[${error.message}]`;
+            exitCode = null;
+            settle();
+            return;
+        }
+        stream.on('data', (chunk) => {
+            queue += text.write(chunk);
+        });
+        stream.stderr.on('data', (chunk) => {
+            queue += text.write(chunk);
+        });
+        stream.on('exit', (code) => {
+            exitCode = typeof code === 'number' ? code : null;
+            grace = setTimeout(settle, EXIT_GRACE_MS);
+        });
+        stream.on('close', () => settle());
+        stream.on('error', (streamError) => {
+            queue += `[${streamError.message}]`;
+            settle();
+        });
+    });
+
+    return {
+        /** 命令是否已经结束（含收尾宽限）。 */
+        get done() {
+            return ended;
+        },
+        get exitCode() {
+            return exitCode;
+        },
+        /**
+         * 取走队列里的全部输出（取完清空）。当前未换行的那一行也一起带走。
+         *
+         * @returns {string}
+         */
+        take() {
+            queue += text.flushLine();
+            const out = queue;
+            queue = '';
+            return out;
+        },
+        /**
+         * 最多等 `ms` 毫秒，命令结束就提前返回。
+         *
+         * @param {number} ms
+         * @returns {Promise<boolean>} true = 已结束
+         */
+        wait(ms) {
+            if (ended) return Promise.resolve(true);
+            return new Promise((resolve) => {
+                let timer;
+                const wake = () => {
+                    if (timer) clearTimeout(timer);
+                    resolve(true);
+                };
+                waiters.push(wake);
+                if (ms > 0) {
+                    timer = setTimeout(() => {
+                        waiters = waiters.filter((entry) => entry !== wake);
+                        resolve(false);
+                    }, ms);
+                } else {
+                    waiters = waiters.filter((entry) => entry !== wake);
+                    resolve(false);
+                }
+            });
+        },
+        /** 放弃这次 run（不杀远端进程，只关连接）。 */
+        dispose() {
+            if (ended) return;
+            ended = true;
+            const pending = waiters;
+            waiters = [];
+            for (const resolve of pending) resolve(true);
+            conn.end();
+        },
+    };
 }
 
 /**
