@@ -47,12 +47,12 @@ describe('openInIde', () => {
 });
 
 describe('createLaunchGuard', () => {
-  it('blocks a second spawn during cooldown, then allows it', () => {
+  it('blocks a second spawn during the cooldown, then allows it', () => {
     let clock = 0;
-    const guard = createLaunchGuard({ cooldownMs: 1000, maxAttempts: 3, now: () => clock });
+    const guard = createLaunchGuard({ cooldownsMs: [1000], maxAttempts: 3, now: () => clock });
     expect(guard.canSpawn()).toBe(true);
     guard.markSpawn();
-    expect(guard.state()).toEqual({ lastSpawnAt: 0, attempts: 1 });
+    expect(guard.state().attempts).toBe(1);
     expect(guard.coolingDown()).toBe(true);
     expect(guard.canSpawn()).toBe(false);
     clock = 1000;
@@ -60,9 +60,26 @@ describe('createLaunchGuard', () => {
     expect(guard.canSpawn()).toBe(true);
   });
 
+  it('lengthens the cooldown with every attempt instead of using a fixed one', () => {
+    let clock = 0;
+    const guard = createLaunchGuard({ cooldownsMs: [1000, 5000], maxAttempts: 5, now: () => clock });
+    guard.markSpawn();
+    // 第一步：1000ms 后允许。
+    clock = 999;
+    expect(guard.canSpawn()).toBe(false);
+    clock = 1000;
+    expect(guard.canSpawn()).toBe(true);
+    // 第二步：变成 5000ms —— 同一个固定冷却不会再等这么久。
+    guard.markSpawn();
+    clock = 1000 + 4999;
+    expect(guard.canSpawn()).toBe(false);
+    clock = 1000 + 5000;
+    expect(guard.canSpawn()).toBe(true);
+  });
+
   it('reports exhaustion after maxAttempts, and resets once the IDE is serving', () => {
     let clock = 0;
-    const guard = createLaunchGuard({ cooldownMs: 10, maxAttempts: 2, now: () => clock });
+    const guard = createLaunchGuard({ cooldownsMs: [10], maxAttempts: 2, now: () => clock });
     guard.markSpawn();
     clock += 100;
     guard.markSpawn();
@@ -70,7 +87,8 @@ describe('createLaunchGuard', () => {
     expect(guard.canSpawn()).toBe(false);
 
     guard.reset();
-    expect(guard.state()).toEqual({ lastSpawnAt: 0, attempts: 0 });
+    expect(guard.state()).toMatchObject({ attempts: 0 });
+    expect(guard.exhausted()).toBe(false);
     expect(guard.canSpawn()).toBe(true);
   });
 });

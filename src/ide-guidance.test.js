@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MCP_RECOVERY_GUIDANCE,
   MCP_RECOVERY_GUIDANCE_MARKED,
+  MCP_RECOVERY_GUIDANCE_GAVE_UP,
   MCP_RECOVERY_GUIDANCE_RECONNECTING,
   appendGuidance,
   appendIdeRecoveryGuidance,
@@ -48,5 +49,10 @@ describe('注入与恢复提示', () => {
 
     appendIdeRecoveryGuidance(system, { marked: true, serving: false });
     expect(system[2].text).toBe(MCP_RECOVERY_GUIDANCE_RECONNECTING);
+
+    // 自动重连放弃之后不能再声称"正在重连"——那句话模型会原样转给用户。
+    appendIdeRecoveryGuidance(system, { marked: true, serving: false, gaveUp: true });
+    expect(system[3].text).toBe(MCP_RECOVERY_GUIDANCE_GAVE_UP);
+    expect(new Set(system.map((part) => part.text)).size).toBe(4);
   });
 });

@@ -17,6 +17,9 @@ import { createServer } from 'node:http';
  * `setProjectOpen(path, open)`: live switch for whether a project path counts as
  * open. `setProjectOpen(false)` is shorthand for clearing this instance's set.
  *
+ * `setDelay(fn)`: `(message) => ms`，人为拖慢应答，用来模拟 IDE 冷启动/索引期间的
+ * 慢响应（这正是"探测超时"要覆盖的场景）。
+ *
  * @param {number} [port]
  */
 export function startFakeIde(port = 0) {
@@ -26,6 +29,72 @@ export function startFakeIde(port = 0) {
     // 按工具名给不同的 text 结果；没登记的走默认的模块清单。`get_project_env` 这类
     // 有自己输出契约的工具靠它返回真实形状。
     const toolResults = new Map();
+    // 人为拖慢某次应答：`(message) => ms`。用来模拟"IDE 还在索引、答得很慢"。
+    let delayFor = () => 0;
+
+    /** 应答一次请求。单独抽出来只为了能延迟调用。 */
+    const respond = (message, req, res) => {
+      if (message.method === 'initialize') {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': 'fake-session' });
+        res.end(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: { protocolVersion: '2025-06-18', serverInfo: { name: 'fake', version: '1' } },
+          }),
+        );
+        return;
+      }
+      if (message.method === 'tools/call') {
+        const project = req.headers['ij_mcp_server_project_path'];
+        if (!project || !openProjects.has(project)) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              id: message.id,
+              result: {
+                content: [
+                  {
+                    type: 'text',
+                    text: 'Unable to determine the target project for the current MCP tool call.',
+                  },
+                ],
+                isError: true,
+              },
+            }),
+          );
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        const name = message.params?.name;
+        let text = toolResults.get(name)
+          ?? (name === 'get_project_env' ? '{"PATH":"","variables":{}}' : '{"modules":[]}');
+        // `get_project_env` 是项目路径的探测通道：默认返回当前 header 的项目，
+        // 已经设置过的结果若缺 `projectPath` 也补上，避免每个测试都手写。
+        if (name === 'get_project_env') {
+          try {
+            const parsed = JSON.parse(text);
+            if (parsed && typeof parsed === 'object' && typeof parsed.projectPath !== 'string') {
+              parsed.projectPath = project;
+              text = JSON.stringify(parsed);
+            }
+          } catch {
+            // 不是 JSON：保持原样，让调用方按错误处理
+          }
+        }
+        res.end(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: { content: [{ type: 'text', text }], isError: false },
+          }),
+        );
+        return;
+      }
+      res.writeHead(202).end();
+    };
+
     const server = createServer((req, res) => {
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname !== '/stream' || req.method !== 'POST') {
@@ -42,67 +111,15 @@ export function startFakeIde(port = 0) {
         } catch {
           // ignore
         }
-        if (message.method === 'initialize') {
-          res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': 'fake-session' });
-          res.end(
-            JSON.stringify({
-              jsonrpc: '2.0',
-              id: message.id,
-              result: { protocolVersion: '2025-06-18', serverInfo: { name: 'fake', version: '1' } },
-            }),
-          );
+        const delay = delayFor(message) ?? 0;
+        if (delay > 0) {
+          setTimeout(() => respond(message, req, res), delay);
           return;
         }
-        if (message.method === 'tools/call') {
-          const project = req.headers['ij_mcp_server_project_path'];
-          if (!project || !openProjects.has(project)) {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(
-              JSON.stringify({
-                jsonrpc: '2.0',
-                id: message.id,
-                result: {
-                  content: [
-                    {
-                      type: 'text',
-                      text: 'Unable to determine the target project for the current MCP tool call.',
-                    },
-                  ],
-                  isError: true,
-                },
-              }),
-            );
-            return;
-          }
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          const name = message.params?.name;
-          let text = toolResults.get(name)
-            ?? (name === 'get_project_env' ? '{"PATH":"","variables":{}}' : '{"modules":[]}');
-          // `get_project_env` 是项目路径的探测通道：默认返回当前 header 的项目，
-          // 已经设置过的结果若缺 `projectPath` 也补上，避免每个测试都手写。
-          if (name === 'get_project_env') {
-            try {
-              const parsed = JSON.parse(text);
-              if (parsed && typeof parsed === 'object' && typeof parsed.projectPath !== 'string') {
-                parsed.projectPath = project;
-                text = JSON.stringify(parsed);
-              }
-            } catch {
-              // 不是 JSON：保持原样，让调用方按错误处理
-            }
-          }
-          res.end(
-            JSON.stringify({
-              jsonrpc: '2.0',
-              id: message.id,
-              result: { content: [{ type: 'text', text }], isError: false },
-            }),
-          );
-          return;
-        }
-        res.writeHead(202).end();
+        respond(message, req, res);
       });
     });
+
     server.listen(port, '127.0.0.1', () =>
       resolve({
         server,
@@ -118,6 +135,10 @@ export function startFakeIde(port = 0) {
         setToolResult: (name, text) => {
           if (typeof text === 'string') toolResults.set(name, text);
           else toolResults.delete(name);
+        },
+        /** 人为拖慢应答（`(message) => ms`），模拟 IDE 冷启动/索引期间的慢响应。 */
+        setDelay: (fn) => {
+          delayFor = typeof fn === 'function' ? fn : () => 0;
         },
       }),
     );

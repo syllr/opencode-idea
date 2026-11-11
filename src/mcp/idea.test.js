@@ -1,5 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MCP_STREAM_PATH, callTool, ideProjectPath, serverConfig } from './idea.js';
+import {
+  callTool,
+  MCP_STREAM_PATH,
+  ideProjectPath,
+  PROBE_DOWN,
+  PROBE_NO_PROJECT,
+  PROBE_OK,
+  PROBE_SLOW,
+  probeProject,
+  serverConfig,
+} from './idea.js';
 
 describe('ideProjectPath', () => {
   it('normalizes a Windows path to the forward slashes the IDE matches', () => {
@@ -81,5 +91,90 @@ describe('callTool', () => {
     const registered = serverConfig(64342, 'E:\\gitea\\secondev-demo').headers.IJ_MCP_SERVER_PROJECT_PATH;
     expect(asked).toBe('E:/gitea/secondev-demo');
     expect(asked).toBe(registered);
+  });
+});
+
+describe('probeProject', () => {
+  const json = (body, headers = {}) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json', ...headers } });
+
+  /** 一个会正常应答的端点；`env` 决定 `get_project_env` 回什么。 */
+  const servingIde = ({ env } = {}) => {
+    const calls = [];
+    const fetchImpl = vi.fn(async (url, options) => {
+      calls.push(JSON.parse(options.body));
+      const body = JSON.parse(options.body);
+      if (body.method === 'initialize') {
+        return json({ jsonrpc: '2.0', id: 1, result: {} }, { 'mcp-session-id': 's1' });
+      }
+      return json({
+        jsonrpc: '2.0',
+        id: 2,
+        result: env ?? { structuredContent: { PATH: '/bin', variables: {}, projectPath: '/project' } },
+      });
+    });
+    return { calls, fetchImpl };
+  };
+
+  it('reports the project the IDE says it is serving', async () => {
+    const { fetchImpl } = servingIde();
+    await expect(probeProject(64342, '/project', { fetchImpl })).resolves.toMatchObject({
+      state: PROBE_OK,
+      projectPath: '/project',
+    });
+  });
+
+  it('separates "server answered, this project is not open" from "server is gone"', async () => {
+    const { fetchImpl } = servingIde({
+      env: {
+        content: [{ type: 'text', text: 'Unable to determine the target project.' }],
+        isError: true,
+      },
+    });
+    await expect(probeProject(64342, '/project', { fetchImpl })).resolves.toMatchObject({
+      state: PROBE_NO_PROJECT,
+    });
+
+    // 连不上是另一件事：调用方据此决定"拉起 IDE"，而不是"打开项目"。
+    const refused = vi.fn(async () => {
+      throw new TypeError('fetch failed: ECONNREFUSED');
+    });
+    await expect(probeProject(64342, '/project', { fetchImpl: refused })).resolves.toMatchObject({
+      state: PROBE_DOWN,
+    });
+  });
+
+  it('calls a connection that never answers slow, not gone', async () => {
+    // 端点接了连接但一直不答（IDE 卡住/索引中）。把它归成 down 会导致重复拉起。
+    const hanging = vi.fn(
+      (_url, options) =>
+        new Promise((_resolve, reject) => {
+          options.signal.addEventListener('abort', () =>
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+          );
+        }),
+    );
+    await expect(
+      probeProject(64342, '/project', { fetchImpl: hanging, initializeTimeoutMs: 20, callTimeoutMs: 20 }),
+    ).resolves.toMatchObject({ state: PROBE_SLOW });
+  });
+
+  it('gives the project call its own budget instead of the leftover from initialize', async () => {
+    // 回归：两段曾共用一个 AbortController，于是 initialize 的短超时把 get_project_env
+    // 也掐了 —— 冷启动的 IDE 因此永远被读成"这个项目没打开"。
+    const fetchImpl = vi.fn(async (_url, options) => {
+      const body = JSON.parse(options.body);
+      if (body.method === 'initialize') return json({ jsonrpc: '2.0', id: 1, result: {} });
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return json({
+        jsonrpc: '2.0',
+        id: 2,
+        result: { structuredContent: { projectPath: '/project' } },
+      });
+    });
+
+    await expect(
+      probeProject(64342, '/project', { fetchImpl, initializeTimeoutMs: 20, callTimeoutMs: 400 }),
+    ).resolves.toMatchObject({ state: PROBE_OK });
   });
 });

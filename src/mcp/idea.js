@@ -11,12 +11,36 @@
 //     (which the plugin then heals) instead of hanging silently.
 //   * The project a call targets is selected by the project path, carried in the
 //     HTTP header `IJ_MCP_SERVER_PROJECT_PATH` (see `serverConfig`).
-//   * Availability probe: a single `initialize` POST to `/stream` succeeds when
-//     the MCP server is up. We do NOT check whether a specific project is open —
-//     the user triggers `/open-in-ide` for the project they want, so "server is
-//     up" is the only thing worth knowing.
+//   * Availability probe is TWO phases with their own budgets, because they
+//     answer different questions: `initialize` asks "is the endpoint there?"
+//     (cheap, must be answered fast) and `get_project_env` asks "is THIS project
+//     open in it?" (touches the project model, legitimately slow while the IDE
+//     indexes after a restart). One shared budget made the second phase inherit
+//     whatever the first one left over, so a cold IDE looked like "this project
+//     is not open" — see `probeProject`.
+//   * The probe reports WHAT it saw (`ok` / `no-project` / `down` / `slow`), not
+//     a boolean: the caller has to decide between waiting, opening the project,
+//     and telling the user to enable MCP, and those are not the same failure.
 
 export const PROJECT_HEADER = 'IJ_MCP_SERVER_PROJECT_PATH';
+
+/**
+ * 探测结论。四种状态对应三种完全不同的后续动作，所以不能用布尔。
+ *
+ * - `ok`：端点活着，而且打开的就是这个项目 → 可以注册；
+ * - `no-project`：MCP 服务正常应答，但目标项目没打开 → `open -a <dir>` 有用；
+ * - `down`：连不上/握手被拒（IDE 没开、MCP 服务没启用）→ 拉起 IDE 有用；
+ * - `slow`：连上了但没在预算内答完（冷启动、索引中）→ **等**，不要重复拉起。
+ */
+export const PROBE_OK = 'ok';
+export const PROBE_NO_PROJECT = 'no-project';
+export const PROBE_DOWN = 'down';
+export const PROBE_SLOW = 'slow';
+
+/** `initialize` 的预算：只判"端点在不在"，异常端点必须在 2s 内暴露。 */
+export const PROBE_INITIALIZE_TIMEOUT_MS = 2000;
+/** `get_project_env` 的预算：它要碰项目模型，冷启动/索引期就是慢。 */
+export const PROBE_CALL_TIMEOUT_MS = 15000;
 
 /**
  * The project path in the form the IDE matches against.
@@ -105,14 +129,125 @@ function withExecutionTimeout(config, options) {
  */
 export async function callTool(port, projectPath, name, args = {}, options = {}) {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const controller = new AbortController();
   // remote_* 不设内部超时（用户明确要求卡住由自己取消）；0 / Infinity 表示不挂定时器。
   const timeoutMs = options.timeoutMs ?? CALL_TIMEOUT_MS;
+  // 整次调用（initialize + tools/call）共用一个预算：调用方给的是"这次工具调用最多
+  // 等多久"，不是"每个 POST 等多久"。
+  const deadline = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Date.now() + timeoutMs : undefined;
+  const remaining = () => (deadline === undefined ? timeoutMs : Math.max(1, deadline - Date.now()));
+  const base = {fetchImpl, port, projectPath, timeoutMs: remaining()};
+  const initialized = await postRequest(base, initializePayload());
+  if (initialized.state) return undefined;
+  const response = await postRequest(
+    {...base, sessionId: sessionIdOf(initialized.response), timeoutMs: remaining()},
+    callPayload(name, args),
+  );
+  if (response.state || !response.response.ok) return undefined;
+  const message = await parseToolResponse(response.response);
+  if (!message || message.error) return undefined;
+  return message.result;
+}
+
+/**
+ * 探测「这个 IDE 的 MCP 服务里，此刻打开着的是不是 `projectPath`」。
+ *
+ * 两段各有预算：`initialize` 只证明端点在（短），`get_project_env` 才回答项目问题
+ * （长）。返回**结论**而不是布尔，调用方才能区分"等"、"开项目"、"拉起 IDE"。
+ *
+ * 永不抛错：任何失败都折算成一个 `state`。
+ *
+ * @param {number} port
+ * @param {string} projectPath
+ * @param {{
+ *   fetchImpl?: typeof fetch,
+ *   initializeTimeoutMs?: number,
+ *   callTimeoutMs?: number,
+ * }} [options]
+ * @returns {Promise<{ state: string, projectPath?: string, detail?: string }>}
+ */
+export async function probeProject(port, projectPath, options = {}) {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const initialized = await postRequest({
+    fetchImpl,
+    port,
+    projectPath,
+    timeoutMs: options.initializeTimeoutMs ?? PROBE_INITIALIZE_TIMEOUT_MS,
+  }, initializePayload());
+  if (initialized.state) return {state: initialized.state};
+  if (!initialized.response.ok) {
+    return {state: PROBE_DOWN, detail: `initialize HTTP ${initialized.response.status}`};
+  }
+  const response = await postRequest({
+    fetchImpl,
+    port,
+    projectPath,
+    sessionId: sessionIdOf(initialized.response),
+    timeoutMs: options.callTimeoutMs ?? PROBE_CALL_TIMEOUT_MS,
+  }, callPayload('get_project_env', {}));
+  if (response.state) return {state: response.state};
+  if (!response.response.ok) {
+    return {state: PROBE_DOWN, detail: `get_project_env HTTP ${response.response.status}`};
+  }
+  const message = await parseToolResponse(response.response);
+  if (!message || message.error) return {state: PROBE_DOWN, detail: 'get_project_env JSON-RPC error'};
+  const result = message.result;
+  if (result?.isError === true) {
+    // IDE 为"目标项目没打开"回的就是 isError（Unable to determine the target project）。
+    return {state: PROBE_NO_PROJECT, detail: textOf(result)};
+  }
+  const payload = (result?.structuredContent && typeof result.structuredContent === 'object')
+    ? result.structuredContent
+    : textJsonOf(result);
+  const reported = typeof payload?.projectPath === 'string' && payload.projectPath !== ''
+    ? payload.projectPath
+    : undefined;
+  if (!reported) return {state: PROBE_NO_PROJECT, detail: 'no projectPath in get_project_env'};
+  return {state: PROBE_OK, projectPath: reported};
+}
+
+/** `tools/call` 的 JSON-RPC 载荷。 */
+function callPayload(name, args) {
+  return {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name, arguments: args },
+  };
+}
+
+/** `initialize` 的 JSON-RPC 载荷。 */
+function initializePayload() {
+  return {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: {
+      protocolVersion: PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: 'opencode-idea', version: '0.1.11' },
+    },
+  };
+}
+
+/** The session id `initialize` binds the rest of the exchange to. */
+function sessionIdOf(response) {
+  return response?.headers?.get?.('mcp-session-id') ?? undefined;
+}
+
+/**
+ * 一次 POST，带自己的预算。返回 `{response}` 或 `{state}`：超时是 `slow`（端点可能
+ * 在，只是没答完），其它传输错误是 `down`（连不上）。
+ *
+ * 预算按调用单独计算 —— 这正是原来的 bug：两次 POST 共用一个 AbortController，第二次
+ * 只能吃第一次的剩饭。
+ */
+async function postRequest({fetchImpl, port, projectPath, sessionId, timeoutMs}, payload) {
+  const controller = new AbortController();
   const timer = Number.isFinite(timeoutMs) && timeoutMs > 0
     ? setTimeout(() => controller.abort(), timeoutMs)
     : undefined;
-  const post = (payload, sessionId) =>
-    fetchImpl(`http://127.0.0.1:${port}${MCP_STREAM_PATH}`, {
+  try {
+    const response = await fetchImpl(`http://127.0.0.1:${port}${MCP_STREAM_PATH}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -123,40 +258,34 @@ export async function callTool(port, projectPath, name, args = {}, options = {})
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
-  try {
-    const initialized = await post({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'initialize',
-      params: {
-        protocolVersion: PROTOCOL_VERSION,
-        capabilities: {},
-        clientInfo: { name: 'opencode-idea', version: '0.1.10' },
-      },
-    });
-    // The IDE's Streamable-HTTP endpoint binds follow-up requests to the session
-    // created by `initialize`: without echoing its `Mcp-Session-Id` header the
-    // server rejects the call with "Bad Request: Server not initialized"
-    // (verified against IntelliJ IDEA 2026.2.3).
-    const sessionId = initialized.headers?.get?.('mcp-session-id') ?? undefined;
-    const response = await post(
-      {
-        jsonrpc: '2.0',
-        id: 2,
-        method: 'tools/call',
-        params: { name, arguments: args },
-      },
-      sessionId,
-    );
-    if (!response.ok) return undefined;
-    const message = await parseToolResponse(response);
-    if (!message || message.error) return undefined;
-    return message.result;
-  } catch {
-    return undefined;
+    return {response};
+  } catch (error) {
+    return {state: aborted(error) ? PROBE_SLOW : PROBE_DOWN};
   } finally {
     clearTimeout(timer);
-    controller.abort();
+  }
+}
+
+/** 这个异常是不是"我们自己掐断的"（超时），而不是对端拒绝。 */
+function aborted(error) {
+  return error?.name === 'AbortError' || error?.cause?.name === 'AbortError';
+}
+
+/** 工具结果里的文本，用于把 IDE 的原话带进日志。 */
+function textOf(result) {
+  const parts = Array.isArray(result?.content) ? result.content : [];
+  return parts
+    .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text)
+    .join('\n');
+}
+
+/** 工具结果文本里的 JSON（IDE 把结构塞进 text 时用）。 */
+function textJsonOf(result) {
+  try {
+    return JSON.parse(textOf(result));
+  } catch {
+    return undefined;
   }
 }
 

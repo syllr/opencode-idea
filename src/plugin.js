@@ -39,14 +39,31 @@
 //     the IDE MCP is not usable (the server dropped, or the project is not open
 //     in the IDE). A plain business error is classified apart and left alone.
 //
+// Two rules make that recovery survive a cold IDE instead of dying quietly:
+//   * the probe reports WHAT it saw (`ok` / `no-project` / `down` / `slow`), and
+//     only the last one is retried in place — see `probeProjectNow`;
+//   * failures are REMEMBERED across messages (`probeFailures`): each further
+//     attempt waits longer, and a project that keeps failing gets a truthful
+//     "we stopped reconnecting" guidance instead of a claim that a reconnect is
+//     under way. Before this, every message re-ran the same doomed attempt and
+//     nothing was logged, so a dead session looked exactly like a lazy model.
+//
 // `Plugin.define` from `@opencode/plugin` is an identity function, so a plain
 // `{ id, setup }` object is the whole plugin contract. Exporting it directly
 // keeps this package dependency-free at runtime.
 
 import {statSync} from 'node:fs';
-import {resolve} from 'node:path';
 
-import {callTool, serverConfig} from './mcp/idea.js';
+import {
+    callTool,
+    PROBE_DOWN,
+    PROBE_INITIALIZE_TIMEOUT_MS,
+    PROBE_NO_PROJECT,
+    PROBE_OK,
+    PROBE_SLOW,
+    probeProject,
+    serverConfig,
+} from './mcp/idea.js';
 import {
     applyDescriptionOverrides,
     applyIdeToolDefaults,
@@ -74,6 +91,7 @@ import {
     serializeMark,
 } from './ide-projects.js';
 import {readSkills} from './skill/loader.js';
+import {logEvent} from './log.js';
 import {
     createRemoteToolset,
     remoteDownloadTool,
@@ -94,21 +112,38 @@ import {
     remoteFilesPrompt,
 } from './remote/prompts.js';
 
-const DEFAULT_LAUNCH_COOLDOWN_MS = 120000;
-const DEFAULT_LAUNCH_MAX_ATTEMPTS = 5;
-// 单次「这个 IDE 里打开着这个项目吗」探测的超时。它比单纯的端口存活探测重（IDE 要
-// 先解析出目标项目），给 1s 的话 IDE 忙（索引中）时会被误判成"不认得",进而触发一次多余
-// 的 `open -a`;给太长又会让用户等。5s 是这两者之间的取舍。注意 IDE 没开时 connect 会
-// 立刻失败,根本走不到这个上限。
-const DEFAULT_MCP_PROBE_TIMEOUT_MS = 5000;
+/**
+ * 一次**逻辑探测**的总预算：在这段时间里按退避重试着探测，直到拿到结论。
+ *
+ * 为什么不是"单次请求超时"：冷启动/索引期 IDE 会把 `get_project_env` 拖住，单发一次
+ * 5s 必然误判成"这个项目没打开"。这里给的是"这次探测最多等多久"，内部的两次握手各有
+ * 自己的预算（见 `mcp/idea.js` 的 `probeProject`）。
+ */
+const DEFAULT_MCP_PROBE_TIMEOUT_MS = 8000;
+// 单次尝试里 `get_project_env` 的等待上限。它必须远小于总预算：等于总预算时，第一次
+// `slow` 就把预算吃光，"在预算内重试"永远不会发生。
+const DEFAULT_PROBE_ATTEMPT_TIMEOUT_MS = 5000;
+// 单次逻辑探测内部的退避：端点答了但没答完（`slow`）时才用。第一次 0.5s 就重来，因为
+// 冷启动前期恰恰是最值得再试的时候；封顶 2s，别把一条用户消息拖成十几秒。
+const PROBE_RETRY_BACKOFF_MS = [500, 1000, 2000];
+// 跨消息的退避：连续失败后，下一条消息**先不探测**，等到这个间隔过去。没有它，每条
+// 消息都会用同样的预算重撞一次墙（线上就是这么空转了 11 分钟）。
+const PROBE_COOLDOWN_MS = [5000, 15000, 60000, 120000];
+// 连续失败到这个次数就认定"自动重连没戏"，改为在提示词里让模型告诉用户去 /open-in-ide。
+const PROBE_GIVE_UP_AFTER = 3;
+// `reviveIde()` 的最小间隔：`context` 钩子每个 agent-loop step 都跑，重连会重建注册，
+// 不能因为同一步里连着几次"没有工具"就被放大成 churn。
+const REVIVE_MIN_INTERVAL_MS = 10000;
 // A cold IDE can take tens of seconds before its bundled MCP server listens.
 // After `open -a`, poll for the endpoint instead of reporting failure once.
 const DEFAULT_MCP_START_TIMEOUT_MS = 60000;
-const MCP_START_POLL_MS = 1000;
+// `open -a` 之后的轮询间隔：前密后疏。固定 1s 会在冷启动最慢的前 10 秒里反复握手，之后
+// 又毫无必要地保持同样的频率；60000ms 的总时长不变，次数从 ~60 次降到 ~25 次。
+const START_BACKOFF_MS = [500, 1000, 2000, 3000];
 const DEFAULT_TOOL_REFRESH_TIMEOUT_MS = 5000;
-// 等工具目录落地时的轮询间隔。这是一次**有界等待**(见 waitForIdeaTools),不是
-// 状态轮询:100ms 足够快,又不会在 5s 上限内空转几十次。
-const TOOL_REFRESH_POLL_MS = 100;
+// 等工具目录落地时的轮询间隔。同上是**有界等待**(见 waitForIdeTools)，但指数退避比
+// 固定 100ms 更合适：工具目录只会"从没有到有"，前期密、后期疏。
+const TOOL_REFRESH_BACKOFF_MS = [100, 200, 400, 800];
 // Hard cap on ONE IDE MCP tool call. OpenCode's own default is 12 hours, and a
 // wedged IDE MCP server can accept a POST and never answer it — so a call made
 // after the IDE died would otherwise sit unresolved for 12h. 10 minutes is far
@@ -151,17 +186,6 @@ export function projectEnvFromResult(result) {
         env.projectPath = payload.projectPath;
     }
     return env;
-}
-
-/** 从 `get_project_env` 结果里取 IDE 项目路径；与 PATH/variables 是否完整无关。 */
-function projectPathFromResult(result) {
-    if (!result || result.isError === true) return undefined;
-    const payload = (result.structuredContent && typeof result.structuredContent === 'object')
-        ? result.structuredContent
-        : textJson(result);
-    return typeof payload?.projectPath === 'string' && payload.projectPath !== ''
-        ? payload.projectPath
-        : undefined;
 }
 
 /**
@@ -582,6 +606,8 @@ function rewriteToolError(event, message) {
  *   opened?: boolean,
  *   unavailableNoticeSent?: boolean,
  *   project?: { app?: string },
+ *   // 探测结论（`down` / `slow` / `no-project`），让提示文案说得清原因。
+ *   state?: string,
  *   message?: string
  * }} IdeCommandResult
  */
@@ -592,6 +618,9 @@ function rewriteToolError(event, message) {
  */
 const asPositiveNumber = (value, fallback) =>
     typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+
+/** 退避用的等待。调用方在每次迭代之间检查 `disposed` / `config`，所以删配置能立刻停下。 */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** 面向用户的状态文案（两个接入命令共用）。 */
 /** @param {IdeCommandResult} result */
@@ -609,6 +638,14 @@ export function ideFeedback(result) {
         case 'mcp-unavailable': {
             const where = nameOf(result?.project);
             const ide = 'IntelliJ IDEA';
+            // 先按探测结论说原因：把"没开 MCP"和"项目没打开"混成一句话，用户只能挨个试。
+            if (result?.state === 'slow') {
+                const prefix = result?.opened ? `已请求打开/激活 ${where},` : '';
+                return `${prefix}但 MCP 服务在超时时间内没有应答(IDE 可能还在启动或索引)。请稍等片刻再执行 /open-in-ide;若一直这样,检查 ${ide} 是否卡住。`;
+            }
+            if (result?.state === 'no-project') {
+                return `MCP 服务正常,但 ${where} 没有在 ${ide} 里打开(MCP 服务是全局的,项目要单独打开)。请在 ${ide} 中打开这个项目,然后再次执行 /open-in-ide。`;
+            }
             return result?.opened
                 ? `已请求打开/激活 ${where} 并等待 MCP 服务启动,但未检测到 MCP 服务。请在 ${ide} 中开启 MCP 服务(Settings → MCP Server,需 2026.2+)并启用 Brave Mode,然后再次执行 /open-in-ide。`
                 : `未检测到 ${where} 的 MCP 服务。请确认已打开,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后再次执行 /open-in-ide。`;
@@ -658,10 +695,12 @@ export default {
      *   location?: unknown,
      *   options?: {
      *     openInIde?: boolean,
-     *     launchCooldownMs?: number,
+     *     launchCooldownsMs?: number[],
      *     launchMaxAttempts?: number,
      *     injectGuidance?: boolean,
      *     mcpProbeTimeoutMs?: number,
+     *     probeAttemptTimeoutMs?: number,
+     *     probeRetryBackoffsMs?: number[],
      *     mcpStartTimeoutMs?: number,
      *     toolRefreshTimeoutMs?: number,
      *     executionTimeoutMs?: number,
@@ -737,7 +776,14 @@ export default {
         const injectGuidance = options.injectGuidance !== false;
         // 自动拉起 IDE 的总开关。只支持 IntelliJ IDEA，这个选项只决定"允不允许拉起"。
         const launchEnabled = options.openInIde !== false;
+        // 一次逻辑探测（含内部退避重试）的总预算。
         const mcpProbeTimeoutMs = asPositiveNumber(options.mcpProbeTimeoutMs, DEFAULT_MCP_PROBE_TIMEOUT_MS);
+        // 单次尝试里 `get_project_env` 最多等多久。必须小于总预算，否则第一次 `slow`
+        // 就吃掉全部预算，重试等于不存在。
+        const probeAttemptTimeoutMs = asPositiveNumber(options.probeAttemptTimeoutMs, DEFAULT_PROBE_ATTEMPT_TIMEOUT_MS);
+        const probeRetryBackoffsMs = Array.isArray(options.probeRetryBackoffsMs) && options.probeRetryBackoffsMs.length > 0
+            ? options.probeRetryBackoffsMs.filter((value) => typeof value === 'number' && value >= 0)
+            : PROBE_RETRY_BACKOFF_MS;
         const mcpStartTimeoutMs = asPositiveNumber(options.mcpStartTimeoutMs, DEFAULT_MCP_START_TIMEOUT_MS);
         const toolRefreshTimeoutMs = asPositiveNumber(options.toolRefreshTimeoutMs, DEFAULT_TOOL_REFRESH_TIMEOUT_MS);
         // Cap on a single IDE tool call, so a wedged server fails in finite time
@@ -747,8 +793,11 @@ export default {
         // model only acknowledges ("收到"); the user sees the clean notice via
         // metadata.displayText. false is silent.
         const feedback = options.feedback === false ? false : 'message';
-        const launchCooldownMs = asPositiveNumber(options.launchCooldownMs, DEFAULT_LAUNCH_COOLDOWN_MS);
-        const launchMaxAttempts = asPositiveNumber(options.launchMaxAttempts, DEFAULT_LAUNCH_MAX_ATTEMPTS);
+        // 拉起冷却：前密后疏（见 `LAUNCH_COOLDOWNS_MS`）。
+        const launchCooldownsMs = Array.isArray(options.launchCooldownsMs) && options.launchCooldownsMs.length > 0
+            ? options.launchCooldownsMs.filter((value) => typeof value === 'number' && value > 0)
+            : undefined;
+        const launchMaxAttempts = asPositiveNumber(options.launchMaxAttempts, undefined);
 
         /** @type {Array<{ dispose: () => Promise<void> | void }>} */
         let registrations = [];
@@ -880,6 +929,7 @@ export default {
         const waitForIdeTools = async () => {
             if (typeof ctx.tool?.list !== 'function') return false;
             const deadline = Date.now() + toolRefreshTimeoutMs;
+            let attempt = 0;
             while (Date.now() < deadline) {
                 try {
                     const ids = toolIds(await ctx.tool.list());
@@ -887,15 +937,19 @@ export default {
                 } catch {
                     // The MCP catalog may still be settling; retry within the bounded wait.
                 }
-                await new Promise((resolve) => setTimeout(resolve, TOOL_REFRESH_POLL_MS));
+                const wait = TOOL_REFRESH_BACKOFF_MS[Math.min(attempt, TOOL_REFRESH_BACKOFF_MS.length - 1)];
+                attempt += 1;
+                const remaining = deadline - Date.now();
+                if (remaining <= 0) break;
+                await sleep(Math.min(wait, remaining));
             }
             return false;
         };
 
         /**
-         * 一个项目的 MCP 端口,由它的 IDE 唯一决定(`IDE_PORTS`,固定值)。
+        /**
+         * IDE 的 MCP 端口。只支持一个 IDE，所以端口是固定值（`IDE_PORTS`），与项目无关。
          *
-         * @param {{ path: string, app: string }} project
          * @returns {number | undefined}
          */
         const portFor = () => IDE_PORTS.idea;
@@ -915,7 +969,7 @@ export default {
             if (envLoadInFlight) return envLoadInFlight;
             const run = (async () => {
                 const project = currentProject();
-                const port = project ? portFor(project) : undefined;
+                const port = project ? portFor() : undefined;
                 if (!project || port === undefined) return false;
                 const result = await callTool(port, project.path, 'get_project_env', {}, {
                     timeoutMs: PROJECT_ENV_TIMEOUT_MS,
@@ -946,7 +1000,7 @@ export default {
          */
         const callIdeTool = async (name, args, options = {}) => {
             const project = currentProject();
-            const port = project ? portFor(project) : undefined;
+            const port = project ? portFor() : undefined;
             if (!project || port === undefined) {
                 throw new Error('还没有接入 IDE 项目：先执行 /open-in-ide。');
             }
@@ -1084,19 +1138,22 @@ export default {
          * - `ready`：工具目录 + root 环境变量都到位；
          * - `tools`：server 注册了，但工具目录没落地；
          * - `env`：工具可用，但 `get_project_env` 没取到；
+         * - `offline`：有配置，但这次探测证明 IDE 端连不上/没服务这个项目；
          * - `none`：没有可连的项目 / 未配置 / 本次不探测。
          *
-         * 分阶段返回是必要的：`tools-loading` 与 `env-unready` 是两种完全不同的失败，
-         * 调用方的提示与重试节奏也不同，用 boolean 会把它们混成一个。
+         * `offline` 与 `none` 必须分开：`none` 是"不用连"，`offline` 是"该连但连不上"。
+         * 混在一起正是之前"每条消息都从零重试、失败后被静默丢掉"的根源。
          *
-         * @returns {Promise<'ready' | 'tools' | 'env' | 'none'>}
+         * @param {{ probeIde?: boolean, budgetMs?: number }} [options]
+         * @returns {Promise<'ready' | 'tools' | 'env' | 'offline' | 'none'>}
          */
-        const reconcileOnce = async ({probeIde = true} = {}) => {
+        const reconcileOnce = async ({probeIde = true, budgetMs} = {}) => {
             if (disposed) return 'none';
 
             // 未配置：没有任何项目要接入。
             if (!config) {
                 await deactivateIde();
+                resetProbeFailures();
                 return 'none';
             }
             // Manual: only the commands probe the IDE. Setup calls this with
@@ -1106,12 +1163,18 @@ export default {
                 return 'none';
             }
 
-            const bindings = [];
             const project = currentProject();
-            if (project) {
-                const port = await portForProject(project);
-                if (port !== undefined) bindings.push({project, port});
+            if (!project) return 'none';
+            // 探测没成功时**不要**把它记成"没有可连的项目"：那是把"暂时连不上"当成
+            // "这个项目不需要 IDE"。返回 `offline` 并把原因留在失败状态里，调用方才能
+            // 决定是等、是拉起、还是让用户开 MCP。
+            const probe = await probeProjectNow(project, {budgetMs});
+            if (probe.state !== PROBE_OK) {
+                await deactivateIde();
+                recordProbeFailure(probe.state);
+                return 'offline';
             }
+            const bindings = [{project, port: probe.port}];
 
             // Always tear the servers down and register them again. OpenCode's reconcile
             // SKIPS a re-`set` whose config is unchanged, so re-registering without a
@@ -1119,9 +1182,12 @@ export default {
             // the request hooks are rare; rebuilding costs one restart, which is the
             // right trade for never leaving a dead registration behind.
             await deactivateIde();
-            if (bindings.length === 0) return 'none';
             const toolsReady = await activateIde(bindings);
-            if (!toolsReady) return 'tools';
+            if (!toolsReady) {
+                recordProbeFailure('tools');
+                return 'tools';
+            }
+            resetProbeFailures();
             // 环境变量是连接完成的最后一步：拉不到就等于这次连接没做完，
             // 调用方（`/open-in-ide`、自愈）会据此重试，而不是当作 ready。
             return (await loadProjectEnv()) ? 'ready' : 'env';
@@ -1130,10 +1196,7 @@ export default {
         // Serialize reconciles so overlapping callers can never register/activate
         // the IDE concurrently (which would leak registrations).
         let reconcileChain = Promise.resolve();
-        // Non-zero while a reconcile is queued or running.
-        let reconcileBusy = 0;
         const enqueue = (task) => {
-            reconcileBusy += 1;
             const next = reconcileChain.then(task);
             reconcileChain = next.then(
                 () => {
@@ -1141,43 +1204,105 @@ export default {
                 () => {
                 },
             );
-            return next.finally(() => {
-                reconcileBusy -= 1;
-            });
+            return next;
         };
         const reconcile = (options) => enqueue(() => reconcileOnce(options));
 
         /**
-         * `path` 是不是 IDE **真正打开的那个项目目录**？
-         *
-         * 不能只看一次工具调用是否成功：IDE 会把"落在某个已打开项目目录树内"的路径
-         * 解析到那个项目，所以父目录打开时，当前项目也能被解析成功。严格同目录必须比较
-         * `get_project_env` 返回的 `projectPath`。
-         *
-         * 连接失败 / 拿不到 `projectPath` 一律按"未确认打开"处理，让调用方去拉起 IDE。
-         *
-         * @param {number} port
-         * @param {string} path
+         * 探测/重连的失败状态。**跨消息保留**，这是退避的前提：之前每条消息都从零开始
+         * 单发一次，所以同一堵墙被撞了 11 分钟。
          */
-        const isProjectOpen = async (port, path) => {
-            const result = await callTool(port, path, 'get_project_env', {}, {
-                timeoutMs: mcpProbeTimeoutMs,
-            }).catch(() => undefined);
-            if (!result || result.isError === true) return false;
-            const projectPath = projectPathFromResult(result);
-            if (!projectPath) return false;
-            return sameProjectPath(projectPath, path);
+        const probeFailures = {count: 0, nextAt: 0, state: undefined, at: 0};
+
+        /** 一次探测成功：清掉失败状态，恢复正常节奏。 */
+        const resetProbeFailures = () => {
+            if (probeFailures.count > 0) logEvent('ide.probe.recovered', {after: probeFailures.count});
+            probeFailures.count = 0;
+            probeFailures.nextAt = 0;
+            probeFailures.state = undefined;
+            probeFailures.at = 0;
         };
 
         /**
-         * 这个项目的 IDE 端口上,服务着它吗？是就返回端口,否则 `undefined`。
+         * 记一次探测失败，并按次数安排下一次最早何时再试。
          *
-         * @param {{ path: string, app: string }} project
+         * @param {string} state 探测结论（`down` / `slow` / `no-project`）
          */
-        const portForProject = async (project) => {
-            const port = portFor(project);
-            if (port === undefined) return undefined;
-            return (await isProjectOpen(port, project.path)) ? port : undefined;
+        const recordProbeFailure = (state) => {
+            probeFailures.count += 1;
+            probeFailures.state = state;
+            probeFailures.at = Date.now();
+            const index = Math.min(probeFailures.count - 1, PROBE_COOLDOWN_MS.length - 1);
+            probeFailures.nextAt = probeFailures.at + PROBE_COOLDOWN_MS[index];
+            logEvent('ide.probe.failed', {
+                state,
+                failures: probeFailures.count,
+                retryInMs: PROBE_COOLDOWN_MS[index],
+                project: projectPath,
+            });
+        };
+
+        /** 现在是否处在跨消息退避里（`/open-in-ide` 不理会它，用户是显式要连）。 */
+        const probeCoolingDown = () => Date.now() < probeFailures.nextAt;
+
+        /** 自动重连是不是已经没戏了（连续失败太多次）。 */
+        const probeGaveUp = () => probeFailures.count >= PROBE_GIVE_UP_AFTER;
+
+        /**
+         * **单次**探测，不重试。
+         *
+         * @param {{ path: string }} project
+         * @param {number} remainingMs 预算里还剩多少
+         * @returns {Promise<{ state: string, port?: number, projectPath?: string, detail?: string }>}
+         */
+        const probeAttempt = async (project, remainingMs) => {
+            const port = portFor();
+            if (port === undefined) return {state: PROBE_DOWN, detail: 'no-port'};
+            // 两段预算：initialize 只判"端点在不在"（短、失败要快），get_project_env 才
+            // 判"项目在不在"（要碰项目模型，冷启动就是慢）。
+            //
+            // 单次尝试有自己的上限，否则第一次 `slow` 就会把整个预算吃光，"重试"永远
+            // 不会发生。
+            const initializeTimeoutMs = Math.max(300, Math.min(PROBE_INITIALIZE_TIMEOUT_MS, Math.floor(remainingMs / 4)));
+            const result = await probeProject(port, project.path, {
+                initializeTimeoutMs,
+                callTimeoutMs: Math.min(remainingMs, probeAttemptTimeoutMs),
+            });
+            // 探到了项目、但不是这个目录（IDE 会把子目录解析到父项目）：算"没打开"。
+            if (result.state === PROBE_OK && !sameProjectPath(result.projectPath, project.path)) {
+                return {...result, state: PROBE_NO_PROJECT, port, detail: `serving ${result.projectPath}`};
+            }
+            return {...result, port};
+        };
+
+        /**
+         * 一次**逻辑**探测：在预算内按退避重试，直到结论明确。
+         *
+         * 只有 `slow` 值得重试 —— 它表示"端点可能有，只是没答完"，等一会儿常常就好了。
+         * `down`（连不上）和 `no-project`（服务正常、项目没开）在同一个请求里再试也不会
+         * 变，交给调用方决定是拉起 IDE 还是别动。
+         *
+         * @param {{ path: string }} project
+         * @param {{ budgetMs?: number }} [options]
+         */
+        const probeProjectNow = async (project, options = {}) => {
+            const budgetMs = options.budgetMs ?? mcpProbeTimeoutMs;
+            const deadline = Date.now() + budgetMs;
+            let attempt = 0;
+            let last = {state: PROBE_DOWN, port: portFor()};
+            for (;;) {
+                // 退避期间用户可能删了配置或插件被回收：立刻停，别把这条链拖住。
+                if (disposed || !config) return last;
+                const remaining = deadline - Date.now();
+                if (remaining <= 0) break;
+                last = await probeAttempt(project, remaining);
+                if (last.state !== PROBE_SLOW) return last;
+                const wait = probeRetryBackoffsMs[Math.min(attempt, probeRetryBackoffsMs.length - 1)];
+                attempt += 1;
+                if (Date.now() + wait >= deadline) break;
+                await sleep(wait);
+            }
+            return last;
         };
 
         /**
@@ -1186,19 +1311,27 @@ export default {
          * answers for THIS project. This is the step that makes a single
          * `/open-in-ide` enough on a cold start.
          *
-         * @param {{ path: string, app: string }} project
-         * @returns {Promise<number | undefined>}
+         * 轮询间隔是退避的（`START_BACKOFF_MS`）：冷启动最慢的前几秒里连续试，之后放慢。
+         *
+         * @param {{ path: string }} project
+         * @returns {Promise<{ state: string, port?: number, projectPath?: string, detail?: string }>}
          */
         const waitForProjectServer = async (project) => {
             const deadline = Date.now() + mcpStartTimeoutMs;
+            let attempt = 0;
+            let last = {state: PROBE_DOWN, port: portFor()};
             while (Date.now() < deadline) {
-                const port = await portForProject(project).catch(() => undefined);
-                if (port !== undefined) return port;
+                // 用户中途执行 `/delete-in-ide`：不要再替一个已删除的项目等 IDE。
+                if (disposed || !config) return last;
+                last = await probeAttempt(project, Math.max(1, deadline - Date.now()));
+                if (last.state === PROBE_OK) return last;
+                const wait = START_BACKOFF_MS[Math.min(attempt, START_BACKOFF_MS.length - 1)];
+                attempt += 1;
                 const remaining = deadline - Date.now();
                 if (remaining <= 0) break;
-                await new Promise((resolve) => setTimeout(resolve, Math.min(MCP_START_POLL_MS, remaining)));
+                await sleep(Math.min(wait, remaining));
             }
-            return undefined;
+            return last;
         };
 
         /**
@@ -1215,7 +1348,7 @@ export default {
                     /** @type {Promise<IdeCommandResult> | undefined} */
                     inFlight: undefined,
                     noticeSent: false,
-                    guard: createLaunchGuard({cooldownMs: launchCooldownMs, maxAttempts: launchMaxAttempts}),
+                    guard: createLaunchGuard({cooldownsMs: launchCooldownsMs, maxAttempts: launchMaxAttempts}),
                 };
                 launchStates.set(path, state);
             }
@@ -1226,49 +1359,88 @@ export default {
          * 确保 `project` 的 IDE 正开着、并且打开着这个项目；返回它的端口。
          *
          * @param {{ path: string, server: string, app: string }} project
-         * @param {{ onUnavailable?: (result: IdeCommandResult) => Promise<boolean> }} [options]
+         * @param {{
+         *   onUnavailable?: (result: IdeCommandResult) => Promise<boolean>,
+         *   budgetMs?: number,
+         *   force?: boolean,
+         * }} [options] `force` = 用户显式要连（`/open-in-ide`）：跳过自动拉起的历史
+         *   冷却与预算。自动重连（`reviveIde`）永远不带它 —— 那正是冷却要挡的东西。
          * @returns {Promise<IdeCommandResult>}
          */
-        const ensureProject = (project, {onUnavailable} = {}) => {
+        const ensureProject = (project, {onUnavailable, budgetMs, force = false} = {}) => {
             const state = launchStateFor(project.path);
             if (state.inFlight) return state.inFlight;
-            const reportUnavailable = async (opened) => {
+            const reportUnavailable = async (opened, probeState) => {
                 if (state.noticeSent || typeof onUnavailable !== 'function') return;
                 // Fast-fail: notify as soon as the endpoint is known to be missing so
                 // the user can enable MCP + Brave Mode and retry the command.
-                const delivered = await onUnavailable({status: 'mcp-unavailable', opened, project});
+                const delivered = await onUnavailable({
+                    status: 'mcp-unavailable',
+                    opened,
+                    project,
+                    state: probeState,
+                });
                 if (delivered) state.noticeSent = true;
             };
             const run = (async () => {
                 // 已经开着并且就打开着这个项目：什么都不用做。
-                const serving = await portForProject(project).catch(() => undefined);
-                if (serving !== undefined) {
+                const serving = await probeProjectNow(project, {budgetMs});
+                if (serving.state === PROBE_OK) {
                     state.guard.reset();
                     state.noticeSent = false;
-                    return {status: 'connected', port: serving, project, unavailableNoticeSent: false};
+                    resetProbeFailures();
+                    return {status: 'connected', port: serving.port, project, unavailableNoticeSent: false};
                 }
                 // 需要一个 app 才能拉起。拿不到 app 的原因有两种，交给 autoLaunchSupported 区分。
                 const app = launchEnabled ? ideAppName() : undefined;
                 if (!app) {
+                    recordProbeFailure(serving.state);
                     return {status: autoLaunchSupported() ? 'disabled' : 'manual-launch', project};
                 }
-                if (state.guard.exhausted() || state.guard.coolingDown()) {
+                if (!force && (state.guard.exhausted() || state.guard.coolingDown())) {
                     // There is no reason to wait here: MCP is disabled/not ready, and
                     // the user must enable it in the IDE before retrying the command.
-                    await reportUnavailable(false);
-                    return {status: 'mcp-unavailable', opened: false, project, unavailableNoticeSent: state.noticeSent};
+                    await reportUnavailable(false, serving.state);
+                    return {
+                        status: 'mcp-unavailable',
+                        opened: false,
+                        project,
+                        state: serving.state,
+                        unavailableNoticeSent: state.noticeSent,
+                    };
                 }
-                state.guard.markSpawn();
-                const launched = await openInIde(project.path, {app});
-                if (!launched) return {status: 'launch-failed', project};
-                const started = await waitForProjectServer(project);
-                if (started !== undefined) {
+                if (force) {
+                    // 用户显式执行 `/open-in-ide`：把自动重连留下的冷却/次数清掉，这一次
+                    // 必须真的去拉起。否则"三次失败后放弃"会把用户的主动修复也挡在门外
+                    // （实测：还有个 180s 冷却时，`/open-in-ide` 直接报 mcp-unavailable）。
                     state.guard.reset();
                     state.noticeSent = false;
-                    return {status: 'connected', port: started, project, unavailableNoticeSent: false};
                 }
-                await reportUnavailable(true);
-                return {status: 'mcp-unavailable', opened: true, project, unavailableNoticeSent: state.noticeSent};
+                state.guard.markSpawn();
+                logEvent('ide.launch', {project: project.path, attempt: state.guard.state().attempts, reason: serving.state});
+                const launched = await openInIde(project.path, {app});
+                if (!launched) {
+                    logEvent('ide.launch.failed', {project: project.path});
+                    recordProbeFailure(serving.state);
+                    return {status: 'launch-failed', project};
+                }
+                const started = await waitForProjectServer(project);
+                if (started.state === PROBE_OK) {
+                    state.guard.reset();
+                    state.noticeSent = false;
+                    resetProbeFailures();
+                    return {status: 'connected', port: started.port, project, unavailableNoticeSent: false};
+                }
+                logEvent('ide.launch.timeout', {project: project.path, state: started.state, detail: started.detail});
+                recordProbeFailure(started.state);
+                await reportUnavailable(true, started.state);
+                return {
+                    status: 'mcp-unavailable',
+                    opened: true,
+                    project,
+                    state: started.state,
+                    unavailableNoticeSent: state.noticeSent,
+                };
             })();
             state.inFlight = run;
             void run
@@ -1289,10 +1461,10 @@ export default {
          * @param {{ onUnavailable?: (result: IdeCommandResult) => Promise<boolean> }} [options]
          * @returns {Promise<IdeCommandResult>}
          */
-        const runOpenInIdea = async ({onUnavailable} = {}) => {
+        const runOpenInIdea = async ({onUnavailable, budgetMs, force} = {}) => {
             const project = currentProject();
             if (!project) return {status: 'not-configured'};
-            const result = await ensureProject(project, {onUnavailable});
+            const result = await ensureProject(project, {onUnavailable, budgetMs, force});
             if (result.status !== 'connected') {
                 // 没连上：注销残留注册，把 ensureProject 的具体失败原因交回去。
                 await reconcile({probeIde: false}).catch(() => {
@@ -1303,7 +1475,7 @@ export default {
             try {
                 // 重新探测一次并注册：ensureProject 只保证 IDE 就绪，注册要按"现在真的
                 // 打开着这个项目"重来一遍，这样 `/open-in-ide` 每次都是同一套结果。
-                stage = await reconcile({probeIde: true});
+                stage = await reconcile({probeIde: true, budgetMs});
             } catch {
                 // capability load is best effort; feedback still matters
             }
@@ -1311,6 +1483,16 @@ export default {
             // IDE 已连上、但 env 没拉到：连接按"没做完"处理，命令会要求重试，
             // 而不是报一个看起来成功的 connected。
             if (stage === 'env') return {status: 'env-unready', port: result.port, project};
+            // ensureProject 说连上了、重新探测却说连不上：IDE 在这两次之间变了。
+            // 按"连不上"报，别报成 tools-loading（那句会让用户以为马上就好）。
+            if (stage === 'offline') {
+                return {
+                    status: 'mcp-unavailable',
+                    opened: true,
+                    project,
+                    state: probeFailures.state,
+                };
+            }
             return {...result, status: 'tools-loading', project};
         };
 
@@ -1328,11 +1510,16 @@ export default {
          */
         /** @type {Promise<void> | undefined} */
         let reviveInFlight;
+        let lastReviveAt = 0;
         const reviveIde = () => {
             // 配置 gate 住每一次重连，包括后台发起的那些：后台尝试绝不能把用户已经用
             // `/delete-in-ide` 删掉的项目重新拉起来。
             if (disposed || !config) return Promise.resolve();
             if (reviveInFlight) return reviveInFlight;
+            // `context` 钩子每个 agent-loop step 都跑，而"没有工具"在同一步里可能连着出现
+            // 好几次（工具续跑）。一次重连本身要重建注册，不能被这种频率放大成 churn。
+            if (Date.now() - lastReviveAt < REVIVE_MIN_INTERVAL_MS) return Promise.resolve();
+            lastReviveAt = Date.now();
             const run = (async () => {
                 try {
                     const result = await runOpenInIdea();
@@ -1343,7 +1530,14 @@ export default {
                     }
                     if (result.status === 'connected') {
                         needsRebuild = false;
+                        return;
                     }
+                    logEvent('ide.revive.failed', {
+                        status: result.status,
+                        state: result.state,
+                        opened: result.opened,
+                        failures: probeFailures.count,
+                    });
                 } catch {
                     // best effort: the latch stays set, and the prompt hook retries
                 }
@@ -1426,6 +1620,8 @@ export default {
                         /** @type {boolean} */
                         let unavailableNoticeSent = false;
                         const result = await runOpenInIdea({
+                            // 用户显式要接入：不受自动重连的冷却/次数限制。
+                            force: true,
                             onUnavailable: async (notice) => {
                                 unavailableNoticeSent = await sendFeedback(input, notice);
                                 return unavailableNoticeSent;
@@ -1680,14 +1876,15 @@ export default {
                 if (serving) {
                     wasServing = true;
                     removeIdeToolDefinitions(tools, HIDDEN_IDE_TOOL_SUFFIXES, prefixes());
-                } else if (wasServing && tools !== undefined && config) {
-                    // This session HAD the tools and this request does not. Latch a
-                    // rebuild here, where "is the IDE serving THIS request?" is a fact: a
-                    // failed reconnect can tear the registration down without anything else
-                    // noticing. `wasServing` keeps this from firing for a project that
-                    // never connected in this session — the `prompt` hook covers that case
-                    // (a fresh instance has no registration at all) and setup deliberately
-                    // does not connect on its own.
+                } else if (tools !== undefined && config && registrations.length > 0) {
+                    // 本实例**注册过** server，而这次请求里没有 IDE 工具 —— 两种形状都该
+                    // 立刻重连:
+                    //   * `wasServing`：这个会话之前真的带着工具，现在没了（掉线）；
+                    //   * 没 `wasServing`：连接是在某次请求的处理过程中建立的，那一轮的
+                    //     工具快照早就定好了，所以"注册了却从没在请求里见过工具"。
+                    //     如果 IDE 在那之后、下一条消息之前死掉，旧条件（只认 wasServing）
+                    //     永远等不到 latch，会话就静默地没有工具 —— 实测撞到过。
+                    // 没注册（新实例）不由这里管：那是 `prompt` 钩子的 fresh 分支。
                     needsRebuild = true;
                     wasServing = false;
                     // Do not wait for the next user message. The latch is read by the
@@ -1697,7 +1894,13 @@ export default {
                     void reviveIde();
                 }
                 if (config || serving) {
-                    appendIdeRecoveryGuidance(event?.system, {marked: Boolean(config), serving});
+                    appendIdeRecoveryGuidance(event?.system, {
+                        marked: Boolean(config),
+                        serving,
+                        // 只有"确实试过并且放弃了"才说放弃。否则那句话是假的，而模型会
+                        // 原样转给你（线上就是连续 5 轮一声不吭）。
+                        gaveUp: Boolean(config) && !serving && probeGaveUp(),
+                    });
                 }
                 if (!injectGuidance) return;
                 // 两份模板：IDE 段只在 IDE 工具真的在本次请求里时注入；
@@ -1716,8 +1919,8 @@ export default {
             //     或进程重启后新实例的样子。setup 故意不连接,没有这一步会话就会永久
             //     没有工具,只能靠用户手敲 `/open-in-ide`。
             //
-            // 只探测、不启动 IDE:走 `reconcile({ probeIde: true })`,而不是会 `open -a`
-            // 的 `reviveIde()` —— 一条用户消息不该把 IDE 拉起来。
+            // 探测本身走退避(见 `PROBE_COOLDOWN_MS`)：失败之后不是每条消息都重撞一次，
+            // 而是等冷却过去。拉起 IDE 放在后台(`void reviveIde()`)，不阻塞这条消息。
             promptRegistration = await ctx.session.hook('prompt', async (event) => {
                 if (disposed) return;
                 // hosts.json 可能被用户手改过：一次 stat，变了就静默对齐（不注入任何消息）。
@@ -1732,12 +1935,25 @@ export default {
                 // — verified live, and it made this rebuild never run.
                 const text = event?.prompt?.text;
                 if (typeof text === 'string' && text.startsWith(NOTICE_PREFIX)) return;
+                // 冷却中：这条消息不再探测。没有这一步，五条消息会用同样的预算撞同一堵墙。
+                if (probeCoolingDown()) return;
                 try {
                     // 只有"连接完整"（工具 + env 都到位）才清 latch；env 没拉到必须继续重试，
                     // 否则会话会永久停在"工具有、环境是空的"这个中间态。
-                    if ((await reconcile({probeIde: true})) === 'ready') needsRebuild = false;
+                    const stage = await reconcile({probeIde: true});
+                    if (stage === 'ready') {
+                        needsRebuild = false;
+                        return;
+                    }
+                    if (stage !== 'offline') return;
+                    // 该连却连不上：端点不在、或者项目没在 IDE 里打开 —— 这两种 `open -a`
+                    // 才有用。`slow`（IDE 在、只是没答完）要等，不能重复拉起。
+                    const why = probeFailures.state;
+                    if (why !== PROBE_DOWN && why !== PROBE_NO_PROJECT) return;
+                    if (!launchEnabled || !autoLaunchSupported() || probeGaveUp()) return;
+                    void reviveIde();
                 } catch {
-                    // best effort: the latch stays set and the next message retries
+                    // best effort: the latch stays set, the cooldown decides when to retry
                 }
             });
 

@@ -94,6 +94,33 @@ function freePort() {
   });
 }
 
+/** 等一个条件成立（后台动作完成时断言才不会飘）。超时就直接失败。 */
+async function waitFor(predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('waitFor timeout');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/** 等一个计数安静下来（后台轮询结束），避免拿"还在涨的数字"去断言。 */
+async function waitForStable(read, quietMs = 80, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = read();
+  let since = Date.now();
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const now = read();
+    if (now !== last) {
+      last = now;
+      since = Date.now();
+    } else if (Date.now() - since >= quietMs) {
+      return last;
+    }
+  }
+  return last;
+}
+
 function fakeCtx(options = {}) {
   const {
     toolsReadyAfter = 1,
@@ -346,6 +373,17 @@ describe('plugin setup', () => {
     expect(opened).toContain('/open-in-ide');
     expect(notOpened).toContain('开启 MCP 服务');
     expect(notOpened).toContain('Brave Mode');
+  });
+
+  it('does not report every probe failure as the same problem', () => {
+    // 三种失败要三句话：拉起有没有用、用户该去改什么，完全不同。
+    const down = ideFeedback({ status: 'mcp-unavailable', opened: true, state: 'down' });
+    const slow = ideFeedback({ status: 'mcp-unavailable', opened: true, state: 'slow' });
+    const noProject = ideFeedback({ status: 'mcp-unavailable', state: 'no-project' });
+    expect(new Set([down, slow, noProject]).size).toBe(3);
+    // 只有"服务没起来"才该把人指去 Settings；项目没打开与索引慢都不是配置问题。
+    expect(slow.startsWith('已请求打开')).toBe(true);
+    expect(noProject).not.toContain('Settings → MCP Server');
   });
 
   it('registers the commands and the skills without touching the IDE', async () => {
@@ -1262,19 +1300,117 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('never launches the IDE while healing a marked project that was never opened', async () => {
-    const { ctx, state } = fakeCtx({ ports: [1], mcpProbeTimeoutMs: 5 });
+  it('launches the IDE once for a marked project whose endpoint is down, then backs off', async () => {
+    const { ctx, state } = fakeCtx({ ports: [1], mcpProbeTimeoutMs: 5, mcpStartTimeoutMs: 30 });
     state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
     const cleanup = await plugin.setup(ctx);
 
     expect(state.mcp).toBe(0);
 
-    // A message arrives, the mark says "IDEA project", but the endpoint is down.
-    // The heal probes, finds nothing, and stops there: it must never `open -a`
-    // on behalf of a project that was never opened.
+    // A message arrives, the mark says "IDEA project", the endpoint is down: the
+    // heal must run the open flow (that is what the mark authorised), but in the
+    // background so the message is not delayed.
     await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: 'hi' } });
+    await waitFor(() => openCalls.length >= 1);
+    expect(openCalls).toHaveLength(1);
+    expect(openCalls[0][0]).toBe(projectPath);
+
+    // The next message lands inside the failure cooldown: no second probe, no
+    // second spawn. Treating every message as a fresh attempt is what hammered
+    // the same wall for eleven minutes.
+    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: 'again' } });
+    expect(openCalls).toHaveLength(1);
+
+    await cleanup();
+  });
+
+  it('asks the IDE to open the project when a message finds another project served', async () => {
+    // 真实的形态：IDE 开着、MCP 也开着，只是窗口里打开着别的项目。
+    const fake = await startFakeIdeForProject();
+    fake.setProjectOpen(false);
+    running = fake.server;
+    launcher.onOpen = () => fake.setProjectOpen(projectPath, true);
+    const { ctx, state } = fakeCtx({ ports: [fake.port], mcpProbeTimeoutMs: 200, toolRefreshTimeoutMs: 100 });
+    state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
+    const cleanup = await plugin.setup(ctx);
+
+    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: 'hi' } });
+
+    // 探测出的结论是 no-project → `open -a <dir>` 正好是对的动作；连接随后落地。
+    await waitFor(() => state.mcp > 0);
+    expect(openCalls).toHaveLength(1);
+    expect(openCalls[0][0]).toBe(projectPath);
+
+    await cleanup();
+  });
+
+  it('retries a slow probe instead of recording the whole attempt as a failure', async () => {
+    const fake = await startFakeIdeForProject();
+    running = fake.server;
+    // 第一次 get_project_env 落在单次尝试的预算之外（IDE 刚起来还在索引），之后正常。
+    let delayed = false;
+    fake.setDelay((message) => {
+      if (message.method !== 'tools/call' || delayed) return 0;
+      delayed = true;
+      return 120;
+    });
+    const { ctx, state } = fakeCtx({
+      ports: [fake.port],
+      mcpProbeTimeoutMs: 800,
+      probeAttemptTimeoutMs: 40,
+      probeRetryBackoffsMs: [10],
+      toolRefreshTimeoutMs: 100,
+    });
+    state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
+    const cleanup = await plugin.setup(ctx);
+
+    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: 'hi' } });
+
+    // 慢一次不等于连不上：同一个预算里再试一次就接上了。
+    expect(state.mcp).toBeGreaterThan(0);
+    expect(fake.streamRequests()).toBeGreaterThanOrEqual(4);
+
+    await cleanup();
+  });
+
+  it('stops probing while the failure cooldown is active', async () => {
+    // 项目没打开：探测会明确给出 no-project，但不会因此把 IDE 拉起来就成功。
+    const fake = await startFakeIde(await freePort());
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], mcpProbeTimeoutMs: 50, mcpStartTimeoutMs: 30 });
+    state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
+    const cleanup = await plugin.setup(ctx);
+
+    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: 'hi' } });
+    const settled = await waitForStable(() => fake.streamRequests());
+    // 至少探测过一次（initialize + get_project_env），否则下面的"不再增加"毫无意义。
+    expect(settled).toBeGreaterThanOrEqual(2);
+
+    // 冷却期内的下一条消息不再打 IDE。没有这一步，五条消息会用同样的预算撞同一堵墙。
+    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: 'again' } });
+    expect(fake.streamRequests()).toBe(settled);
     expect(state.mcp).toBe(0);
-    expect(openCalls.length).toBe(0);
+
+    await cleanup();
+  });
+
+  it('lets /open-in-ide launch even while an automatic retry is cooling down', async () => {
+    const { ctx, state } = fakeCtx({
+      ports: [1],
+      mcpProbeTimeoutMs: 5,
+      mcpStartTimeoutMs: 30,
+      // 自动拉起的冷却拉长到 10 分钟：第二次命令必须绕过它，而不是被自己的退避挡住。
+      launchCooldownsMs: [600000],
+    });
+    state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    expect(openCalls).toHaveLength(1);
+
+    // 紧接着再敲一次：自动路径这会儿正在冷却，但用户是显式要连。
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    expect(openCalls).toHaveLength(2);
 
     await cleanup();
   });
@@ -1306,7 +1442,7 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('keeps a dropped IDE down on later requests until /open-in-ide re-registers it', async () => {
+  it('reconnects by itself when a registration stops serving, without /open-in-ide', async () => {
     const port = await freePort();
     const fake = await startFakeIdeForProject(port);
     running = fake.server;
@@ -1316,21 +1452,14 @@ describe('plugin setup', () => {
     await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     expect(state.mcp).toBe(1);
 
-    // The connection drops: OpenCode's registry drops the IDEA tools. The
-    // `context` hook is a pure function of the request and never re-registers
-    // anything behind the user's back; only the `prompt` and `tool` hooks
-    // auto-recover, for a marked project (covered separately).
-    state.tools = [];
+    // 连接是在上一次请求的处理过程中建立的，那一轮的工具快照早就定好了 —— 所以这里
+    // "注册过、但本次请求里没有 IDE 工具" 正是线上那种静默无工具的状态：必须自愈，
+    // 而不是等人敲 /open-in-ide。
+    const before = state.mcp;
     await state.sessionHook({ system: [], tools: {} });
-    await state.sessionHook({ system: [], tools: {} });
-    expect(state.mcp).toBe(1);
+    await waitFor(() => state.mcp > before);
+    expect(state.tools.some((tool) => tool.id?.startsWith('ide_'))).toBe(true);
 
-    // Only the manual command brings it back. The registry says the server is
-    // gone, so the command replaces the registration instead of just refreshing
-    // it — an unchanged config is never reconnected by OpenCode.
-    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
-    expect(state.mcp).toBe(2);
-    expect(state.mcpReload).toBe(2);
     const request = { system: [], tools: { read: {}, ide_read_file: {} } };
     await state.sessionHook(request);
     expect(request.tools).toHaveProperty('ide_read_file');

@@ -66,19 +66,30 @@ export function openInIde(directory, options = {}) {
 }
 
 /**
+ * 拉起冷却表：第 N 次拉起之后要等多久才允许下一次。
+ *
+ * 为什么要递增而不是固定值：固定 120s 对第一次失败太慢（IDE 明明 3 秒就起来了，却要
+ * 干等两分钟），对第 5 次失败又太快（每两分钟反复 `open -a`，还每次都去碰一个明显起不
+ * 来的 IDE）。前密后疏才是对的形状。
+ */
+export const LAUNCH_COOLDOWNS_MS = [15000, 60000, 180000, 300000];
+
+/**
  * Per-directory launch guard. Prevents a cold IDE (indexing / waiting for the
  * Trust dialog) from being spawned repeatedly by overlapping reconciles or
  * command invocations.
  *
- * @param {{ cooldownMs?: number, maxAttempts?: number, now?: () => number }} [options]
+ * @param {{ cooldownsMs?: number[], maxAttempts?: number, now?: () => number }} [options]
  */
 export function createLaunchGuard(options = {}) {
-  const cooldownMs = options.cooldownMs ?? 120000;
-  const maxAttempts = options.maxAttempts ?? 5;
+  const cooldowns = options.cooldownsMs ?? LAUNCH_COOLDOWNS_MS;
+  const maxAttempts = options.maxAttempts ?? cooldowns.length + 1;
   const now = options.now ?? Date.now;
   let lastSpawnAt = 0;
   let attempts = 0;
-  const coolingDown = () => attempts > 0 && now() - lastSpawnAt < cooldownMs;
+  /** 下一次允许拉起的时刻：0 表示随时可以。 */
+  let readyAt = 0;
+  const coolingDown = () => attempts > 0 && now() < readyAt;
   return {
     /** True once the attempt budget is spent; callers should stop retrying. */
     exhausted: () => attempts >= maxAttempts,
@@ -86,17 +97,20 @@ export function createLaunchGuard(options = {}) {
     coolingDown,
     /** True when it is safe to spawn a new instance now. */
     canSpawn: () => attempts < maxAttempts && !coolingDown(),
-    /** Record a spawn attempt. */
+    /** Record a spawn attempt and arm the next (longer) cooldown. */
     markSpawn() {
       lastSpawnAt = now();
       attempts += 1;
+      const index = Math.min(attempts - 1, cooldowns.length - 1);
+      readyAt = lastSpawnAt + cooldowns[index];
     },
     /** Clear the guard after the IDE is confirmed serving. */
     reset() {
       lastSpawnAt = 0;
+      readyAt = 0;
       attempts = 0;
     },
     /** Current state, for diagnostics/tests. */
-    state: () => ({ lastSpawnAt, attempts }),
+    state: () => ({lastSpawnAt, readyAt, attempts}),
   };
 }

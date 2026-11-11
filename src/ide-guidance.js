@@ -119,17 +119,31 @@ export const MCP_RECOVERY_GUIDANCE_RECONNECTING = [
 ].join('\n');
 
 /**
- * @param {unknown} system
- * @param {{ marked?: boolean, serving?: boolean }} [options] `marked` picks the
- *   auto-reconnect variant; `serving: false` additionally picks the variant for
- *   a request that has no IDE tools at all, where a call can only fail.
+ * Recovery instruction for a marked project whose automatic reconnect has given
+ * up (repeated failures). Saying "reconnecting" here would be a lie, and a lie the
+ * model then repeats to the user — which is what a whole session of silence looked
+ * like. The one useful action left is telling the user to run `/open-in-ide`.
  */
-export function appendIdeRecoveryGuidance(system, { marked = false, serving = true } = {}) {
+export const MCP_RECOVERY_GUIDANCE_GAVE_UP = [
+  '### IDE MCP failure recovery',
+  'The IDE MCP is disconnected and the plugin stopped reconnecting on its own after repeated failures. No IDE MCP tool (the `<prefix>_*` ones) is available. Do NOT call them, and do not look for them through Code Mode. Continue the work with the native tools, and tell the user once, briefly, that the IDE MCP is disconnected and that running /open-in-ide will reconnect it.',
+].join('\n');
+
+/**
+ * @param {unknown} system
+ * @param {{ marked?: boolean, serving?: boolean, gaveUp?: boolean }} [options] `marked`
+ *   picks the auto-reconnect variants; `serving: false` picks the variant for a
+ *   request that has no IDE tools at all; `gaveUp: true` picks the honest "we
+ *   stopped trying" variant instead of claiming a reconnect is under way.
+ */
+export function appendIdeRecoveryGuidance(system, { marked = false, serving = true, gaveUp = false } = {}) {
   if (!Array.isArray(system)) return;
   const text = marked
     ? serving
       ? MCP_RECOVERY_GUIDANCE_MARKED
-      : MCP_RECOVERY_GUIDANCE_RECONNECTING
+      : gaveUp
+        ? MCP_RECOVERY_GUIDANCE_GAVE_UP
+        : MCP_RECOVERY_GUIDANCE_RECONNECTING
     : MCP_RECOVERY_GUIDANCE;
   if (system.some((part) => part?.text === text)) return;
   system.push({ type: 'text', text });
