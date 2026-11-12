@@ -131,6 +131,8 @@ function fakeCtx(options = {}) {
     // What the IDE's MCP catalog exposes. Overridable so a test can pin what
     // "the IDE is serving" means without depending on tool names.
     ideaTools = DEFAULT_IDE_TOOLS,
+    // 这个 OpenCode 版本是否有 `session.synthetic`（只上屏、不调度模型）。
+    syntheticFeedback = false,
     ...ctxOptions
   } = options;
   if (ports) {
@@ -152,6 +154,8 @@ function fakeCtx(options = {}) {
     commands: new Map(),
     skills: new Map(),
     prompts: [],
+    /** `session.synthetic` 收到的通知（不上屏到模型的那条通道）。 */
+    synthetics: [],
     storage: new Map(),
     storageGets: 0,
     mcpServers: [],
@@ -268,6 +272,15 @@ function fakeCtx(options = {}) {
         prompt: async (input) => {
           state.prompts.push(input);
         },
+        // 只有显式要求时才提供 `synthetic`（见 `fakeCtx` 的 `synthetic` 选项）：
+        // 默认没有它，走的是"注入 user 消息"那条老路径。
+        ...(syntheticFeedback
+          ? {
+              synthetic: async (input) => {
+                state.synthetics.push(input);
+              },
+            }
+          : {}),
       },
       storage: {
         get: async (key) => {
@@ -1411,6 +1424,52 @@ describe('plugin setup', () => {
     // 紧接着再敲一次：自动路径这会儿正在冷却，但用户是显式要连。
     await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     expect(openCalls).toHaveLength(2);
+
+    await cleanup();
+  });
+
+  it('reports a command result through session.synthetic so a notice never wakes the model', async () => {
+    const fake = await startFakeIdeForProject();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({
+      ports: [fake.port],
+      toolRefreshTimeoutMs: 100,
+      syntheticFeedback: true,
+    });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+
+    // 一条"已连接"的状态提示不值得一次模型调用（在 48 万 token 的会话里那是一次 64 秒
+    // 的往返）。走 synthetic：入库、resume:false 不调度模型，下一轮随上下文送达。
+    expect(state.synthetics).toHaveLength(1);
+    expect(state.synthetics[0]).toMatchObject({
+      sessionID: 's1',
+      resume: false,
+      text: ideFeedback({ status: 'connected' }),
+    });
+    // 没有退回到"注入 user 消息"那条路。
+    expect(state.prompts).toHaveLength(0);
+
+    await cleanup();
+  });
+
+  it('still shows a failure notice immediately, even when synthetic is available', async () => {
+    // 失败提示晚一轮才到就失去意义：用户要马上知道去开 MCP / 打开项目。
+    const { ctx, state } = fakeCtx({
+      ports: [1],
+      mcpProbeTimeoutMs: 5,
+      mcpStartTimeoutMs: 30,
+      syntheticFeedback: true,
+    });
+    state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+
+    expect(state.synthetics).toHaveLength(0);
+    expect(state.prompts.length).toBeGreaterThan(0);
+    expect(state.prompts.at(-1).metadata.displayText).toContain('MCP');
 
     await cleanup();
   });

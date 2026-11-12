@@ -1552,8 +1552,38 @@ export default {
         // Setup never probes or connects any IDE — everything is on the commands.
         await reconcile({probeIde: false});
 
+        /**
+         * 把命令结果送上屏。
+         *
+         * **成功**走 `session.synthetic`：这是"入库 + 不调度模型"的通道（TUI 自己发"编辑器
+         * 上下文"就走它）。消息进 `session_inbox`，下一次交互随上下文送达 —— 一条"已连接"
+         * 的提示不值得一次模型调用：在 48 万 token 的会话里那是一次 64 秒的往返。
+         *
+         * **失败**仍走 `session.prompt`（立刻上屏）：用户需要马上知道该去开 MCP / 打开
+         * 项目，模型也据此避开 IDE 工具 —— 这种提示晚一轮才到就失去意义了。
+         *
+         * 老版本 OpenCode 没有 `synthetic` 时全部退回 user 消息。
+         */
         const sendFeedback = async (input, result) => {
-            if (feedback !== 'message' || typeof ctx.session?.prompt !== 'function') return false;
+            if (feedback !== 'message') return false;
+            const text = ideFeedback(result);
+            if (result?.status === 'connected' && typeof ctx.session?.synthetic === 'function') {
+                try {
+                    await ctx.session.synthetic({
+                        sessionID: input.sessionID,
+                        // 陈述句，不带任何"请回复…"的指令：下一轮模型会读到它。
+                        text,
+                        description: text,
+                        metadata: {displayText: text},
+                        // 关键：不调度模型。
+                        resume: false,
+                    });
+                    return true;
+                } catch {
+                    // 落到下面的 user 消息
+                }
+            }
+            if (typeof ctx.session?.prompt !== 'function') return false;
             try {
                 await ctx.session.prompt({
                     ...input.prompt,
