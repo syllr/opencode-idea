@@ -224,7 +224,7 @@ function initializePayload() {
     params: {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: { name: 'opencode-idea', version: '0.1.14' },
+      clientInfo: { name: 'opencode-idea', version: '0.1.15' },
     },
   };
 }
