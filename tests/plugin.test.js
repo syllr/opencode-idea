@@ -40,9 +40,10 @@ const REAL_IDE_PORTS = { ...IDE_PORTS };
 const projectPath = mkdtempSync(path.join(tmpdir(), 'ojbm-'));
 
 /**
- * 一个已接入的配置。
+ * 一个已接入的配置（当前格式）。
  *
- * 只认当前格式（见 `src/ide-projects.js`），所以每个需要"已接入"前提的测试都用它预置 storage。
+ * 需要「已接入」前提的测试用它预置 storage；旧格式（布尔 `true` 等）会被读取侧
+ * 迁移，另有专门测试覆盖（见 `src/ide-projects.js` 的 `parseMark`）。
  */
 function ideConfig() {
   return { version: MARK_VERSION };
@@ -1313,6 +1314,59 @@ describe('plugin setup', () => {
     // which is also what keeps the IDE log free of per-probe warnings.
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
+
+    await cleanup();
+  });
+
+  it('heals a legacy boolean mark and migrates it to the current format', async () => {
+    // 旧版本插件写的是布尔 true；升级后必须仍然算「接入过」—— 否则老项目会永久
+    // 失去自动重连（只能手敲 /open-in-ide）。
+    const fake = await startFakeIdeForProject();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 50, mcpProbeTimeoutMs: 10 });
+    const key = `project/${projectPath}`;
+    state.storage.set(key, true);
+    const cleanup = await plugin.setup(ctx);
+
+    expect(state.mcp).toBe(0);
+
+    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: '继续' } });
+
+    expect(state.mcp).toBeGreaterThan(0);
+    // 读到时顺手迁移成当前格式，之后不再重复迁移。
+    expect(state.storage.get(key)).toEqual({version: MARK_VERSION});
+
+    await cleanup();
+  });
+
+  it('retries the mark read after a storage failure instead of caching "unconfigured"', async () => {
+    // storage 瞬时未就绪 ≠ 这个项目没有标记。把失败缓存成 null，会让实例剩余生命周期
+    // 里永久跳过自动重连 —— 表现就是"重开 opencode 后怎么对话都不连"。
+    const fake = await startFakeIdeForProject();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 50, mcpProbeTimeoutMs: 10 });
+    state.storage.set(`project/${projectPath}`, ideConfig());
+
+    const realGet = ctx.storage.get;
+    let failuresLeft = 2; // setup 一次 + 第一条消息一次
+    ctx.storage.get = async (key) => {
+      if (failuresLeft > 0) {
+        failuresLeft -= 1;
+        throw new Error('storage not ready');
+      }
+      return realGet(key);
+    };
+
+    const cleanup = await plugin.setup(ctx);
+    expect(state.mcp).toBe(0);
+
+    // 读失败：不连，但也不把"未配置"记进缓存。
+    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: 'hi' } });
+    expect(state.mcp).toBe(0);
+
+    // 下一次读成功：自愈。
+    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: '再试' } });
+    expect(state.mcp).toBeGreaterThan(0);
 
     await cleanup();
   });

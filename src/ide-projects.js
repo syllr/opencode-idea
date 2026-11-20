@@ -32,7 +32,7 @@ export const IDE_PORTS = {
  */
 export const IDEA_PORT_SCAN_SPAN = 20;
 
-/** 持久化标记里存的版本号。旧版本格式一律不认，由用户重新 /open-in-ide。 */
+/** 持久化标记里存的版本号。旧格式在读取时会被静默迁移成本格式（见 `parseMark`）。 */
 export const MARK_VERSION = 4;
 
 /**
@@ -45,18 +45,37 @@ export function markKeyFor(rootPath) {
 }
 
 /**
- * 解析持久化的标记值。
+ * **严格**解析：只认当前格式 `{ version: 4 }`。
  *
- * **只认当前格式** `{ version: 4 }`。旧格式（带 root / children / app 的那些）一律当
- * **未配置**，不写迁移代码——用户重新执行 `/open-in-ide` 即可。
+ * 返回 `undefined` 表示「按当前版本解析不出来」。读取侧据此判断存的值是否健康：
+ * **值存在**但这里解析不出来（旧版的布尔 `true`、带 root/children/app 的旧对象、
+ * 或任何坏数据）就说明这个 value 有问题，应覆写成当前格式（见 `plugin.js` 的
+ * `readConfig`）。
+ *
+ * 判据只有这一处：将来标记格式再变，也只需要改这里，不会出现「宽松认了但没迁移」
+ * 这种两套逻辑对不上的情况。
+ *
+ * @param {unknown} raw
+ */
+export function parseCurrentMark(raw) {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const record = /** @type {{ version?: unknown }} */ (raw);
+  if (record.version !== MARK_VERSION) return undefined;
+  return {version: MARK_VERSION};
+}
+
+/**
+ * 宽松结论：**有值即认**。`null` / `undefined` 才是「未配置」。
+ *
+ * 标记表达的只是「这个项目接入过 IDE」这一个事实，格式只是载体。所以哪怕值按
+ * 当前格式解析不出来（旧格式/坏数据），它也仍然是一个「已接入」的标记 —— 只值
+ * 得被迁移（`plugin.js` 的 `readConfig` 负责覆写），不值得被当成未配置。
  *
  * @param {unknown} raw 从 `ctx.storage` 读到的原始值
  * @returns {IdeConfig | undefined}
  */
 export function parseMark(raw) {
-  if (raw === null || typeof raw !== 'object') return undefined;
-  const record = /** @type {{ version?: unknown }} */ (raw);
-  if (record.version !== MARK_VERSION) return undefined;
+  if (raw === null || raw === undefined) return undefined;
   return {version: MARK_VERSION};
 }
 

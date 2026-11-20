@@ -88,6 +88,7 @@ import {
     MARK_VERSION,
     ROOT_SERVER_NAME,
     markKeyFor,
+    parseCurrentMark,
     parseMark,
     serializeMark,
 } from './ide-projects.js';
@@ -852,18 +853,43 @@ export default {
         /** @type {import('./ide-projects.js').IdeConfig | null | undefined} */
         let config;
 
-        /** 读一次持久化配置（最多一次 I/O），之后走内存缓存。 */
+        /**
+         * 读一次持久化配置（之后走内存缓存）。
+         *
+         * 三个要点：
+         * 1. `undefined` = 还没读过，`null` = 读过且确实没有标记。两者必须分开。
+         * 2. **严格解析判健康，解析不出来就覆写**：值存在但按当前版本解析不出来
+         *    （旧版的 `true`、带 root/children/app 的旧对象、坏数据），说明这个 value
+         *    有问题 —— 标记的语义只是「这个项目接入过 IDE」，按当前格式覆写即可。
+         * 3. **读失败不缓存**：storage 未就绪 / `get` 抛错都**不是**「没有标记」这个
+         *    事实。缓存成 `null` 会让这个插件实例在剩余生命周期里永久跳过自动重连
+         *    （只能手敲 `/open-in-ide`），所以失败时保持 `undefined`，下一条消息重试。
+         */
         const readConfig = async () => {
             if (config !== undefined) return config;
             if (!storage || typeof storage.get !== 'function') {
-                config = null;
-                return config;
+                // storage 暂不可用 ≠ 没有标记：不缓存，等它就绪后的下一次调用。
+                return undefined;
             }
             try {
-                config = parseMark(await storage.get(markKey)) ?? null;
+                const raw = await storage.get(markKey);
+                const current = parseCurrentMark(raw);
+                if (current) {
+                    config = current;
+                } else if (raw !== null && raw !== undefined) {
+                    // 值存在，但按当前版本解析不出来：这个 value 有问题，覆写。
+                    config = parseMark(raw);
+                    try {
+                        await storage.set?.(markKey, serializeMark());
+                    } catch {
+                        // 覆写失败不影响本次连接；下一次读会再尝试。
+                    }
+                } else {
+                    config = null;
+                }
             } catch {
-                // storage is best effort;读不到就当作未配置
-                config = null;
+                // 读失败：保持 undefined，让下一次调用重试而不是永久放弃。
+                return undefined;
             }
             return config;
         };
@@ -2006,6 +2032,9 @@ export default {
                 if (disposed) return;
                 // hosts.json 可能被用户手改过：一次 stat，变了就静默对齐（不注入任何消息）。
                 reconcileHostsIfChanged();
+                // setup 那一刻 storage 可能还没就绪（读失败 → `undefined`，不是「没有标记」）：
+                // 这里补读，否则这个实例会永久停在"未配置"、对话永远不自动连。
+                if (config === undefined) await readConfig();
                 if (!config) return;
                 const fresh = registrations.length === 0;
                 if (!needsRebuild && !fresh) return;
