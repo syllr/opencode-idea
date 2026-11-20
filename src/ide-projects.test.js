@@ -1,13 +1,21 @@
 import { describe, expect, it } from 'vitest';
 
-import { IDE_PORTS, MARK_VERSION, markKeyFor, parseMark, serializeMark } from './ide-projects.js';
+import {
+  IDE_PORTS,
+  IDEA_PORT_SCAN_SPAN,
+  MARK_VERSION,
+  markKeyFor,
+  parseMark,
+  serializeMark,
+} from './ide-projects.js';
 
 describe('常量', () => {
-  it('keys the mark by the project path, and pins the IDE MCP port', () => {
+  it('keys the mark by the project path, and pins the IDE MCP port scan window', () => {
     expect(markKeyFor('/w/project')).toBe('project//w/project');
-    // 端口是产品常量:IDEA 的内置 MCP 在 64342。它不随版本或项目变化,所以插件不把它
-    // 开放给用户配置(测试会把它们指到假端口,见 tests/plugin.test.js)。
+    // 扫描窗口是数据契约:起点 64342,跨度 20,即插件最多探到 64361。
+    // IDEA 的端口会漂(被占时静默上浮),所以这个窗口必须跟着 IDEA 的漂移量级走。
     expect(IDE_PORTS).toEqual({idea: 64342});
+    expect(IDEA_PORT_SCAN_SPAN).toBe(20);
   });
 });
 

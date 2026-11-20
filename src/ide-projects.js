@@ -11,10 +11,11 @@
 export const ROOT_SERVER_NAME = 'ide';
 
 /**
- * IntelliJ IDEA 内置 MCP server 的端口。
+ * IntelliJ IDEA 内置 MCP server 的**起始端口**。
  *
- * **固定值，不开放配置**：这是产品常量，跨版本、跨项目都不变。插件因此不需要"扫描候选
- * 端口找归属"——只有一个 IDE，端口就是它。
+ * **不是固定值**：IDEA 2026.3 起用户可以在 Settings → AI → MCP Server 自行改端口；即使
+ * 没改，IDEA 启动时发现起始端口被占也会**静默向上漂移**（`findFirstFreePort`：从期望端口
+ * 逐个 +1 找空闲的）。所以插件按下面的跨度从起点向上扫描，命中即用，扫不到就报错。
  *
  * 导出成**可变对象**而不是冻结字面量：测试要把它指到假端口上（见 `tests/plugin.test.js`
  * 的 `fakeCtx`），运行时没有任何人写它。
@@ -22,6 +23,14 @@ export const ROOT_SERVER_NAME = 'ide';
 export const IDE_PORTS = {
   idea: 64342,
 };
+
+/**
+ * 扫描跨度：从 `IDE_PORTS.idea` 起最多探这么多个端口（含起点），即默认扫 64342~64361。
+ *
+ * 这个跨度覆盖 IDEA 自己 `findFirstFreePort` 的常见漂移量级（64342 被占后漂到 64343、
+ * 64344 这种），又不会在“一个都没有”的机器上白撞几十个端口。
+ */
+export const IDEA_PORT_SCAN_SPAN = 20;
 
 /** 持久化标记里存的版本号。旧版本格式一律不认，由用户重新 /open-in-ide。 */
 export const MARK_VERSION = 4;

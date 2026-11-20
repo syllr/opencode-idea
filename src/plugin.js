@@ -84,6 +84,7 @@ import {
 } from './ide-guidance.js';
 import {
     IDE_PORTS,
+    IDEA_PORT_SCAN_SPAN,
     MARK_VERSION,
     ROOT_SERVER_NAME,
     markKeyFor,
@@ -622,6 +623,9 @@ const asPositiveNumber = (value, fallback) =>
 /** 退避用的等待。调用方在每次迭代之间检查 `disposed` / `config`，所以删配置能立刻停下。 */
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** 插件探测的 MCP 端口范围文案（如 `64342-64361`），让用户知道插件在找哪里。 */
+const ideaPortRangeText = () => `${IDE_PORTS.idea}-${IDE_PORTS.idea + IDEA_PORT_SCAN_SPAN - 1}`;
+
 /** 面向用户的状态文案（两个接入命令共用）。 */
 /** @param {IdeCommandResult} result */
 export function ideFeedback(result) {
@@ -647,8 +651,8 @@ export function ideFeedback(result) {
                 return `MCP 服务正常,但 ${where} 没有在 ${ide} 里打开(MCP 服务是全局的,项目要单独打开)。请在 ${ide} 中打开这个项目,然后再次执行 /open-in-ide。`;
             }
             return result?.opened
-                ? `已请求打开/激活 ${where} 并等待 MCP 服务启动,但未检测到 MCP 服务。请在 ${ide} 中开启 MCP 服务(Settings → MCP Server,需 2026.2+)并启用 Brave Mode,然后再次执行 /open-in-ide。`
-                : `未检测到 ${where} 的 MCP 服务。请确认已打开,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后再次执行 /open-in-ide。`;
+                ? `已请求打开/激活 ${where} 并等待 MCP 服务启动,但在 127.0.0.1 的 ${ideaPortRangeText()} 范围内未检测到 MCP 服务。请在 ${ide} 的 Settings → AI → MCP Server 里开启 MCP 服务(需 2026.2+,端口保持默认或落在 ${ideaPortRangeText()} 内),并启用 Brave Mode,然后再次执行 /open-in-ide。`
+                : `未检测到 ${where} 的 MCP 服务(探测了 127.0.0.1 的 ${ideaPortRangeText()})。请确认已打开,在 Settings → AI → MCP Server 开启 MCP 服务(端口保持默认或落在 ${ideaPortRangeText()} 内)并启用 Brave Mode,然后再次执行 /open-in-ide。`;
         }
         case 'launch-failed':
             return `无法拉起 ${nameOf(result?.project)}(未找到应用或启动失败)。请确认它已安装 —— 没装的话先装上,再重试 /open-in-ide。`;
@@ -948,11 +952,24 @@ export default {
 
         /**
         /**
-         * IDE 的 MCP 端口。只支持一个 IDE，所以端口是固定值（`IDE_PORTS`），与项目无关。
+         * 最近一次探测命中的 MCP 端口。
+         *
+         * IDEA 的 MCP 端口**会漂**：2026.3 起用户可自配，端口被占时 IDEA 又会静默上浮
+         * （见 `ide-projects.js` 的 `IDEA_PORT_SCAN_SPAN`）。所以连接后的工具调用
+         * （`get_project_env`、`get_ssh_servers`）不再打写死的端口，而是打**这次探测
+         * 命中的那个**；探测拿不到 `ok` 时它会被清空，等下一轮重扫。
+         *
+         * @type {number | undefined}
+         */
+        let activeIdePort;
+
+        /**
+         * IDE 的 MCP 端口：优先用最近一次探测命中的端口，没探测过（或上次扫空了）时
+         * 退回起始端口。
          *
          * @returns {number | undefined}
          */
-        const portFor = () => IDE_PORTS.idea;
+        const portFor = () => activeIdePort ?? IDE_PORTS.idea;
 
         /**
          * 拉 **root 项目** 的环境变量（`get_project_env`）。
@@ -1249,30 +1266,64 @@ export default {
         const probeGaveUp = () => probeFailures.count >= PROBE_GIVE_UP_AFTER;
 
         /**
-         * **单次**探测，不重试。
+         * **单次**探测，不重试。从 `IDE_PORTS.idea` 起向上扫最多 `IDEA_PORT_SCAN_SPAN`
+         * 个端口（默认 64342~64361），`ok` 即命中并记住该端口。
+         *
+         * 为什么扫：IDEA 的 MCP 端口**会漂** —— 2026.3 起用户可自配；端口被占时 IDEA
+         * 自己还会静默上浮（`findFirstFreePort` 逐个 +1）。回环上拒连是即时的，扫描的
+         * 代价只在"端口开着但不应答"这种少数情况，由共享预算约束。
+         *
+         * 结论优先级：`ok`（命中即返回）> `no-project`（扫到过 IDE 但没这个项目，
+         * 比"没检测到服务"可操作）> `down`（整个范围都没有）。`slow` 立刻上抛，交给
+         * `probeProjectNow` 的退避重试。
          *
          * @param {{ path: string }} project
          * @param {number} remainingMs 预算里还剩多少
          * @returns {Promise<{ state: string, port?: number, projectPath?: string, detail?: string }>}
          */
         const probeAttempt = async (project, remainingMs) => {
-            const port = portFor();
-            if (port === undefined) return {state: PROBE_DOWN, detail: 'no-port'};
+            const start = IDE_PORTS.idea;
+            if (typeof start !== 'number') return {state: PROBE_DOWN, detail: 'no-port'};
+            // 扫描的预算是**动态的**：每个端口从还剩的时间里取自己的一份。没有这个
+            // 钳制，一排"开着但不应答"的端口会各吃满一次 initialize 超时，单次扫描
+            // 最多 20 × 2s，远超调用方给的总预算。
+            const deadline = Date.now() + remainingMs;
             // 两段预算：initialize 只判"端点在不在"（短、失败要快），get_project_env 才
             // 判"项目在不在"（要碰项目模型，冷启动就是慢）。
             //
             // 单次尝试有自己的上限，否则第一次 `slow` 就会把整个预算吃光，"重试"永远
             // 不会发生。
-            const initializeTimeoutMs = Math.max(300, Math.min(PROBE_INITIALIZE_TIMEOUT_MS, Math.floor(remainingMs / 4)));
-            const result = await probeProject(port, project.path, {
-                initializeTimeoutMs,
-                callTimeoutMs: Math.min(remainingMs, probeAttemptTimeoutMs),
-            });
-            // 探到了项目、但不是这个目录（IDE 会把子目录解析到父项目）：算"没打开"。
-            if (result.state === PROBE_OK && !sameProjectPath(result.projectPath, project.path)) {
-                return {...result, state: PROBE_NO_PROJECT, port, detail: `serving ${result.projectPath}`};
+            let sawNoProject;
+            let last = {state: PROBE_DOWN, port: start};
+            for (let offset = 0; offset < IDEA_PORT_SCAN_SPAN; offset += 1) {
+                const remaining = deadline - Date.now();
+                if (remaining <= 0) break;
+                const port = start + offset;
+                const initializeTimeoutMs = Math.max(300, Math.min(PROBE_INITIALIZE_TIMEOUT_MS, Math.floor(remaining / 4)));
+                const result = await probeProject(port, project.path, {
+                    initializeTimeoutMs,
+                    callTimeoutMs: Math.min(remaining, probeAttemptTimeoutMs),
+                });
+                // 探到了项目、但不是这个目录（IDE 会把子目录解析到父项目）：算"没打开"，
+                // 记下来继续扫 —— 多个 IDE / 多个端口下，别的端口可能正在服务这个项目。
+                if (result.state === PROBE_OK && !sameProjectPath(result.projectPath, project.path)) {
+                    last = {...result, state: PROBE_NO_PROJECT, port, detail: `serving ${result.projectPath}`};
+                    sawNoProject ??= last;
+                    continue;
+                }
+                last = {...result, port};
+                if (result.state === PROBE_OK) {
+                    activeIdePort = port;
+                    // 起始端口之外命中 = 端口漂移，值得留一条线上可见的证据。
+                    if (port !== start) logEvent('ide.probe.drift', {port});
+                    return last;
+                }
+                if (result.state === PROBE_SLOW) return last;
+                // down：这个端口没有 MCP，继续扫下一个。
             }
-            return {...result, port};
+            // 整个范围都没有 `ok`：记住的命中端口一并作废，下轮从头重扫。
+            activeIdePort = undefined;
+            return sawNoProject ?? last;
         };
 
         /**

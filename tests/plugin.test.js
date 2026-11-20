@@ -381,7 +381,9 @@ describe('plugin setup', () => {
   it('gives an actionable MCP/Brave Mode notice when the endpoint is unavailable', () => {
     const opened = ideFeedback({ status: 'mcp-unavailable', opened: true });
     const notOpened = ideFeedback({ status: 'mcp-unavailable', opened: false });
-    expect(opened).toContain('Settings → MCP Server');
+    // 只锁"指路要素"(MCP 设置、Brave Mode、重试命令),不锁菜单路径的具体措辞 ——
+    // IDE 版本会改菜单位置,那不是这个插件的行为契约。
+    expect(opened).toContain('MCP Server');
     expect(opened).toContain('Brave Mode');
     expect(opened).toContain('/open-in-ide');
     expect(notOpened).toContain('开启 MCP 服务');
@@ -462,6 +464,49 @@ describe('plugin setup', () => {
     expect(prompt.text).toContain('请只回复"收到"');
     expect(prompt.metadata.displayText).toContain('IDE MCP 已连接');
     expect(Array.isArray(prompt.metadata.comments)).toBe(true);
+
+    await cleanup();
+  });
+
+  it('bounds the whole scan when a port is open but never answers', async () => {
+    // 拒连是即时的,扫描唯一耗时的形态是"端口开着但不应答"(挂着的服务)。
+    // 预算必须钳住**整轮扫描**:没有钳制时,每个候选端口各吃一份 initialize 超时,
+    // 20 个端口串起来会到数秒级。
+    const sink = createServer((socket) => socket.on('error', () => {}));
+    await new Promise((resolve) => sink.listen(0, '127.0.0.1', resolve));
+    running = sink;
+    const started = Date.now();
+    const { ctx, state } = fakeCtx({
+      ports: [sink.address().port],
+      mcpProbeTimeoutMs: 800,
+      mcpStartTimeoutMs: 100,
+      toolRefreshTimeoutMs: 100,
+    });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+
+    // 扫描(含挂起端口 300ms 保底 ×2)≈0.7s;未钳制的旧形态会是 20 × 300ms = 6s。
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(state.mcp).toBe(0);
+
+    await cleanup();
+  });
+
+  it('scans forward and connects when the IDE drifted off the start port', async () => {
+    // IDEA's MCP port drifts: the start port can be taken and the IDE silently
+    // binds the next free one. The plugin must find it by scanning, then keep
+    // talking to the port it hit (the registered server URL is the hit port).
+    const fake = await startFakeIdeForProject();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({ ports: [fake.port - 3], toolsReadyAfter: 1 });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+
+    expect(state.mcp).toBe(1);
+    expect(state.mcpConfig.config.url).toContain(`:${fake.port}/stream`);
+    expect(state.prompts[0].metadata.displayText).toContain('IDE MCP 已连接');
 
     await cleanup();
   });
