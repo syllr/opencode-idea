@@ -366,3 +366,35 @@ describe('exclude', () => {
         expect(existsSync(join(local, 'node_modules'))).toBe(false);
     });
 });
+
+describe('源目录不存在', () => {
+    it('上传的本地源不存在：报错，不在远端建目录', async () => {
+        const sftp = memorySftp();
+        await expect(uploadDirectory(sftp, join(workDir, 'no-such-dir'), '/srv/app', 'overwrite'))
+            .rejects.toThrow('本地目录不存在');
+        expect(sftp.nodes.has('/srv/app')).toBe(false);
+    });
+
+    it('下载的远端源不存在：报错，本地文件一个都不动（mirror 也不删）', async () => {
+        const local = localTree({'keep.txt': 'KEEP'});
+        const sftp = memorySftp();
+
+        await expect(downloadDirectory(sftp, '/srv/missing', local, 'mirror'))
+            .rejects.toThrow('远端目录不存在');
+
+        expect(readFileSync(join(local, 'keep.txt'), 'utf8')).toBe('KEEP');
+    });
+
+    it('上传会自动创建远端目标目录；下载的本地目标不存在时创建后拉取', async () => {
+        const local = localTree({'a.txt': 'A'});
+        const upload = memorySftp();
+        await uploadDirectory(upload, local, '/srv/new/app', 'overwrite');
+        expect(upload.nodes.has('/srv/new/app')).toBe(true);
+        expect(snapshot(upload, '/srv/new/app')['a.txt']).toBe('A');
+
+        const downloadRoot = join(workDir, 'fresh-target', 'nested');
+        const download = memorySftp({'/srv/app/a.txt': 'A'});
+        await downloadDirectory(download, '/srv/app', downloadRoot, 'overwrite');
+        expect(readFileSync(join(downloadRoot, 'a.txt'), 'utf8')).toBe('A');
+    });
+});

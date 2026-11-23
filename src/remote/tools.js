@@ -10,17 +10,19 @@ import {
     assertDeploymentLocalPath,
     assertExcludePatterns,
     collectDeployments,
+    deploymentConflicts,
     deploymentNotFoundText,
+    deploymentSource,
     findServer,
     mergeServers,
     projectHostsPath,
-    readHostsFile,
+    readHostsFileReport,
     resolveLocalPath,
     serverNotFoundText,
     GLOBAL_HOSTS_PATH,
 } from './hosts.js';
-import {createRemoteRun, describeSshError, runRemoteCommand, withWorkingDirectory} from './ssh.js';
-import {downloadDirectory, openSftp, uploadDirectory} from './sftp.js';
+import {createRemoteRun, describeSshError, withWorkingDirectory} from './ssh.js';
+import {downloadDirectory, openSftp, uploadDirectory, SourceDirectoryMissing} from './sftp.js';
 import {connect} from './ssh.js';
 
 /** 服务器列表的缓存时长。命中就不打 IDE MCP；miss / 连接失败会强制刷新。 */
@@ -43,14 +45,25 @@ export const RUN_MAX = 20;
  *   projectPath: string,
  *   fetchIdeServers: () => Promise<Array<import('./hosts.js').RemoteServer>>,
  *   globalHostsPath?: string,
+ *   reconcileFailure?: () => string | undefined,
+ *   deploymentPush?: () => ReadonlyMap<string, string>,
  * }} options
  */
-export function createRemoteToolset({projectPath, fetchIdeServers, globalHostsPath = GLOBAL_HOSTS_PATH}) {
+export function createRemoteToolset({
+    projectPath,
+    fetchIdeServers,
+    globalHostsPath = GLOBAL_HOSTS_PATH,
+    reconcileFailure,
+    deploymentPush,
+}) {
     /** @type {{ at: number, servers: Array<import('./hosts.js').RemoteServer> } | undefined} */
     let cache;
     /** 最近一次 IDE 没读成的错误（配置不完整 / 没连上），给展示层转给用户。 */
     /** @type {Error | undefined} */
     let lastIdeError;
+    /** 项目 / 全局 hosts.json 的解析错误；之前被静默当成空文件。 */
+    /** @type {string | undefined} */
+    let lastHostsError;
     /** @type {Promise<Array<import('./hosts.js').RemoteServer>> | undefined} */
     let inFlight;
 
@@ -75,8 +88,11 @@ export function createRemoteToolset({projectPath, fetchIdeServers, globalHostsPa
                     lastIdeError = error instanceof Error ? error : new Error(String(error));
                     return [];
                 });
-            const project = readHostsFile(projectHostsPath(projectPath), 'project');
-            const global = readHostsFile(globalHostsPath, 'global');
+            const projectReport = readHostsFileReport(projectHostsPath(projectPath), 'project');
+            const globalReport = readHostsFileReport(globalHostsPath, 'global');
+            lastHostsError = [projectReport.error, globalReport.error].filter(Boolean).join('\n') || undefined;
+            const project = projectReport.servers;
+            const global = globalReport.servers;
             // 合并后仍然缺 host / username 的条目（只写了 mapping 的补丁）在这里丢掉：
             // 它没有连接信息，执行时只会变成一个看不懂的 SSH 错误。
             const servers = mergeServers([global, project, ide])
@@ -113,7 +129,11 @@ export function createRemoteToolset({projectPath, fetchIdeServers, globalHostsPa
 
         try {
             return {kind: 'ok', server, value: await action(server), retried: false};
-        } catch {
+        } catch (error) {
+            // 源目录不存在不是凭据问题，重试只会再扫一遍、再报一次；直接交给调用方。
+            if (error instanceof SourceDirectoryMissing) {
+                return {kind: 'source-missing', side: error.side, path: error.path};
+            }
             // 凭据可能刚在 IDE 里改过：刷新后重试一次，仍失败才把错误交出去。
             const refreshed = await load({force: true}).catch(() => servers);
             const retry = findServer(refreshed, name);
@@ -121,8 +141,11 @@ export function createRemoteToolset({projectPath, fetchIdeServers, globalHostsPa
             if (!hasUsableCredentials(retry)) return {kind: 'no-credentials', server: retry};
             try {
                 return {kind: 'ok', server: retry, value: await action(retry), retried: true};
-            } catch (error) {
-                return {kind: 'failed', server: retry, error};
+            } catch (error2) {
+                if (error2 instanceof SourceDirectoryMissing) {
+                    return {kind: 'source-missing', side: error2.side, path: error2.path};
+                }
+                return {kind: 'failed', server: retry, error: error2};
             }
         }
     };
@@ -133,26 +156,17 @@ export function createRemoteToolset({projectPath, fetchIdeServers, globalHostsPa
      * @param {string} name
      */
     const findDeployment = async (name) => {
-        let deployments = collectDeployments(await load());
+        let servers = await load();
+        let deployments = collectDeployments(servers);
+        let conflict = deploymentConflicts(servers).find((entry) => entry.name === name);
         let target = deployments.find((entry) => entry.name === name);
-        if (!target) {
-            deployments = collectDeployments(await load({force: true}));
+        if (!target || conflict) {
+            servers = await load({force: true});
+            deployments = collectDeployments(servers);
+            conflict = deploymentConflicts(servers).find((entry) => entry.name === name);
             target = deployments.find((entry) => entry.name === name);
         }
-        return {target, deployments};
-    };
-
-    /**
-     * 执行一条远程命令。
-     *
-     * @param {string} name
-     * @param {string} command
-     * @param {string | undefined} workingDirectory
-     */
-    const exec = async (name, command, workingDirectory) => {
-        const outcome = await withServer(name, (server) => runRemoteCommand(server, command, {workingDirectory}));
-        if (outcome.kind !== 'ok') return outcome;
-        return {kind: 'ok', server: outcome.server, result: outcome.value, retried: outcome.retried};
+        return {target, deployments, conflict};
     };
 
     /**
@@ -163,13 +177,15 @@ export function createRemoteToolset({projectPath, fetchIdeServers, globalHostsPa
      * @param {'upload' | 'download'} direction
      */
     const sync = async (name, mode, direction) => {
-        const {target, deployments} = await findDeployment(name);
+        const {target, deployments, conflict} = await findDeployment(name);
+        if (conflict) return {kind: 'deployment-conflict', name, servers: conflict.servers};
         if (!target) return {kind: 'missing', deployments};
 
         // 通配符在这里挡掉：hosts.json 允许写错，但真正同步前必须报给调用方。
+        // 路径口径按 deployment **自己的来源**（项目级 / 全局），不是合并后 server 的来源。
         try {
             assertExcludePatterns(target.exclude ?? []);
-            assertDeploymentLocalPath(target.server.source, target);
+            assertDeploymentLocalPath(deploymentSource(target.server, target), target);
         } catch (error) {
             return {kind: 'invalid-deployment', deployment: target, error};
         }
@@ -207,12 +223,18 @@ export function createRemoteToolset({projectPath, fetchIdeServers, globalHostsPa
         const now = Date.now();
         for (const [id, entry] of runs) {
             if (entry.run.done && entry.doneAt === null) entry.doneAt = now;
-            if (entry.doneAt !== null && now - entry.doneAt > RUN_KEEP_MS) runs.delete(id);
+            if (entry.doneAt !== null && now - entry.doneAt > RUN_KEEP_MS) {
+                entry.run.dispose?.();
+                runs.delete(id);
+            }
         }
         while (runs.size > RUN_MAX) {
-            const oldest = runs.keys().next().value;
-            if (oldest === undefined) break;
-            runs.delete(oldest);
+            // 只淘汰已经结束的；仍在跑的 run 不能静默丢掉，否则 runID 会变成
+            // “找不到（只保留 5 分钟）”，而进程和连接都还活着。
+            const oldest = [...runs.entries()].find(([, entry]) => entry.run.done);
+            if (!oldest) break;
+            oldest[1].run.dispose?.();
+            runs.delete(oldest[0]);
         }
     };
 
@@ -277,7 +299,6 @@ export function createRemoteToolset({projectPath, fetchIdeServers, globalHostsPa
 
     return {
         load,
-        exec,
         startExec,
         continueExec,
         finishRun,
@@ -285,6 +306,17 @@ export function createRemoteToolset({projectPath, fetchIdeServers, globalHostsPa
         download: (name, mode) => sync(name, mode, 'download'),
         /** 最近一次 IDE 读取失败的原因；成功时为 undefined。 */
         ideError: () => lastIdeError,
+        /** 项目 / 全局 hosts.json 的解析错误；成功时为 undefined。 */
+        hostsError: () => lastHostsError,
+        /** 最近一次 hosts.json → IDE 自动对账的失败原因（空列表 / 路径不合规都算）。 */
+        reconcileFailure: () => reconcileFailure?.(),
+        /** deployment 名 → 最近一次推送到 IDE 的结果（“已同步到 IDE” / “未推到 IDE：…”）。 */
+        deploymentPush: () => deploymentPush?.() ?? new Map(),
+        /** 卸载时把仍在服务的远端 run 连接关掉（不杀远端进程）。 */
+        dispose: () => {
+            for (const entry of runs.values()) entry.run.dispose?.();
+            runs.clear();
+        },
     };
 }
 
@@ -300,10 +332,11 @@ export function remoteExecTool(toolset) {
             '在远程服务器上执行一条命令，返回输出与退出码。' +
             '用户说“去某台机器上执行 / 看日志”、或提到部署机 / 开发机 / 测试机时用它 —— 不要自己拼 ssh / scp。\n' +
             '- 每条命令是一条独立 SSH 连接：cd / export 不会跨命令保留，需要目录就传 workingDirectory。\n' +
-            '- 命令在 15s 内没结束时返回 `runID` 和 `stillRunning`：命令仍在远端运行，**不会因为这次超时被杀**。\n' +
+            '- 命令在 15s 内没结束时返回文本里的 `runID`（且没有 `exitCode`）：命令仍在远端运行，**不会因为这次超时被杀**。\n' +
             '- 接着看后续输出就**直接再调 remote_exec 并传 `runID`**。**不要 sleep、不要等待、不要重跑原命令** —— ' +
             '服务端自己按 2s → 4s → 8s 退避等待，命令一结束就立刻返回。\n' +
             '- 返回里出现 `exitCode` = 命令**已经结束**，结果已经给全了：**不要再用这个 runID 调用**。\n' +
+            '- 等待只有三种正确形态：有返回值就等它返回；有状态就在同一条命令里轮询终态（sleep 0.5 只放在循环里）；有事件就监听事件，超时只作为失败上界。**不要单独发 sleep N 当等待**：同步接口不要 & 到后台，容器/服务状态用条件轮询。\n' +
             '- 常驻型命令别直接调（docker run 不带 -d、compose up、tail -f、watch、前台 server）：' +
             '看已在跑的服务用 docker exec；要放后台就 nohup <cmd> > <日志> 2>&1 &，工具会立刻返回。\n' +
             '- 管道不会终止上游：<cmd> | head 只是截断输出，上游照样跑到自己退出。\n' +
@@ -456,7 +489,9 @@ export function truncateOutput(output) {
 
     if (Buffer.byteLength(text, 'utf8') > MAX_OUTPUT_BYTES) {
         const buffer = Buffer.from(text, 'utf8');
-        text = buffer.subarray(buffer.length - MAX_OUTPUT_BYTES).toString('utf8').replace(/^\uFFFD+/, '');
+        const head = text.split('\n').slice(0, HEAD_OUTPUT_LINES).join('\n');
+        const tail = buffer.subarray(buffer.length - MAX_OUTPUT_BYTES).toString('utf8').replace(/^\uFFFD+/, '');
+        text = `${head}\n… 省略中间输出 …\n${tail}`;
         truncated = true;
     }
 
@@ -484,7 +519,7 @@ export function remoteListServersTool(toolset) {
         description:
             '列出当前可用的远程服务器，以及它们上面的路径映射（deployment）。' +
             '来源有三层，优先级从高到低：IDE 的 SSH 配置 → 项目 hosts.json → 全局 hosts.json；' +
-            '同名机器以后者为准，deployment 也按名字合并。' +
+            '同名机器以优先级高者为准（IDE > 项目 > 全局），deployment 也按名字合并。' +
             '每台机器带 [IDE] / [项目] / [全局] 标记：只有带 deployment 的机器才能做文件同步' +
             '（remote_upload / remote_download），只有 SSH 配置的机器只能执行命令（remote_exec）。' +
             '不确定机器名或 deployment 名时先调它；remote_exec 不传 server 时也会返回同一份清单。',
@@ -512,10 +547,36 @@ export async function serverListText(toolset) {
         lines.push(ideError.message);
         lines.push('');
     }
+    const hostsError = toolset.hostsError?.();
+    if (hostsError) {
+        lines.push('⚠ hosts.json 有内容读不出来（这一层被跳过）：');
+        lines.push(hostsError);
+        lines.push('修好 JSON 后下一次工具调用会自动重新读取；不要直接覆盖，先备份。');
+        lines.push('');
+    }
+    // hosts.json → IDE 的自动对账失败过：这不是 IDE 的问题，是那份文件本身没通过校验
+    // （最常见的是项目级 localPath 写成了绝对路径）。不摆出来，用户只会看到“IDE 里一条
+    // deployment 都没有”，永远找不到源头。
+    const reconcileFailure = toolset.reconcileFailure?.();
+    if (reconcileFailure) {
+        lines.push('⚠ 上次把 hosts.json 的 deployment 对账到 IDE 时失败：');
+        lines.push(reconcileFailure);
+        lines.push('修好 `.opencode/remote-shell/hosts.json` 后执行 /remote-config-sync 重新推送。');
+        lines.push('');
+    }
     if (servers.length === 0) {
         lines.push('当前没有可用的远程服务器。在 IDE 的 SSH Configurations 里添加服务器，或配置 hosts.json。');
         return lines.join('\n');
     }
+    const conflicts = deploymentConflicts(servers);
+    if (conflicts.length > 0) {
+        lines.push('⚠ deployment 名重复（必须全局唯一，否则无法确定同步哪一条）：');
+        for (const conflict of conflicts) {
+            lines.push(`  - ${conflict.name}：${conflict.servers.join('、')}`);
+        }
+        lines.push('');
+    }
+    const pushStatus = toolset.deploymentPush?.() ?? new Map();
     for (const entry of servers) {
         const source = entry.source === 'ide' ? 'IDE' : entry.source === 'project' ? '项目' : '全局';
         // 认证方式也报出来：OPEN_SSH 走 agent，不需要密码；KEY_PAIR 看私钥。
@@ -523,11 +584,20 @@ export async function serverListText(toolset) {
         const label = entry.alias ? `${entry.name} (${entry.alias})` : entry.name;
         lines.push(`- ${label}  ${entry.host}:${entry.port}  ${entry.username}  [${source}]${auth}`);
         for (const deployment of entry.deployments ?? []) {
+            const pushed = pushStatus.get(deployment.name);
+            // 全局 deployment 只参与本机执行，不会推到 IDE；明确标出来，别让它看起来像漏推。
+            const suffix = pushed
+                ? `  [${pushed}]`
+                : deployment.source === 'global'
+                    ? '  [全局，不推 IDE]'
+                    : deployment.source === 'project'
+                        ? '  [待对账]'
+                        : '';
             try {
-                assertDeploymentLocalPath(entry.source, deployment);
-                lines.push(`    ${deployment.name}  ${deployment.localPath} ↔ ${deployment.deployPath}`);
+                assertDeploymentLocalPath(deploymentSource(entry, deployment), deployment);
+                lines.push(`    ${deployment.name}  ${deployment.localPath} ↔ ${deployment.deployPath}${suffix}`);
             } catch (error) {
-                lines.push(`    ⚠ ${error.message}`);
+                lines.push(`    ⚠ ${error.message}${suffix}`);
             }
         }
     }
@@ -582,6 +652,18 @@ function transferTool(toolset, direction) {
             switch (outcome.kind) {
                 case 'missing':
                     return {content: deploymentNotFoundText(outcome.deployments, name)};
+                case 'deployment-conflict':
+                    return {
+                        content:
+                            `deployment "${name}" 在多个 server 上重名：${outcome.servers.join('、')}。` +
+                            `名字必须全局唯一，先改名再同步。`,
+                    };
+                case 'source-missing':
+                    return {
+                        content: outcome.side === 'local'
+                            ? `本地目录不存在：${outcome.path}\n（未做任何修改；检查 hosts.json 的 localPath）`
+                            : `远端目录不存在：${outcome.path}\n（未做任何修改；检查 hosts.json 的 deployPath、挂载或服务器）`,
+                    };
                 case 'invalid-deployment':
                     return {content: outcome.error.message};
                 case 'no-credentials':
@@ -624,21 +706,6 @@ export function remoteUploadTool(toolset) {
  */
 export function remoteDownloadTool(toolset) {
     return transferTool(toolset, 'download');
-}
-
-/**
- * 一次执行的结果 → 模型可读的文本。
- *
- * @param {import('./hosts.js').RemoteServer} server
- * @param {{ exitCode: number | null, stdout: string, stderr: string }} result
- * @param {boolean} retried
- */
-export function formatRunSummary(server, result, retried = false) {
-    const head = [`[${server.name}] exitCode ${result.exitCode ?? 'null'}`];
-    if (retried) head.push('retried');
-    const body = [result.stdout.trimEnd()];
-    if (result.stderr.trim()) body.push(`[stderr]\n${result.stderr.trimEnd()}`);
-    return `${head.join(', ')}\n${body.filter(Boolean).join('\n')}`;
 }
 
 /**

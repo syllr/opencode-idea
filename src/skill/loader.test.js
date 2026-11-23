@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parseSkillFrontmatter, readAutoinvoke, readSkill, readSkills, SKILL_FILE_NAME } from './loader.js';
 
-const SKILL_IDS = ['idea-run-config-manager', 'run-job-manager'];
+const SKILL_IDS = ['idea-run-config-manager', 'remote-deployment', 'run-job-manager'];
 
 describe('shipped skills', () => {
   it('loads every skill directory into a Skill.Info-shaped definition', () => {
@@ -24,7 +24,7 @@ describe('shipped skills', () => {
   });
 
   it('ships both skills model-invocable', () => {
-    // 两个 skill 都让模型自己加载:manager 曾经是用户点名才可用的(autoinvoke: false),
+    // 所有 shipped skill 都让模型自己加载:manager 曾经是用户点名才可用的(autoinvoke: false),
     // 结果 guidance 里"建配置走这个 skill"变成了死路 —— 模型在可用列表里看不到它。
     for (const id of SKILL_IDS) {
       expect(readSkill(id).autoinvoke, id).toBeUndefined();

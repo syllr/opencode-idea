@@ -1,9 +1,22 @@
 // 三条"提示词命令"的正文：`/remote-shell`、`/remote-deploy` 与 `/remote-files`。
-// 另有一条 `/remote-config-manage`（改 hosts.json）。
 //
 // 它们不执行任何东西，只往会话里注入一段规则，让模型走本插件的 remote_* 工具，
 // 而不是自己拼 ssh / scp。和 `~/.config/opencode/commands/readonly.md` 是同一个思路，
 // 区别只是注册在插件里（跟着包分发，不需要用户再放一个 md 文件）。
+// hosts.json / deployment 的完整流程归 `remote-deployment` skill，这里只留模式切换。
+
+/**
+ * IDE 工具在 OpenCode 里的注册名前缀。
+ *
+ * 插件把 IDE 侧 MCP server 固定注册成 `ide`，OpenCode 用 server 名做工具前缀 ——
+ * 所以模型能调到的名字是 `ide_get_run_configurations`，不是 `get_run_configurations`。
+ * 本插件自己的 `remote_*` 工具是普通工具，不带这个前缀。写提示词时一律走这里，
+ * 不要手写裸名：两种名字混用会让模型去调一个根本不存在的工具。
+ */
+export const IDE_TOOL_PREFIX = 'ide_';
+
+/** @param {string} name */
+export const ideTool = (name) => `${IDE_TOOL_PREFIX}${name}`;
 
 /**
  * `/remote-shell` 注入的提示词：只负责远程命令，不碰文件同步 / 部署。
@@ -22,6 +35,8 @@ export function remoteShellPrompt(request) {
         '     直接再调 remote_exec 并传 runID；服务端按 2s → 4s → 8s 退避等待，命令一结束立刻返回。',
         '   · 返回里出现 exitCode = 命令**已经结束**，结果给全了：**不要再用这个 runID 调用**。',
         '     不要重跑同一条命令，进程不会因为这次超时被杀',
+        '   · **不要用固定 sleep 当等待**：同步接口直接执行，不要 & 到后台；等状态就把条件判断和',
+        '     sleep 0.5 写进同一条命令，命中终态就 break；超时只作为失败上界，不猜秒数',
         '   · 常驻命令（docker run 不带 -d、compose up、tail -f、前台 server）不要直接跑：',
         '     看已在跑的服务用 docker exec，要后台就 nohup … > 日志 2>&1 & 再单独读日志',
         '   · & 只加在最后一条命令上：`a && b && nohup c &` 会把整条链扔进后台，后面的命令和它抢时序',
@@ -34,27 +49,41 @@ export function remoteShellPrompt(request) {
 }
 
 /**
- * `/remote-deploy` 注入的提示词：部署 = 同步 + 启动，走 IDE 的 `deploy_remote_process`。
+ * `/remote-deploy` 注入的提示词：部署 = 同步 + 启动，走 IDE 的 `ide_deploy_remote_process`。
  *
  * @param {string} request
  */
 export function remoteDeployPrompt(request) {
     const ask = request.trim();
+    const list = ideTool('list_remote_processes');
+    const configs = ideTool('get_run_configurations');
+    const inspect = ideTool('inspect_run_configuration');
+    const deploy = ideTool('deploy_remote_process');
     return [
-        '【远程部署】本次部署走 IDE 的 deploy_remote_process，不要自己拼 ssh / scp / rsync。',
+        `【远程部署】本次部署走 IDE 的 ${deploy}，不要自己拼 ssh / scp / rsync。`,
         '',
-        '1. 配置名不确定 → 先调 list_remote_processes（项目里所有 Remote Process 配置 + 远端状态）；',
-        '   也可以看 get_run_configurations 的定义列表。不要猜配置名。',
-        '2. 部署 → deploy_remote_process(configurationName)',
+        `1. 配置名不确定 → 先调 ${list}（项目里所有 Remote Process 配置 + 远端状态）；`,
+        `   也可以看 ${configs} 的定义列表。不要猜配置名。`,
+        '   · 列表为空时**不要停、也不要得出“部署规则用不上”的结论**：',
+        '     项目里只是还没有配置。先加载 `remote-deployment` skill 确认 server 与 deployment',
+        '     （server 必须同时存在于 IDE 的 SSH 配置和 `.opencode/remote-shell/hosts.json`；deployment 名取自',
+        '     hosts.json 里该 server 的 deployments[].name，localPath 必须是**相对项目根**的路径）；',
+        '     再按 `idea-run-config-manager` 的 remote-process 模板建 `.run/<app>@<env>.run.xml`，',
+        `     写完用 ${inspect} 静态检查（typeKnown / canRun / warnings），通过后再进第 3 步。`,
+        '2. 触发前自检：配置存在、类型是 RemoteProcess、deployment 在 hosts.json 里、localPath 合规。',
+        '   不满足就先修：deployment / server 走 `remote-deployment` skill，`.run` 配置走 `idea-run-config-manager`；',
+        '   别等触发之后才从错误里找。',
+        `3. 部署 → ${deploy}(configurationName)`,
         '   · 它同步 deployment、启动进程 / 容器，并打开一个 Run 标签页给用户看日志',
         '   · deploy-only：点 Stop 只关闭日志跟随，不 kill 远端；已在运行会直接替换',
-        '3. 返回 fullOutputPath（本机聚合日志：进度 + 远端 stdout/stderr）',
+        '4. 返回 fullOutputPath（本机聚合日志：进度 + 远端 stdout/stderr）',
         '   · 应用自己的业务日志在配置的 Application log directory 里，用 remote_exec 查看',
-        '4. 如果用户只要文件同步、不启动进程，用 /remote-files，不要用部署',
+        '5. 如果用户只要文件同步、不启动进程，用 /remote-files，不要用部署',
         '',
         ask
             ? `用户没有指定配置名时先问清楚，不要自己挑一条。\n\n用户本次的要求：${ask}`
-            : '用户这次没有说要部署哪个配置。先调 list_remote_processes 列出候选，问清楚是哪个 Remote Process 配置，再动手。',
+            : `用户这次没有说要部署哪个配置。先调 ${list} 列出候选；列表为空就按第 1 条建配置，` +
+                '问清楚应用名与环境，不要自己编一个名字。',
     ].join('\n');
 }
 
@@ -83,51 +112,6 @@ export function remoteFilesPrompt(request) {
 
 /** 用户看到的简短提示（`metadata.displayText`）。 */
 export const REMOTE_SHELL_DISPLAY = '【远程执行】已切到 remote_exec；没指定服务器或命令时会先问你。';
-export const REMOTE_DEPLOY_DISPLAY = '【远程部署】已切到 deploy_remote_process；没指定 Remote Process 配置时会先问你。';
+export const REMOTE_DEPLOY_DISPLAY =
+    `【远程部署】已切到 ${ideTool('deploy_remote_process')}；没指定 Remote Process 配置时会先问你。`;
 export const REMOTE_FILES_DISPLAY = '【远程文件同步】已切到 remote_upload / remote_download；没指定 deployment 时会先问你。';
-
-/**
- * `/remote-config-manage` 注入的提示词。
- *
- * 纯提示词命令：AI 只改项目里的 `hosts.json`，改完由插件的指纹对账自动推到 IDE，
- * 不需要它再调用任何工具。
- *
- * @param {string} request
- */
-export function remoteConfigManagePrompt(request) {
-    const ask = request.trim();
-    return [
-        '【远程配置】本次只改项目里的 `.opencode/remote-shell/hosts.json`，不要动 IDE 的设置、不要手写别的配置文件。',
-        '',
-        '改之前先读一遍文件，按现有结构改，不要重排整个文件。',
-        '',
-        '结构：',
-        '```json',
-        '{',
-        '  "hosts": {',
-        '    "<SSH 配置名>": {',
-        '      "host": "...", "port": 22, "username": "...", "authType": "PASSWORD", "password": "...",',
-        '      "exclude": ["node_modules", "logs"],',
-        '      "deployments": [',
-        '        { "name": "<deployment 名>", "localPath": "references/middleware", "deployPath": "/远端目录", "exclude": ["target"] }',
-        '      ]',
-        '    }',
-        '  }',
-        '}',
-        '```',
-        '',
-        '规则：',
-        '1. `hosts` 的 key 是 SSH 配置名（和 IDE 的 SSH Configurations 一致）',
-        '2. server 级 `exclude` 对该机器下所有 deployment 生效；deployment 级 `exclude` 叠加在它之上',
-        '3. `exclude` 只支持路径前缀或具体文件（`node_modules`、`target`、`logs/app.log`），**不支持 `*` / `?`**',
-        '4. 项目里的 `localPath` **必须相对项目根目录**（如 `references/middleware`），不能写 `/Users/...` 这种绝对路径',
-        '5. 改完不需要调用工具，插件会自动把 deployment 对齐到 IDE',
-        '',
-        ask
-            ? `用户本次的要求：${ask}`
-            : '用户这次没有说要改什么。先问清楚：是要加服务器、加 deployment，还是改 exclude。',
-    ].join('\n');
-}
-
-/** 用户看到的简短提示（`metadata.displayText`）。 */
-export const REMOTE_CONFIG_MANAGE_DISPLAY = '【远程配置】直接改 hosts.json；改完自动对齐到 IDE。';

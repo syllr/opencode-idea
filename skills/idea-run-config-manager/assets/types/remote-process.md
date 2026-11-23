@@ -33,7 +33,10 @@ run configuration —— 本地的 shell / maven / gradle 都不该用它。
 | `container`        | `docker` 必填  | 容器名，用于判断“是否已经在跑”                                           | 与 `docker run --name` 一致         |
 
 `logDir` **不是** stdout 的捕获位置 —— 输出由 IDE 自己记（`fullOutputPath`）。它只告诉工具
-“应用自己的日志在哪”，用于 `list_remote_processes` 这类查询。
+“应用自己的日志在哪”，用于 `ide_list_remote_processes` 这类查询。
+
+`server` / `deployment` 这两个名字的创建与修改归 `remote-deployment` skill（`hosts.json` 那一侧）；
+本 skill 只负责把它们写进 run configuration。
 
 `workingDirectory` / `logDir` / `command` 都是**服务端路径**，写绝对路径 —— IDE 宏（`$PROJECT_DIR$` / `$USER_HOME$`）
 不会在远端展开。本地路径的规则见 [../../SKILL.md](../../SKILL.md) 的「路径：本地 vs 服务端」。

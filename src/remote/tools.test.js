@@ -104,14 +104,14 @@ describe('createRemoteToolset', () => {
             fetchIdeServers: async () => {
                 calls += 1;
                 // 第一次只有 a；第二次新增了 deploy1 —— 模拟"用户在 IDE 里刚加完"。
-                // 新条目故意不带密码：这样 exec 走到 no-credentials 就停，不会真的连 SSH。
+                // 新条目故意不带密码：这样 startExec 走到 no-credentials 就停，不会真的连 SSH。
                 return calls === 1
                     ? [ideServer('a')]
                     : [ideServer('a'), ideServer('deploy1', {password: undefined})];
             },
         });
 
-        const outcome = await toolset.exec('deploy1', 'true');
+        const outcome = await toolset.startExec('deploy1', 'true');
         expect(calls).toBe(2);
         expect(outcome.kind).toBe('no-credentials');
     }, 20000);
@@ -201,6 +201,158 @@ describe('文件同步工具', () => {
         });
         const {content} = await remoteUploadTool(toolset).execute({deployment: 'app'});
         expect(content).toContain('必须是相对项目根目录');
+    });
+
+    it('项目级绝对 localPath 合到 IDE 的同名机器上仍报错（按 deployment 自己的来源校验）', async () => {
+        const {root, globalPath} = projectWith({
+            projectHosts: {
+                dev: {
+                    deployments: [{name: 'app', localPath: '/abs/app', deployPath: '/srv/app'}],
+                },
+            },
+        });
+        const toolset = createRemoteToolset({
+            projectPath: root,
+            globalHostsPath: globalPath,
+            // 同名机器来自 IDE：合并后 server.source 会变成 ide，但 deployment 来自项目级。
+            fetchIdeServers: async () => [ideServer('dev')],
+        });
+        const {content} = await remoteListServersTool(toolset).execute({});
+        expect(content).toContain('[IDE]');
+        expect(content).toContain('必须是相对项目根目录');
+    });
+
+    it('hosts.json 坏掉时列表给出告警，而不是静默当成空文件', async () => {
+        const root = mkdtempSync(join(workDir, 'broken-hosts-'));
+        mkdirSync(join(root, '.opencode', 'remote-shell'), {recursive: true});
+        writeFileSync(join(root, '.opencode', 'remote-shell', 'hosts.json'), '{not json');
+        const toolset = createRemoteToolset({
+            projectPath: root,
+            globalHostsPath: join(workDir, 'none.json'),
+            fetchIdeServers: async () => [ideServer('a')],
+        });
+        const {content} = await remoteListServersTool(toolset).execute({});
+        expect(content).toContain('hosts.json 有内容读不出来');
+        expect(content).toContain('不是合法 JSON');
+    });
+
+    it('把 hosts.json 对账失败与 deployment 推送结果带进列表', async () => {
+        const {root, globalPath} = projectWith({
+            projectHosts: {
+                dev: {
+                    host: 'h',
+                    username: 'u',
+                    deployments: [{name: 'app', localPath: 'app', deployPath: '/srv/app'}],
+                },
+            },
+        });
+        const toolset = createRemoteToolset({
+            projectPath: root,
+            globalHostsPath: globalPath,
+            fetchIdeServers: async () => [],
+            reconcileFailure: () => 'deployment "bad" 的 localPath 必须是相对项目根目录的路径',
+            deploymentPush: () => new Map([['app', '未推到 IDE：IDE MCP 未连接']]),
+        });
+        const {content} = await remoteListServersTool(toolset).execute({});
+        expect(content).toContain('⚠ 上次把 hosts.json 的 deployment 对账到 IDE 时失败');
+        expect(content).toContain('未推到 IDE：IDE MCP 未连接');
+    });
+
+    it('项目级 localPath 用 .. 逃出项目时拒绝上传', async () => {
+        const {root, globalPath} = projectWith({
+            projectHosts: {
+                dev: {
+                    host: 'h',
+                    username: 'u',
+                    password: 'p',
+                    deployments: [{name: 'app', localPath: '../outside', deployPath: '/srv/app'}],
+                },
+            },
+        });
+        const toolset = createRemoteToolset({
+            projectPath: root,
+            globalHostsPath: globalPath,
+            fetchIdeServers: async () => [],
+        });
+        const {content} = await remoteUploadTool(toolset).execute({deployment: 'app'});
+        expect(content).toContain('不能包含 ".."');
+    });
+
+    it('localPath 用反斜杠时拒绝上传', async () => {
+        const {root, globalPath} = projectWith({
+            projectHosts: {
+                dev: {
+                    host: 'h',
+                    username: 'u',
+                    password: 'p',
+                    deployments: [{name: 'app', localPath: 'apps\\app', deployPath: '/srv/app'}],
+                },
+            },
+        });
+        const toolset = createRemoteToolset({
+            projectPath: root,
+            globalHostsPath: globalPath,
+            fetchIdeServers: async () => [],
+        });
+        const {content} = await remoteUploadTool(toolset).execute({deployment: 'app'});
+        expect(content).toContain('必须使用');
+    });
+
+    it('deployPath 不是远端绝对路径时拒绝上传', async () => {
+        const {root, globalPath} = projectWith({
+            projectHosts: {
+                dev: {
+                    host: 'h',
+                    username: 'u',
+                    password: 'p',
+                    deployments: [{name: 'app', localPath: 'apps/app', deployPath: 'srv/app'}],
+                },
+            },
+        });
+        const toolset = createRemoteToolset({
+            projectPath: root,
+            globalHostsPath: globalPath,
+            fetchIdeServers: async () => [],
+        });
+        const {content} = await remoteUploadTool(toolset).execute({deployment: 'app'});
+        expect(content).toContain('deployPath 必须是远端绝对路径');
+    });
+
+    it('跨 server 重名 deployment 时报冲突，不按排序猜', async () => {
+        const {root, globalPath} = projectWith({
+            projectHosts: {
+                a: {host: 'h1', username: 'u', password: 'p', deployments: [{name: 'app', localPath: 'apps/a', deployPath: '/srv/a'}]},
+                b: {host: 'h2', username: 'u', password: 'p', deployments: [{name: 'app', localPath: 'apps/b', deployPath: '/srv/b'}]},
+            },
+        });
+        const toolset = createRemoteToolset({
+            projectPath: root,
+            globalHostsPath: globalPath,
+            fetchIdeServers: async () => [],
+        });
+        const {content} = await remoteUploadTool(toolset).execute({deployment: 'app'});
+        expect(content).toContain('重名');
+        expect(content).toContain('a、b');
+    });
+
+    it('全局 deployment 在列表里明确标注不会推 IDE', async () => {
+        const {root, globalPath} = projectWith({
+            globalHosts: {
+                dev: {
+                    host: 'h',
+                    username: 'u',
+                    password: 'p',
+                    deployments: [{name: 'app', localPath: '/local/app', deployPath: '/srv/app'}],
+                },
+            },
+        });
+        const toolset = createRemoteToolset({
+            projectPath: root,
+            globalHostsPath: globalPath,
+            fetchIdeServers: async () => [],
+        });
+        const {content} = await remoteListServersTool(toolset).execute({});
+        expect(content).toContain('[全局，不推 IDE]');
     });
 
     it('mapping 名对但没凭据时报错，不尝试连接', async () => {

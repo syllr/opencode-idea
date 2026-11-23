@@ -18,7 +18,7 @@
 //     indexes after a restart). One shared budget made the second phase inherit
 //     whatever the first one left over, so a cold IDE looked like "this project
 //     is not open" — see `probeProject`.
-//   * The probe reports WHAT it saw (`ok` / `no-project` / `down` / `slow`), not
+//   * The probe reports WHAT it saw (`ok` / `no-project` / `down` / `busy`), not
 //     a boolean: the caller has to decide between waiting, opening the project,
 //     and telling the user to enable MCP, and those are not the same failure.
 
@@ -30,15 +30,15 @@ export const PROJECT_HEADER = 'IJ_MCP_SERVER_PROJECT_PATH';
  * - `ok`：端点活着，而且打开的就是这个项目 → 可以注册；
  * - `no-project`：MCP 服务正常应答，但目标项目没打开 → `open -a <dir>` 有用；
  * - `down`：连不上/握手被拒（IDE 没开、MCP 服务没启用）→ 拉起 IDE 有用；
- * - `slow`：连上了但没在预算内答完（冷启动、索引中）→ **等**，不要重复拉起。
+ * - `busy`：连上了但没在预算内答完（冷启动、索引中）→ **等**，不要重复拉起。
  */
 export const PROBE_OK = 'ok';
 export const PROBE_NO_PROJECT = 'no-project';
 export const PROBE_DOWN = 'down';
-export const PROBE_SLOW = 'slow';
+export const PROBE_BUSY = 'busy';
 
-/** `initialize` 的预算：只判"端点在不在"，异常端点必须在 2s 内暴露。 */
-export const PROBE_INITIALIZE_TIMEOUT_MS = 2000;
+/** `initialize` 的预算：只判"端点在不在"，异常端点必须在 5s 内暴露。 */
+export const PROBE_INITIALIZE_TIMEOUT_MS = 5000;
 /** `get_project_env` 的预算：它要碰项目模型，冷启动/索引期就是慢。 */
 export const PROBE_CALL_TIMEOUT_MS = 15000;
 
@@ -125,7 +125,7 @@ function withExecutionTimeout(config, options) {
  * @param {string} name
  * @param {object} [args]
  * @param {{ fetchImpl?: typeof fetch, timeoutMs?: number }} [options] `timeoutMs: 0` 表示不设超时
- * @returns {Promise<{ isError?: boolean, content?: Array<{ type: string, text?: string }> } | undefined>}
+ * @returns {Promise<{ isError?: boolean, content?: Array<{ type: string, text?: string }> }>}
  */
 export async function callTool(port, projectPath, name, args = {}, options = {}) {
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -137,15 +137,25 @@ export async function callTool(port, projectPath, name, args = {}, options = {})
   const remaining = () => (deadline === undefined ? timeoutMs : Math.max(1, deadline - Date.now()));
   const base = {fetchImpl, port, projectPath, timeoutMs: remaining()};
   const initialized = await postRequest(base, initializePayload());
-  if (initialized.state) return undefined;
-  const response = await postRequest(
-    {...base, sessionId: sessionIdOf(initialized.response), timeoutMs: remaining()},
-    callPayload(name, args),
-  );
-  if (response.state || !response.response.ok) return undefined;
-  const message = await parseToolResponse(response.response);
-  if (!message || message.error) return undefined;
-  return message.result;
+  if (initialized.state) throw new Error(`IDE MCP 初始化失败（${initialized.state}）：端口 ${port}`);
+  const sessionId = sessionIdOf(initialized.response);
+  try {
+    const response = await postRequest(
+      {...base, sessionId, timeoutMs: remaining()},
+      callPayload(name, args),
+    );
+    if (response.state) throw new Error(`IDE MCP 调用失败（${response.state}）：${name}`);
+    if (!response.response.ok) throw new Error(`IDE MCP 返回 HTTP ${response.response.status}：${name}`);
+    const message = await parseToolResponse(response.response, remaining());
+    if (!message) throw new Error(`IDE MCP 返回了无法解析的响应：${name}`);
+    if (message.error) {
+      const detail = message.error?.message ?? JSON.stringify(message.error);
+      throw new Error(`IDE MCP 拒绝调用 ${name}：${detail}`);
+    }
+    return message.result;
+  } finally {
+    void deleteSession(port, projectPath, sessionId, {fetchImpl, timeoutMs: 1500});
+  }
 }
 
 /**
@@ -175,34 +185,89 @@ export async function probeProject(port, projectPath, options = {}) {
   }, initializePayload());
   if (initialized.state) return {state: initialized.state};
   if (!initialized.response.ok) {
-    return {state: PROBE_DOWN, detail: `initialize HTTP ${initialized.response.status}`};
+    // 端口已经在听：服务没准备好，不是 IDE 没开。
+    return {state: PROBE_BUSY, detail: `initialize HTTP ${initialized.response.status}`};
   }
-  const response = await postRequest({
-    fetchImpl,
-    port,
-    projectPath,
-    sessionId: sessionIdOf(initialized.response),
-    timeoutMs: options.callTimeoutMs ?? PROBE_CALL_TIMEOUT_MS,
-  }, callPayload('get_project_env', {}));
-  if (response.state) return {state: response.state};
-  if (!response.response.ok) {
-    return {state: PROBE_DOWN, detail: `get_project_env HTTP ${response.response.status}`};
+  const sessionId = sessionIdOf(initialized.response);
+  const callTimeoutMs = options.callTimeoutMs ?? PROBE_CALL_TIMEOUT_MS;
+  const deadline = Date.now() + callTimeoutMs;
+  try {
+    const response = await postRequest({
+      fetchImpl,
+      port,
+      projectPath,
+      sessionId,
+      timeoutMs: callTimeoutMs,
+    }, callPayload('get_project_env', {}));
+    if (response.state) return {state: response.state};
+    if (!response.response.ok) {
+      return {state: PROBE_BUSY, detail: `get_project_env HTTP ${response.response.status}`};
+    }
+    let message;
+    try {
+      message = await parseToolResponse(response.response, Math.max(1, deadline - Date.now()));
+    } catch (error) {
+      return {state: PROBE_BUSY, detail: error instanceof Error ? error.message : String(error)};
+    }
+    if (!message || message.error) {
+      return {state: PROBE_BUSY, detail: 'get_project_env JSON-RPC error'};
+    }
+    const result = message.result;
+    if (result?.isError === true) {
+      const detail = textOf(result);
+      // 只有 IDE 明确说“项目没打开”才是 no-project；其它 isError 是服务没答好。
+      if (/Unable to determine the target project|doesn't correspond to any open project/i.test(detail)) {
+        return {state: PROBE_NO_PROJECT, detail};
+      }
+      return {state: PROBE_BUSY, detail};
+    }
+    const payload = (result?.structuredContent && typeof result.structuredContent === 'object')
+      ? result.structuredContent
+      : textJsonOf(result);
+    const reported = typeof payload?.projectPath === 'string' && payload.projectPath !== ''
+      ? payload.projectPath
+      : undefined;
+    if (!reported) return {state: PROBE_BUSY, detail: 'no projectPath in get_project_env'};
+    return {state: PROBE_OK, projectPath: reported};
+  } finally {
+    // 探测不是长期会话：用完就删，否则 IDEA 侧会堆满 abandoned session。
+    void deleteSession(port, projectPath, sessionId, {fetchImpl, timeoutMs: 1500});
   }
-  const message = await parseToolResponse(response.response);
-  if (!message || message.error) return {state: PROBE_DOWN, detail: 'get_project_env JSON-RPC error'};
-  const result = message.result;
-  if (result?.isError === true) {
-    // IDE 为"目标项目没打开"回的就是 isError（Unable to determine the target project）。
-    return {state: PROBE_NO_PROJECT, detail: textOf(result)};
+}
+
+/**
+ * 终止一次 MCP session（best effort）。
+ *
+ * @param {number} port
+ * @param {string} projectPath
+ * @param {string | undefined} sessionId
+ * @param {{ fetchImpl?: typeof fetch, timeoutMs?: number }} [options]
+ */
+export async function deleteSession(port, projectPath, sessionId, options = {}) {
+  if (!sessionId) return false;
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 1500);
+  try {
+    const response = await fetchImpl(`http://127.0.0.1:${port}${MCP_STREAM_PATH}`, {
+      method: 'DELETE',
+      headers: {
+        [PROJECT_HEADER]: ideProjectPath(projectPath),
+        'Mcp-Session-Id': sessionId,
+      },
+      signal: controller.signal,
+    });
+    try {
+      response.body?.cancel?.();
+    } catch {
+      // best effort
+    }
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
   }
-  const payload = (result?.structuredContent && typeof result.structuredContent === 'object')
-    ? result.structuredContent
-    : textJsonOf(result);
-  const reported = typeof payload?.projectPath === 'string' && payload.projectPath !== ''
-    ? payload.projectPath
-    : undefined;
-  if (!reported) return {state: PROBE_NO_PROJECT, detail: 'no projectPath in get_project_env'};
-  return {state: PROBE_OK, projectPath: reported};
 }
 
 /** `tools/call` 的 JSON-RPC 载荷。 */
@@ -235,7 +300,7 @@ function sessionIdOf(response) {
 }
 
 /**
- * 一次 POST，带自己的预算。返回 `{response}` 或 `{state}`：超时是 `slow`（端点可能
+ * 一次 POST，带自己的预算。返回 `{response}` 或 `{state}`：超时是 `busy`（端点可能
  * 在，只是没答完），其它传输错误是 `down`（连不上）。
  *
  * 预算按调用单独计算 —— 这正是原来的 bug：两次 POST 共用一个 AbortController，第二次
@@ -260,7 +325,7 @@ async function postRequest({fetchImpl, port, projectPath, sessionId, timeoutMs},
     });
     return {response};
   } catch (error) {
-    return {state: aborted(error) ? PROBE_SLOW : PROBE_DOWN};
+    return {state: aborted(error) ? PROBE_BUSY : PROBE_DOWN};
   } finally {
     clearTimeout(timer);
   }
@@ -289,9 +354,46 @@ function textJsonOf(result) {
   }
 }
 
+/**
+ * 读响应体也要受预算约束：`fetch` 只等到响应头，body 可能永远不来。
+ *
+ * @param {Response} response
+ * @param {number} timeoutMs
+ */
+async function readResponseText(response, timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return response.text();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        response.body?.cancel?.();
+      } catch {
+        // best effort
+      }
+      reject(new Error('读取 IDE MCP 响应体超时'));
+    }, timeoutMs);
+    response.text().then(
+      (text) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(text);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 /** Read a JSON-RPC reply that may arrive as plain JSON or as an SSE `message`. */
-async function parseToolResponse(response) {
-  const text = await response.text();
+async function parseToolResponse(response, timeoutMs) {
+  const text = await readResponseText(response, timeoutMs);
   const contentType = response.headers.get('content-type') ?? '';
   if (!contentType.includes('text/event-stream')) {
     try {

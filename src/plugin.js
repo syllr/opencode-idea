@@ -40,7 +40,7 @@
 //     in the IDE). A plain business error is classified apart and left alone.
 //
 // Two rules make that recovery survive a cold IDE instead of dying quietly:
-//   * the probe reports WHAT it saw (`ok` / `no-project` / `down` / `slow`), and
+//   * the probe reports WHAT it saw (`ok` / `no-project` / `down` / `busy`), and
 //     only the last one is retried in place — see `probeProjectNow`;
 //   * failures are REMEMBERED across messages (`probeFailures`): each further
 //     attempt waits longer, and a project that keeps failing gets a truthful
@@ -50,7 +50,8 @@
 //
 // `Plugin.define` from `@opencode/plugin` is an identity function, so a plain
 // `{ id, setup }` object is the whole plugin contract. Exporting it directly
-// keeps this package dependency-free at runtime.
+// avoids a runtime dependency on `@opencode/plugin`; the only runtime dependency
+// is `ssh2`.
 
 import {statSync} from 'node:fs';
 
@@ -59,8 +60,8 @@ import {
     PROBE_DOWN,
     PROBE_INITIALIZE_TIMEOUT_MS,
     PROBE_NO_PROJECT,
+    PROBE_BUSY,
     PROBE_OK,
-    PROBE_SLOW,
     probeProject,
     serverConfig,
 } from './mcp/idea.js';
@@ -72,6 +73,7 @@ import {
 } from './mcp/idea-tool-defaults.js';
 import {appendDirectoryTreeTruncationNotice, appendIdeStructuredOutput} from './mcp/idea-tool-output.js';
 import {currentProjectPath} from './project.js';
+import {RETRY_BACKOFF_MS, retryDelayMs} from './backoff.js';
 import {
     autoLaunchSupported,
     createLaunchGuard,
@@ -101,14 +103,13 @@ import {
     remoteListServersTool,
     remoteUploadTool,
 } from './remote/tools.js';
-import {syncRemoteConfig} from './remote/persist.js';
+import {HostsConfigError, syncRemoteConfig} from './remote/persist.js';
 import {projectHostsPath} from './remote/hosts.js';
 import {
-    REMOTE_CONFIG_MANAGE_DISPLAY,
     REMOTE_DEPLOY_DISPLAY,
     REMOTE_SHELL_DISPLAY,
     REMOTE_FILES_DISPLAY,
-    remoteConfigManagePrompt,
+    ideTool,
     remoteDeployPrompt,
     remoteShellPrompt,
     remoteFilesPrompt,
@@ -117,35 +118,24 @@ import {
 /**
  * 一次**逻辑探测**的总预算：在这段时间里按退避重试着探测，直到拿到结论。
  *
- * 为什么不是"单次请求超时"：冷启动/索引期 IDE 会把 `get_project_env` 拖住，单发一次
- * 5s 必然误判成"这个项目没打开"。这里给的是"这次探测最多等多久"，内部的两次握手各有
+ * 为什么不是"单次请求超时"：冷启动/索引期 IDE 会把 `get_project_env` 拖住，单发一次短预算
+ * 必然误判成"这个项目没打开"。这里给的是"这次探测最多等多久"，内部的两次握手各有
  * 自己的预算（见 `mcp/idea.js` 的 `probeProject`）。
  */
-const DEFAULT_MCP_PROBE_TIMEOUT_MS = 8000;
-// 单次尝试里 `get_project_env` 的等待上限。它必须远小于总预算：等于总预算时，第一次
-// `slow` 就把预算吃光，"在预算内重试"永远不会发生。
-const DEFAULT_PROBE_ATTEMPT_TIMEOUT_MS = 5000;
-// 单次逻辑探测内部的退避：端点答了但没答完（`slow`）时才用。第一次 0.5s 就重来，因为
-// 冷启动前期恰恰是最值得再试的时候；封顶 2s，别把一条用户消息拖成十几秒。
-const PROBE_RETRY_BACKOFF_MS = [500, 1000, 2000];
-// 跨消息的退避：连续失败后，下一条消息**先不探测**，等到这个间隔过去。没有它，每条
-// 消息都会用同样的预算重撞一次墙（线上就是这么空转了 11 分钟）。
-const PROBE_COOLDOWN_MS = [5000, 15000, 60000, 120000];
-// 连续失败到这个次数就认定"自动重连没戏"，改为在提示词里让模型告诉用户去 /open-in-ide。
-const PROBE_GIVE_UP_AFTER = 3;
-// `reviveIde()` 的最小间隔：`context` 钩子每个 agent-loop step 都跑，重连会重建注册，
-// 不能因为同一步里连着几次"没有工具"就被放大成 churn。
-const REVIVE_MIN_INTERVAL_MS = 10000;
+const DEFAULT_MCP_PROBE_TIMEOUT_MS = 25000;
+// 单次尝试里 `get_project_env` 的等待上限。索引期它会明显变慢，不能按 localhost 的
+// 速度假设给它 15s；总预算 25s 仍然留有重试空间。
+const DEFAULT_PROBE_ATTEMPT_TIMEOUT_MS = 15000;
+// `prompt` 钩子会 await 探测；给它一个更短的预算，避免索引期把用户消息卡住。
+const PROMPT_PROBE_BUDGET_MS = 6000;
+// 后台 busy/失败重试链的总次数：1s、2s、4s… 最多 8 次（约 25s）。
+// 拉长没有意义 —— IDE 真回去了，下一条消息的自愈会立刻接上；无限重试只会让
+// 一个关掉的 IDE 每 4s 被探测一次，直到进程退出。
+const BUSY_RETRY_MAX_ATTEMPTS = 8;
 // A cold IDE can take tens of seconds before its bundled MCP server listens.
 // After `open -a`, poll for the endpoint instead of reporting failure once.
 const DEFAULT_MCP_START_TIMEOUT_MS = 60000;
-// `open -a` 之后的轮询间隔：前密后疏。固定 1s 会在冷启动最慢的前 10 秒里反复握手，之后
-// 又毫无必要地保持同样的频率；60000ms 的总时长不变，次数从 ~60 次降到 ~25 次。
-const START_BACKOFF_MS = [500, 1000, 2000, 3000];
 const DEFAULT_TOOL_REFRESH_TIMEOUT_MS = 5000;
-// 等工具目录落地时的轮询间隔。同上是**有界等待**(见 waitForIdeTools)，但指数退避比
-// 固定 100ms 更合适：工具目录只会"从没有到有"，前期密、后期疏。
-const TOOL_REFRESH_BACKOFF_MS = [100, 200, 400, 800];
 // Hard cap on ONE IDE MCP tool call. OpenCode's own default is 12 hours, and a
 // wedged IDE MCP server can accept a POST and never answer it — so a call made
 // after the IDE died would otherwise sit unresolved for 12h. 10 minutes is far
@@ -155,10 +145,19 @@ const DEFAULT_EXECUTION_TIMEOUT_MS = 600000;
 // `get_project_env` is a small read that the connect flow AWAITS. Three seconds
 // is enough for a healthy IDE and short enough that a wedged one cannot stall
 // `/open-in-ide` or a shell creation.
-const PROJECT_ENV_TIMEOUT_MS = 3000;
+const PROJECT_ENV_TIMEOUT_MS = 5000;
 // `get_ssh_servers` / `sync_deployments`：前者是一次读，后者会写 IDE 的 Deployment 配置
 // 并触发 UI 刷新，给 10s 的余量；仍然是一个有界上限，不会挂住命令。
 const IDE_CONFIG_TIMEOUT_MS = 10000;
+
+// 跨实例保留的 busy 重试链：本地插件热加载会换实例，闭包里的定时器会跟着丢。
+const BUSY_STATE = globalThis[Symbol.for('opencode-idea.busy-state')] ??= {
+    retries: new Map(),
+    attempts: new Map(),
+};
+const launchStates = globalThis[Symbol.for('opencode-idea.launch-states')] ??= new Map();
+// 后台自愈的最小间隔也按项目存，避免换实例后立刻重复拉起。
+const LAST_REVIVE_AT = globalThis[Symbol.for('opencode-idea.last-revive-at')] ??= new Map();
 // The project environment is also re-read while the session runs (SDK / Maven
 // settings can change under a live IDE). One read per minute per session is
 // plenty: a shell that starts within the window reuses the cached value.
@@ -270,16 +269,33 @@ export function ideServersFromResult(result) {
         const name = typeof record.name === 'string' ? record.name.trim() : '';
         const host = typeof record.host === 'string' ? record.host : '';
         if (!name || !host) return [];
+        const password = typeof record.password === 'string' && record.password !== ''
+            ? record.password
+            : undefined;
+        const passphrase = typeof record.passphrase === 'string' && record.passphrase !== ''
+            ? record.passphrase
+            : undefined;
+        const privateKeyPath = typeof record.privateKeyPath === 'string' && record.privateKeyPath !== ''
+            ? record.privateKeyPath
+            : undefined;
+        // `authType` 必须带出去：persist.js 的写回逻辑靠它决定写哪一套凭据，
+        // 丢了它就会把 hosts.json 里的密码删掉且不补回。
+        const authType = typeof record.authType === 'string' && record.authType !== ''
+            ? record.authType
+            : password
+                ? 'PASSWORD'
+                : privateKeyPath
+                    ? 'KEY_PAIR'
+                    : 'OPEN_SSH';
         return [{
             name,
             host,
             port: typeof record.port === 'number' && record.port > 0 ? record.port : 22,
             username: typeof record.username === 'string' ? record.username : '',
-            password: typeof record.password === 'string' && record.password !== '' ? record.password : undefined,
-            passphrase: typeof record.passphrase === 'string' && record.passphrase !== '' ? record.passphrase : undefined,
-            privateKeyPath: typeof record.privateKeyPath === 'string' && record.privateKeyPath !== ''
-                ? record.privateKeyPath
-                : undefined,
+            authType,
+            password,
+            passphrase,
+            privateKeyPath,
             deployments: [],
             source: 'ide',
         }];
@@ -600,6 +616,9 @@ function rewriteToolError(event, message) {
  *     | 'disabled'
  *     | 'manual-launch'
  *     | 'deleted'
+ *     | 'synced'
+ *     | 'sync-partial'
+ *     | 'sync-failed'
  *     | 'not-configured'
  *   // `manual-launch` = this platform has no launcher at all (the user must
  *   // open the IDE by hand); `disabled` = the user turned launching off. Both
@@ -608,7 +627,7 @@ function rewriteToolError(event, message) {
  *   opened?: boolean,
  *   unavailableNoticeSent?: boolean,
  *   project?: { app?: string },
- *   // 探测结论（`down` / `slow` / `no-project`），让提示文案说得清原因。
+ *   // 探测结论（`down` / `busy` / `no-project`），让提示文案说得清原因。
  *   state?: string,
  *   message?: string
  * }} IdeCommandResult
@@ -631,9 +650,10 @@ const ideaPortRangeText = () => `${IDE_PORTS.idea}-${IDE_PORTS.idea + IDEA_PORT_
 /** @param {IdeCommandResult} result */
 export function ideFeedback(result) {
     const nameOf = () => 'IntelliJ IDEA';
+    const note = typeof result?.message === 'string' && result.message !== '' ? `\n${result.message}` : '';
     switch (result?.status) {
         case 'connected':
-            return 'IDE MCP 已连接并接入。';
+            return `IDE MCP 已连接并接入。${note}`;
         case 'tools-loading':
             return 'IDE MCP 已连接,但原生 IDE 工具列表尚未完成注册。请稍后再次执行 /open-in-ide。';
         case 'env-unready': {
@@ -644,15 +664,15 @@ export function ideFeedback(result) {
             const where = nameOf(result?.project);
             const ide = 'IntelliJ IDEA';
             // 先按探测结论说原因：把"没开 MCP"和"项目没打开"混成一句话，用户只能挨个试。
-            if (result?.state === 'slow') {
+            if (result?.state === 'busy') {
                 const prefix = result?.opened ? `已请求打开/激活 ${where},` : '';
-                return `${prefix}但 MCP 服务在超时时间内没有应答(IDE 可能还在启动或索引)。请稍等片刻再执行 /open-in-ide;若一直这样,检查 ${ide} 是否卡住。`;
+                return `${prefix}但 MCP 服务在超时时间内没有应答(IDE 可能还在启动或索引)。插件会自动按 1/2/4 秒退避重试;若一直这样,检查 ${ide} 是否卡住。`;
             }
             if (result?.state === 'no-project') {
                 return `MCP 服务正常,但 ${where} 没有在 ${ide} 里打开(MCP 服务是全局的,项目要单独打开)。请在 ${ide} 中打开这个项目,然后再次执行 /open-in-ide。`;
             }
             return result?.opened
-                ? `已请求打开/激活 ${where} 并等待 MCP 服务启动,但在 127.0.0.1 的 ${ideaPortRangeText()} 范围内未检测到 MCP 服务。请在 ${ide} 的 Settings → AI → MCP Server 里开启 MCP 服务(需 2026.2+,端口保持默认或落在 ${ideaPortRangeText()} 内),并启用 Brave Mode,然后再次执行 /open-in-ide。`
+                ? `已请求打开/激活 ${where} 并等待 MCP 服务启动,但在 127.0.0.1 的 ${ideaPortRangeText()} 范围内未检测到 MCP 服务。请在 ${ide} 的 Settings → AI → MCP Server 里开启 MCP 服务(需 2026.3+,端口保持默认或落在 ${ideaPortRangeText()} 内),并启用 Brave Mode,然后再次执行 /open-in-ide。`
                 : `未检测到 ${where} 的 MCP 服务(探测了 127.0.0.1 的 ${ideaPortRangeText()})。请确认已打开,在 Settings → AI → MCP Server 开启 MCP 服务(端口保持默认或落在 ${ideaPortRangeText()} 内)并启用 Brave Mode,然后再次执行 /open-in-ide。`;
         }
         case 'launch-failed':
@@ -662,7 +682,7 @@ export function ideFeedback(result) {
         case 'manual-launch':
             return '当前系统不支持自动打开 IDE(仅 macOS 实现了启动)。请手动打开 IDE,在 Settings → MCP Server 开启 MCP 服务并启用 Brave Mode,然后再次执行 /open-in-ide。';
         case 'deleted':
-            return '已删除本项目的 IDE 配置:已注销全部 IDE MCP 并清除配置。如需重新接入,请执行 /open-in-ide。';
+            return `已删除本项目的 IDE 配置:已注销全部 IDE MCP 并清除配置。如需重新接入,请执行 /open-in-ide。${note}`;
         case 'synced':
         case 'sync-partial':
             return result?.message ?? '已对齐远程配置。';
@@ -682,6 +702,16 @@ export function ideFeedback(result) {
  */
 /** Marks the plugin's own session notices, so recovery never reacts to them. */
 export const NOTICE_PREFIX = '【插件通知】';
+
+/**
+ * 成功类结果：只通知，不调度模型。
+ *
+ * `connected` / `deleted` / `synced` 都表示“命令做完了”，用户不需要为这条提示再等一次
+ * 模型往返。`deleted` 曾经漏在这里，导致 `/delete-in-ide` 仍然走 user 消息、叫醒模型。
+ * 失败或需要用户立刻动手的状态（`mcp-unavailable` / `env-unready` / `sync-partial` …）
+ * 不在此列：它们必须马上上屏。
+ */
+const QUIET_FEEDBACK_STATUSES = new Set(['connected', 'deleted', 'synced']);
 
 export function idePromptText(result) {
     return [`${NOTICE_PREFIX}${ideFeedback(result)}`, '这是发给用户的通知,你无需处理。请只回复"收到"。'].join('\n\n');
@@ -776,6 +806,7 @@ export default {
     async setup(ctx) {
         const projectPath = currentProjectPath(ctx.location);
         if (!projectPath) return;
+        if (process.env.OPENCODE_IDEA_LOG) logEvent('ide.setup', {pid: process.pid, project: projectPath});
 
         const options = ctx.options || {};
         const injectGuidance = options.injectGuidance !== false;
@@ -783,12 +814,15 @@ export default {
         const launchEnabled = options.openInIde !== false;
         // 一次逻辑探测（含内部退避重试）的总预算。
         const mcpProbeTimeoutMs = asPositiveNumber(options.mcpProbeTimeoutMs, DEFAULT_MCP_PROBE_TIMEOUT_MS);
-        // 单次尝试里 `get_project_env` 最多等多久。必须小于总预算，否则第一次 `slow`
+        // 单次尝试里 `get_project_env` 最多等多久。必须小于总预算，否则第一次 `busy`
         // 就吃掉全部预算，重试等于不存在。
         const probeAttemptTimeoutMs = asPositiveNumber(options.probeAttemptTimeoutMs, DEFAULT_PROBE_ATTEMPT_TIMEOUT_MS);
-        const probeRetryBackoffsMs = Array.isArray(options.probeRetryBackoffsMs) && options.probeRetryBackoffsMs.length > 0
+        const probeRetryOverride = Array.isArray(options.probeRetryBackoffsMs)
             ? options.probeRetryBackoffsMs.filter((value) => typeof value === 'number' && value >= 0)
-            : PROBE_RETRY_BACKOFF_MS;
+            : [];
+        // 过滤后为空（例如配了 `[-1]`）必须回退默认值：空数组会让重试间隔变成
+        // `undefined` → NaN，退化成零延迟的紧循环。
+        const probeRetryBackoffsMs = probeRetryOverride.length > 0 ? probeRetryOverride : RETRY_BACKOFF_MS;
         const mcpStartTimeoutMs = asPositiveNumber(options.mcpStartTimeoutMs, DEFAULT_MCP_START_TIMEOUT_MS);
         const toolRefreshTimeoutMs = asPositiveNumber(options.toolRefreshTimeoutMs, DEFAULT_TOOL_REFRESH_TIMEOUT_MS);
         // Cap on a single IDE tool call, so a wedged server fails in finite time
@@ -799,9 +833,11 @@ export default {
         // metadata.displayText. false is silent.
         const feedback = options.feedback === false ? false : 'message';
         // 拉起冷却：前密后疏（见 `LAUNCH_COOLDOWNS_MS`）。
-        const launchCooldownsMs = Array.isArray(options.launchCooldownsMs) && options.launchCooldownsMs.length > 0
+        const launchCooldownOverride = Array.isArray(options.launchCooldownsMs)
             ? options.launchCooldownsMs.filter((value) => typeof value === 'number' && value > 0)
-            : undefined;
+            : [];
+        // 空数组回退默认冷却：`createLaunchGuard` 拿空表会算出 NaN，冷却永远不生效。
+        const launchCooldownsMs = launchCooldownOverride.length > 0 ? launchCooldownOverride : undefined;
         const launchMaxAttempts = asPositiveNumber(options.launchMaxAttempts, undefined);
 
         /** @type {Array<{ dispose: () => Promise<void> | void }>} */
@@ -835,7 +871,7 @@ export default {
         let wasServing = false;
 
         // root 项目的环境变量（`get_project_env` 的结果）。连接成功后才会有值；
-        // 每次 shell 创建时读它，出 TTL 就同一次同步重拉（3s 上限，失败不注入）。
+        // 每次 shell 创建时读它，出 TTL 就同一次同步重拉（5s 上限，失败不注入）。
         /** @type {{ PATH: string, variables: Record<string, string> } | undefined} */
         let projectEnv;
         let projectEnvAt = 0;
@@ -848,7 +884,7 @@ export default {
         //
         // `undefined` = 还没读过；`null` = 读过、但没有配置。两者必须分开：混成一种，
         // 请求钩子就会把"还没读"当成"未配置"，漏掉一次本该发生的自愈。
-        const storage = ctx.storage;
+        const storageOf = () => ctx.storage;
         const markKey = markKeyFor(projectPath);
         /** @type {import('./ide-projects.js').IdeConfig | null | undefined} */
         let config;
@@ -867,6 +903,7 @@ export default {
          */
         const readConfig = async () => {
             if (config !== undefined) return config;
+            const storage = storageOf();
             if (!storage || typeof storage.get !== 'function') {
                 // storage 暂不可用 ≠ 没有标记：不缓存，等它就绪后的下一次调用。
                 return undefined;
@@ -878,11 +915,16 @@ export default {
                     config = current;
                 } else if (raw !== null && raw !== undefined) {
                     // 值存在，但按当前版本解析不出来：这个 value 有问题，覆写。
-                    config = parseMark(raw);
+                    const migrated = parseMark(raw);
+                    // 先写成功再缓存：写失败还缓存成 migrated 的话，下一次读会直接命中
+                    // 缓存，旧格式的 value 就永远留在 storage 里了。
                     try {
-                        await storage.set?.(markKey, serializeMark());
+                        if (typeof storage.set === 'function') {
+                            await storage.set(markKey, serializeMark());
+                        }
+                        config = migrated;
                     } catch {
-                        // 覆写失败不影响本次连接；下一次读会再尝试。
+                        return undefined;
                     }
                 } else {
                     config = null;
@@ -904,13 +946,24 @@ export default {
          * @param {import('./ide-projects.js').IdeConfig | null} next
          */
         const writeConfig = async (next) => {
+            const storage = storageOf();
+            let persisted = true;
             try {
-                if (next) await storage?.set?.(markKey, serializeMark());
-                else await storage?.remove?.(markKey);
+                if (next) {
+                    if (typeof storage?.set !== 'function') persisted = false;
+                    else await storage.set(markKey, serializeMark());
+                } else if (typeof storage?.remove !== 'function') {
+                    persisted = false;
+                } else {
+                    await storage.remove(markKey);
+                }
             } catch {
-                // best effort
+                persisted = false;
             }
+            if (!persisted) logEvent('ide.storage.write.failed', {op: next ? 'set' : 'remove'});
+            // 写失败也要更新内存，否则本次会话行为自相矛盾；但调用方会收到 false。
             config = next;
+            return persisted;
         };
 
         /** 当前接入的项目；未配置时为 `undefined`。只有一个项目，路径就是工作区根。 */
@@ -967,7 +1020,7 @@ export default {
                 } catch {
                     // The MCP catalog may still be settling; retry within the bounded wait.
                 }
-                const wait = TOOL_REFRESH_BACKOFF_MS[Math.min(attempt, TOOL_REFRESH_BACKOFF_MS.length - 1)];
+                const wait = retryDelayMs(attempt);
                 attempt += 1;
                 const remaining = deadline - Date.now();
                 if (remaining <= 0) break;
@@ -1049,7 +1102,9 @@ export default {
             }
             const result = await callTool(port, project.path, name, args, {
                 timeoutMs: options.timeoutMs ?? IDE_CONFIG_TIMEOUT_MS,
-            }).catch(() => undefined);
+            }).catch((error) => {
+                throw error instanceof Error ? error : new Error(String(error));
+            });
             if (!result) throw new Error('IDE MCP 未连接：先执行 /open-in-ide。');
             if (result.isError === true) {
                 const text = (result.content ?? [])
@@ -1086,15 +1141,73 @@ export default {
             const payload = (result.structuredContent && typeof result.structuredContent === 'object')
                 ? result.structuredContent
                 : textJson(result);
+            /** @param {unknown} value */
+            const names = (value) => Array.isArray(value)
+                ? value.filter((name) => typeof name === 'string')
+                : [];
             return {
                 server: target.server,
-                created: Array.isArray(payload?.created) ? payload.created.length : 0,
-                updated: Array.isArray(payload?.updated) ? payload.updated.length : 0,
-                unchanged: Array.isArray(payload?.unchanged) ? payload.unchanged.length : 0,
+                created: names(payload?.created),
+                updated: names(payload?.updated),
+                unchanged: names(payload?.unchanged),
+                // IDE 里有、hosts.json 没给的条目：IDE 侧只报告不删除，这边至少让用户看见。
+                orphaned: names(payload?.orphaned),
             };
         };
 
-        const remoteToolset = createRemoteToolset({projectPath, fetchIdeServers});
+        /**
+         * 一条 deployment 最近一次推送到 IDE 的结果：`名字 → 状态文本`。
+         *
+         * 推到 IDE 这件事在插件侧是后台发生的，用户在 IDE 面板里只看到“有 / 没有”，看不到
+         * 为什么没有。`remote_list_servers` 把这份状态带出去，才是可排查的。
+         *
+         * @type {Map<string, string>}
+         */
+        const deploymentPushStatus = new Map();
+        /** 最近一次 hosts.json → IDE 自动对账的失败原因；成功后清空。 */
+        /** @type {string | undefined} */
+        let hostsReconcileFailure;
+
+        /**
+         * 推一条 server 的 deployment，并记录每一名的结果。
+         *
+         * 不抛错：调用方（指纹对账 / `/remote-config-sync`）要的是一份“哪几条没推成”的报告，
+         * 一条失败不该让其余的部署停摆。
+         *
+         * @param {{ server: string, deployments: Array<{ name: string, localPath: string, deployPath: string, exclude: string[] }> }} target
+         */
+        const pushDeploymentsWithStatus = async (target) => {
+            try {
+                const pushed = await pushDeployments(target);
+                const states = new Map([
+                    ...pushed.created.map((name) => [name, 'created']),
+                    ...pushed.updated.map((name) => [name, 'updated']),
+                    ...pushed.unchanged.map((name) => [name, 'unchanged']),
+                ]);
+                for (const deployment of target.deployments) {
+                    const state = states.get(deployment.name);
+                    deploymentPushStatus.set(
+                        deployment.name,
+                        state ? `已同步到 IDE（${state}）` : '已同步到 IDE',
+                    );
+                }
+                return {ok: true, pushed};
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                for (const deployment of target.deployments) {
+                    deploymentPushStatus.set(deployment.name, `未推到 IDE：${message}`);
+                }
+                logEvent('remote.deployments.push.failed', {server: target.server, detail: message});
+                return {ok: false, message};
+            }
+        };
+
+        const remoteToolset = createRemoteToolset({
+            projectPath,
+            fetchIdeServers,
+            reconcileFailure: () => hostsReconcileFailure,
+            deploymentPush: () => deploymentPushStatus,
+        });
 
         /**
          * hosts.json 的指纹：mtime + size。
@@ -1119,7 +1232,9 @@ export default {
          * 指纹变了就把 hosts.json 静默对齐到 IDE。
          *
          * 触发点是 `tool.execute.after` 与 `session.hook('prompt')`：前者覆盖 AI 的编辑，
-         * 后者覆盖用户手改。失败不打扰用户，只重置指纹，下次交互再试。
+         * 后者覆盖用户手改。失败**不弹窗**，但必须留痕：写日志 + 把原因挂到
+         * `remote_list_servers` 的输出上 —— 只重置指纹的话，用户看到的永远是“IDE 里一条
+         * deployment 都没有”，而真正的原因（例如项目级 localPath 是绝对路径）一次都看不到。
          */
         const reconcileHostsIfChanged = () => {
             if (hostsReconcile) return hostsReconcile;
@@ -1130,13 +1245,37 @@ export default {
                 try {
                     const servers = await fetchIdeServers();
                     const result = syncRemoteConfig({projectPath, servers});
-                    for (const target of result.syncTargets) {
-                        await pushDeployments(target).catch(() => {});
+                    /** @type {string[]} */
+                    const problems = [];
+                    // 路径不合规的条目：点名是哪条 deployment，别让它悄悄消失。
+                    for (const entry of result.invalid) {
+                        deploymentPushStatus.set(entry.deployment, `未推到 IDE：${entry.message}`);
+                        problems.push(entry.message);
                     }
+                    for (const target of result.syncTargets) {
+                        const outcome = await pushDeploymentsWithStatus(target);
+                        if (!outcome.ok) problems.push(`${target.server}: ${outcome.message}`);
+                    }
+                    const failure = problems.length > 0 ? problems.join('\n') : undefined;
+                    if (failure !== hostsReconcileFailure) {
+                        if (failure) logEvent('remote.hosts.reconcile.failed', {detail: failure.replace(/\n/g, ' | ')});
+                        else logEvent('remote.hosts.reconcile.recovered', {});
+                    }
+                    hostsReconcileFailure = failure;
+                    // 写回会刷新 mtime：把“这次写完后的指纹”记下来，下一次工具调用
+                    // 不会把插件自己的写入当成用户改动、再对账一遍。
+                    lastHostsFingerprint = hostsFingerprint();
                     await remoteToolset.load({force: true}).catch(() => {});
-                } catch {
-                    // IDE 没开 / 配置暂时不完整：不打扰用户，下次交互再试。
-                    lastHostsFingerprint = '';
+                } catch (error) {
+                    // IDE 没开 / 读配置失败：记下来，下次交互再试。
+                    const message = error instanceof Error ? error.message : String(error);
+                    if (message !== hostsReconcileFailure) {
+                        logEvent('remote.hosts.reconcile.failed', {detail: message});
+                    }
+                    hostsReconcileFailure = message;
+                    // 文件本身坏了：等用户改文件，不要每个工具调用都重读并再造一份备份。
+                    // IDE 暂时不可用则保留原来的重试节奏。
+                    lastHostsFingerprint = error instanceof HostsConfigError ? current : '';
                 } finally {
                     hostsReconcile = undefined;
                 }
@@ -1188,7 +1327,7 @@ export default {
          * 混在一起正是之前"每条消息都从零重试、失败后被静默丢掉"的根源。
          *
          * @param {{ probeIde?: boolean, budgetMs?: number }} [options]
-         * @returns {Promise<'ready' | 'tools' | 'env' | 'offline' | 'none'>}
+         * @returns {Promise<'ready' | 'tools' | 'env' | 'busy' | 'offline' | 'none'>}
          */
         const reconcileOnce = async ({probeIde = true, budgetMs} = {}) => {
             if (disposed) return 'none';
@@ -1212,10 +1351,25 @@ export default {
             // "这个项目不需要 IDE"。返回 `offline` 并把原因留在失败状态里，调用方才能
             // 决定是等、是拉起、还是让用户开 MCP。
             const probe = await probeProjectNow(project, {budgetMs});
+            if (probe.state === PROBE_BUSY) {
+                // 端点活着、只是没答完（索引/忙）：保留现有注册，按 1/2/4 重试，
+                // 绝不拆掉重建、也绝不拉起 IDE。
+                recordProbeFailure(PROBE_BUSY);
+                scheduleBusyRetry(project.path);
+                return 'busy';
+            }
             if (probe.state !== PROBE_OK) {
                 await deactivateIde();
                 recordProbeFailure(probe.state);
+                // down / no-project 也继续按 1/2/4 探测；拉起只由 ensureProject 的
+                // guard 控制，探测本身不该因为 3 次拉起失败就停掉。
+                scheduleBusyRetry(project.path);
                 return 'offline';
+            }
+            // 探测期间配置被删 / 插件被回收：不要往一个已经失效的实例里注册。
+            if (disposed || !config) {
+                await deactivateIde();
+                return 'none';
             }
             const bindings = [{project, port: probe.port}];
 
@@ -1228,12 +1382,21 @@ export default {
             const toolsReady = await activateIde(bindings);
             if (!toolsReady) {
                 recordProbeFailure('tools');
+                scheduleBusyRetry(project.path);
                 return 'tools';
             }
-            resetProbeFailures();
             // 环境变量是连接完成的最后一步：拉不到就等于这次连接没做完，
             // 调用方（`/open-in-ide`、自愈）会据此重试，而不是当作 ready。
-            return (await loadProjectEnv()) ? 'ready' : 'env';
+            //
+            // 失败时**不要**清退避：否则下一条消息会立刻再拆装一次 MCP server，
+            // 变成"每条消息重启一次"。
+            if (!(await loadProjectEnv())) {
+                recordProbeFailure('env');
+                scheduleBusyRetry(project.path);
+                return 'env';
+            }
+            resetProbeFailures();
+            return 'ready';
         };
 
         // Serialize reconciles so overlapping callers can never register/activate
@@ -1252,6 +1415,44 @@ export default {
         const reconcile = (options) => enqueue(() => reconcileOnce(options));
 
         /**
+         * busy 的跨消息重试：1s → 2s → 4s → 4s…
+         *
+         * 同一项目只保留一条定时器；命中即停；down/no-project 交给拉起策略，不再走这里。
+         *
+         * @param {string} path
+         */
+        const scheduleBusyRetry = (path) => {
+            if (BUSY_STATE.retries.has(path)) return;
+            const attempt = BUSY_STATE.attempts.get(path) ?? 0;
+            if (attempt >= BUSY_RETRY_MAX_ATTEMPTS) {
+                // 后台链到此为止：之后只由用户消息的自愈触发，不再自己定闹钟。
+                logEvent('ide.probe.retry.exhausted', {project: path, attempts: attempt});
+                return;
+            }
+            const delay = retryDelayMs(attempt);
+            const timer = setTimeout(() => {
+                BUSY_STATE.retries.delete(path);
+                if (disposed || !config) return;
+                BUSY_STATE.attempts.set(path, attempt + 1);
+                void reconcile({
+                    probeIde: true,
+                    budgetMs: Math.min(PROMPT_PROBE_BUDGET_MS, mcpProbeTimeoutMs),
+                }).catch(() => {
+                });
+            }, delay);
+            timer.unref?.();
+            BUSY_STATE.retries.set(path, timer);
+        };
+
+        /** @param {string} path */
+        const clearBusyRetry = (path) => {
+            const timer = BUSY_STATE.retries.get(path);
+            if (timer) clearTimeout(timer);
+            BUSY_STATE.retries.delete(path);
+            BUSY_STATE.attempts.delete(path);
+        };
+
+        /**
          * 探测/重连的失败状态。**跨消息保留**，这是退避的前提：之前每条消息都从零开始
          * 单发一次，所以同一堵墙被撞了 11 分钟。
          */
@@ -1259,6 +1460,7 @@ export default {
 
         /** 一次探测成功：清掉失败状态，恢复正常节奏。 */
         const resetProbeFailures = () => {
+            clearBusyRetry(projectPath);
             if (probeFailures.count > 0) logEvent('ide.probe.recovered', {after: probeFailures.count});
             probeFailures.count = 0;
             probeFailures.nextAt = 0;
@@ -1269,18 +1471,18 @@ export default {
         /**
          * 记一次探测失败，并按次数安排下一次最早何时再试。
          *
-         * @param {string} state 探测结论（`down` / `slow` / `no-project`）
+         * @param {string} state 探测结论（`down` / `busy` / `no-project`）
          */
         const recordProbeFailure = (state) => {
             probeFailures.count += 1;
             probeFailures.state = state;
             probeFailures.at = Date.now();
-            const index = Math.min(probeFailures.count - 1, PROBE_COOLDOWN_MS.length - 1);
-            probeFailures.nextAt = probeFailures.at + PROBE_COOLDOWN_MS[index];
+            const wait = retryDelayMs(probeFailures.count - 1);
+            probeFailures.nextAt = probeFailures.at + wait;
             logEvent('ide.probe.failed', {
                 state,
                 failures: probeFailures.count,
-                retryInMs: PROBE_COOLDOWN_MS[index],
+                retryInMs: wait,
                 project: projectPath,
             });
         };
@@ -1288,8 +1490,6 @@ export default {
         /** 现在是否处在跨消息退避里（`/open-in-ide` 不理会它，用户是显式要连）。 */
         const probeCoolingDown = () => Date.now() < probeFailures.nextAt;
 
-        /** 自动重连是不是已经没戏了（连续失败太多次）。 */
-        const probeGaveUp = () => probeFailures.count >= PROBE_GIVE_UP_AFTER;
 
         /**
          * **单次**探测，不重试。从 `IDE_PORTS.idea` 起向上扫最多 `IDEA_PORT_SCAN_SPAN`
@@ -1299,9 +1499,9 @@ export default {
          * 自己还会静默上浮（`findFirstFreePort` 逐个 +1）。回环上拒连是即时的，扫描的
          * 代价只在"端口开着但不应答"这种少数情况，由共享预算约束。
          *
-         * 结论优先级：`ok`（命中即返回）> `no-project`（扫到过 IDE 但没这个项目，
-         * 比"没检测到服务"可操作）> `down`（整个范围都没有）。`slow` 立刻上抛，交给
-         * `probeProjectNow` 的退避重试。
+         * 结论优先级：`ok`（命中即返回）> `busy`（某个端口在但没答完，值得退避重试）
+         * > `no-project`（扫到过 IDE 但没这个项目，比"没检测到服务"可操作）> `down`
+         * （整个范围都没有）。`busy` 不中断扫描，扫完整个范围再返回。
          *
          * @param {{ path: string }} project
          * @param {number} remainingMs 预算里还剩多少
@@ -1312,14 +1512,15 @@ export default {
             if (typeof start !== 'number') return {state: PROBE_DOWN, detail: 'no-port'};
             // 扫描的预算是**动态的**：每个端口从还剩的时间里取自己的一份。没有这个
             // 钳制，一排"开着但不应答"的端口会各吃满一次 initialize 超时，单次扫描
-            // 最多 20 × 2s，远超调用方给的总预算。
+            // 最多 20 × 5s，远超调用方给的总预算。
             const deadline = Date.now() + remainingMs;
             // 两段预算：initialize 只判"端点在不在"（短、失败要快），get_project_env 才
             // 判"项目在不在"（要碰项目模型，冷启动就是慢）。
             //
-            // 单次尝试有自己的上限，否则第一次 `slow` 就会把整个预算吃光，"重试"永远
+            // 单次尝试有自己的上限，否则第一次 `busy` 就会把整个预算吃光，"重试"永远
             // 不会发生。
             let sawNoProject;
+            let sawBusy;
             let last = {state: PROBE_DOWN, port: start};
             for (let offset = 0; offset < IDEA_PORT_SCAN_SPAN; offset += 1) {
                 const remaining = deadline - Date.now();
@@ -1344,18 +1545,24 @@ export default {
                     if (port !== start) logEvent('ide.probe.drift', {port});
                     return last;
                 }
-                if (result.state === PROBE_SLOW) return last;
+                if (result.state === PROBE_BUSY) {
+                    // 记下来但**继续扫**：低端口被一个半死的监听占住时，真正的 IDE
+                    // 往往在更高的漂移端口上。立刻返回等于把扫描能力作废。
+                    sawBusy ??= {...result, port};
+                    last = sawBusy;
+                    continue;
+                }
                 // down：这个端口没有 MCP，继续扫下一个。
             }
             // 整个范围都没有 `ok`：记住的命中端口一并作废，下轮从头重扫。
             activeIdePort = undefined;
-            return sawNoProject ?? last;
+            return sawBusy ?? sawNoProject ?? last;
         };
 
         /**
          * 一次**逻辑**探测：在预算内按退避重试，直到结论明确。
          *
-         * 只有 `slow` 值得重试 —— 它表示"端点可能有，只是没答完"，等一会儿常常就好了。
+         * 只有 `busy` 值得重试 —— 它表示"端点可能有，只是没答完"，等一会儿常常就好了。
          * `down`（连不上）和 `no-project`（服务正常、项目没开）在同一个请求里再试也不会
          * 变，交给调用方决定是拉起 IDE 还是别动。
          *
@@ -1373,7 +1580,7 @@ export default {
                 const remaining = deadline - Date.now();
                 if (remaining <= 0) break;
                 last = await probeAttempt(project, remaining);
-                if (last.state !== PROBE_SLOW) return last;
+                if (last.state !== PROBE_BUSY) return last;
                 const wait = probeRetryBackoffsMs[Math.min(attempt, probeRetryBackoffsMs.length - 1)];
                 attempt += 1;
                 if (Date.now() + wait >= deadline) break;
@@ -1388,7 +1595,7 @@ export default {
          * answers for THIS project. This is the step that makes a single
          * `/open-in-ide` enough on a cold start.
          *
-         * 轮询间隔是退避的（`START_BACKOFF_MS`）：冷启动最慢的前几秒里连续试，之后放慢。
+         * 轮询间隔走统一的 `RETRY_BACKOFF_MS`（1s → 2s → 4s）。
          *
          * @param {{ path: string }} project
          * @returns {Promise<{ state: string, port?: number, projectPath?: string, detail?: string }>}
@@ -1402,7 +1609,7 @@ export default {
                 if (disposed || !config) return last;
                 last = await probeAttempt(project, Math.max(1, deadline - Date.now()));
                 if (last.state === PROBE_OK) return last;
-                const wait = START_BACKOFF_MS[Math.min(attempt, START_BACKOFF_MS.length - 1)];
+                const wait = retryDelayMs(attempt);
                 attempt += 1;
                 const remaining = deadline - Date.now();
                 if (remaining <= 0) break;
@@ -1417,7 +1624,6 @@ export default {
          * 按项目路径分开：不同项目的插件实例互不影响；同一个项目的重复调用仍然共享
          * 一次拉起（re-entrant）。
          */
-        const launchStates = new Map();
         const launchStateFor = (path) => {
             let state = launchStates.get(path);
             if (!state) {
@@ -1431,6 +1637,9 @@ export default {
             }
             return state;
         };
+
+        /** 自动拉起是不是已经连续失败到上限（只影响拉起，不影响探测）。 */
+        const launchGaveUp = () => launchStateFor(projectPath).guard.exhausted();
 
         /**
          * 确保 `project` 的 IDE 正开着、并且打开着这个项目；返回它的端口。
@@ -1446,7 +1655,14 @@ export default {
          */
         const ensureProject = (project, {onUnavailable, budgetMs, force = false} = {}) => {
             const state = launchStateFor(project.path);
-            if (state.inFlight) return state.inFlight;
+            if (state.inFlight) {
+                if (!force) return state.inFlight;
+                // 用户显式要连：先等后台那次结束，再按 force 语义重新跑一遍。直接复用
+                // 后台那次会把「被冷却挡下」的结果当成用户这次的结果，等于没拉起。
+                return state.inFlight
+                    .catch(() => undefined)
+                    .then(() => ensureProject(project, {onUnavailable, budgetMs, force}));
+            }
             const reportUnavailable = async (opened, probeState) => {
                 if (state.noticeSent || typeof onUnavailable !== 'function') return;
                 // Fast-fail: notify as soon as the endpoint is known to be missing so
@@ -1460,13 +1676,35 @@ export default {
                 if (delivered) state.noticeSent = true;
             };
             const run = (async () => {
+                // 用户显式要连：清掉上一次自动重连留下的通知与后台重试链，
+                // 这一次的结果必须重新上屏（否则 busy 时会静默通过）。
+                if (force) {
+                    state.noticeSent = false;
+                    clearBusyRetry(project.path);
+                }
                 // 已经开着并且就打开着这个项目：什么都不用做。
                 const serving = await probeProjectNow(project, {budgetMs});
+                // 探测期间用户可能执行了 /delete-in-ide，或插件被 dispose：不要再拉起。
+                if (disposed || !config) return {status: 'not-configured'};
                 if (serving.state === PROBE_OK) {
                     state.guard.reset();
                     state.noticeSent = false;
                     resetProbeFailures();
                     return {status: 'connected', port: serving.port, project, unavailableNoticeSent: false};
+                }
+                if (serving.state === PROBE_BUSY) {
+                    // IDE 在、只是没答完（索引/忙）：只退避重试，绝不拉起。
+                    recordProbeFailure(PROBE_BUSY);
+                    scheduleBusyRetry(project.path);
+                    // 显式命令要把"还在索引"说出来；后台自愈没有回调，这里是空操作。
+                    await reportUnavailable(false, PROBE_BUSY);
+                    return {
+                        status: 'mcp-unavailable',
+                        opened: false,
+                        project,
+                        state: PROBE_BUSY,
+                        unavailableNoticeSent: state.noticeSent,
+                    };
                 }
                 // 需要一个 app 才能拉起。拿不到 app 的原因有两种，交给 autoLaunchSupported 区分。
                 const app = launchEnabled ? ideAppName() : undefined;
@@ -1475,8 +1713,8 @@ export default {
                     return {status: autoLaunchSupported() ? 'disabled' : 'manual-launch', project};
                 }
                 if (!force && (state.guard.exhausted() || state.guard.coolingDown())) {
-                    // There is no reason to wait here: MCP is disabled/not ready, and
-                    // the user must enable it in the IDE before retrying the command.
+                    // 拉起次数用完 / 冷却中：只探测，不再 open -g。
+                    scheduleBusyRetry(project.path);
                     await reportUnavailable(false, serving.state);
                     return {
                         status: 'mcp-unavailable',
@@ -1493,9 +1731,10 @@ export default {
                     state.guard.reset();
                     state.noticeSent = false;
                 }
+                if (disposed || !config) return {status: 'not-configured'};
                 state.guard.markSpawn();
                 logEvent('ide.launch', {project: project.path, attempt: state.guard.state().attempts, reason: serving.state});
-                const launched = await openInIde(project.path, {app});
+                const launched = await openInIde(project.path, {app, background: !force});
                 if (!launched) {
                     logEvent('ide.launch.failed', {project: project.path});
                     recordProbeFailure(serving.state);
@@ -1510,6 +1749,7 @@ export default {
                 }
                 logEvent('ide.launch.timeout', {project: project.path, state: started.state, detail: started.detail});
                 recordProbeFailure(started.state);
+                scheduleBusyRetry(project.path);
                 await reportUnavailable(true, started.state);
                 return {
                     status: 'mcp-unavailable',
@@ -1543,9 +1783,11 @@ export default {
             if (!project) return {status: 'not-configured'};
             const result = await ensureProject(project, {onUnavailable, budgetMs, force});
             if (result.status !== 'connected') {
-                // 没连上：注销残留注册，把 ensureProject 的具体失败原因交回去。
-                await reconcile({probeIde: false}).catch(() => {
-                });
+                // busy 时保留现有注册；只有确认 offline 才拆。
+                if (result.state !== PROBE_BUSY) {
+                    await reconcile({probeIde: false}).catch(() => {
+                    });
+                }
                 return result;
             }
             let stage = 'none';
@@ -1557,6 +1799,9 @@ export default {
                 // capability load is best effort; feedback still matters
             }
             if (stage === 'ready') return {status: 'connected', port: result.port, project};
+            if (stage === 'busy') {
+                return {status: 'mcp-unavailable', opened: false, project, state: PROBE_BUSY};
+            }
             // IDE 已连上、但 env 没拉到：连接按"没做完"处理，命令会要求重试，
             // 而不是报一个看起来成功的 connected。
             if (stage === 'env') return {status: 'env-unready', port: result.port, project};
@@ -1587,7 +1832,6 @@ export default {
          */
         /** @type {Promise<void> | undefined} */
         let reviveInFlight;
-        let lastReviveAt = 0;
         const reviveIde = () => {
             // 配置 gate 住每一次重连，包括后台发起的那些：后台尝试绝不能把用户已经用
             // `/delete-in-ide` 删掉的项目重新拉起来。
@@ -1595,8 +1839,9 @@ export default {
             if (reviveInFlight) return reviveInFlight;
             // `context` 钩子每个 agent-loop step 都跑，而"没有工具"在同一步里可能连着出现
             // 好几次（工具续跑）。一次重连本身要重建注册，不能被这种频率放大成 churn。
-            if (Date.now() - lastReviveAt < REVIVE_MIN_INTERVAL_MS) return Promise.resolve();
-            lastReviveAt = Date.now();
+            const lastReviveAt = LAST_REVIVE_AT.get(projectPath) ?? 0;
+            if (Date.now() - lastReviveAt < retryDelayMs(RETRY_BACKOFF_MS.length - 1)) return Promise.resolve();
+            LAST_REVIVE_AT.set(projectPath, Date.now());
             const run = (async () => {
                 try {
                     const result = await runOpenInIdea();
@@ -1635,6 +1880,7 @@ export default {
          * **成功**走 `session.synthetic`：这是"入库 + 不调度模型"的通道（TUI 自己发"编辑器
          * 上下文"就走它）。消息进 `session_inbox`，下一次交互随上下文送达 —— 一条"已连接"
          * 的提示不值得一次模型调用：在 48 万 token 的会话里那是一次 64 秒的往返。
+         * `connected` / `deleted` / `synced` 都算成功，见 `QUIET_FEEDBACK_STATUSES`。
          *
          * **失败**仍走 `session.prompt`（立刻上屏）：用户需要马上知道该去开 MCP / 打开
          * 项目，模型也据此避开 IDE 工具 —— 这种提示晚一轮才到就失去意义了。
@@ -1644,7 +1890,7 @@ export default {
         const sendFeedback = async (input, result) => {
             if (feedback !== 'message') return false;
             const text = ideFeedback(result);
-            if (result?.status === 'connected' && typeof ctx.session?.synthetic === 'function') {
+            if (QUIET_FEEDBACK_STATUSES.has(result?.status) && typeof ctx.session?.synthetic === 'function') {
                 try {
                     await ctx.session.synthetic({
                         sessionID: input.sessionID,
@@ -1721,8 +1967,9 @@ export default {
                     description: '接入当前项目:在 IntelliJ IDEA 里打开它,并把 IDE MCP 工具注册进来',
                     execute: async (input) => {
                         // 第一次接入:写标记,之后靠它判断"这个项目该不该自动重连"。
+                        let markPersisted = true;
                         if (!(await readConfig())) {
-                            await writeConfig({version: MARK_VERSION});
+                            markPersisted = await writeConfig({version: MARK_VERSION});
                         }
                         /** @type {boolean} */
                         let unavailableNoticeSent = false;
@@ -1734,6 +1981,9 @@ export default {
                                 return unavailableNoticeSent;
                             },
                         });
+                        if (!markPersisted && result.status === 'connected') {
+                            result.message = '配置只在本次会话生效，未能写入存储（重启后需要重新执行 /open-in-ide）。';
+                        }
                         // The unavailable notice is the final result for this command. If
                         // it was already delivered, do not show the same warning twice.
                         const unavailableAlreadySent = unavailableNoticeSent || result.unavailableNoticeSent;
@@ -1746,11 +1996,16 @@ export default {
                     name: 'delete-in-ide',
                     description: '删除本项目的 IDE 配置:注销 IDE MCP 并清除登记',
                     execute: async (input) => {
-                        await writeConfig(null);
+                        const cleared = await writeConfig(null);
                         // 注销全部 server。走串行化的 reconcile，所以在飞的重建（另一个
                         // `/open-in-ide`、请求期自愈）不会在配置已删之后再注册回来。
                         await reconcile({probeIde: false});
-                        await sendFeedback(input, {status: 'deleted'});
+                        await sendFeedback(input, {
+                            status: 'deleted',
+                            ...(cleared ? {} : {
+                                message: '配置只在本次会话生效，未能写入存储（重启后可能恢复）。',
+                            }),
+                        });
                     },
                 });
                 // 双向对齐：IDE 的 SSH 配置写回 hosts.json，hosts.json 的 deployment 推到 IDE。
@@ -1763,11 +2018,11 @@ export default {
                         try {
                             servers = await fetchIdeServers();
                         } catch (error) {
+                            const detail = error instanceof Error ? error.message : String(error);
+                            const hint = detail.includes('/open-in-ide') ? '' : ' 若 IDE 未连接，先执行 /open-in-ide。';
                             await sendFeedback(input, {
                                 status: 'sync-failed',
-                                message:
-                                    '读取 IDE 的 SSH 配置失败：' +
-                                    (error instanceof Error ? error.message : String(error)),
+                                message: '读取 IDE 的 SSH 配置失败：' + detail + hint,
                             });
                             return;
                         }
@@ -1784,17 +2039,18 @@ export default {
                         }
 
                         const pushed = [];
-                        const failures = [];
+                        const failures = [...result.invalid.map((entry) => entry.message)];
+                        for (const entry of result.invalid) {
+                            deploymentPushStatus.set(entry.deployment, `未推到 IDE：${entry.message}`);
+                        }
                         for (const target of result.syncTargets) {
-                            try {
-                                pushed.push(await pushDeployments(target));
-                            } catch (error) {
-                                failures.push(
-                                    `${target.server}: ${error instanceof Error ? error.message : String(error)}`,
-                                );
-                            }
+                            const outcome = await pushDeploymentsWithStatus(target);
+                            if (outcome.ok) pushed.push(outcome.pushed);
+                            else failures.push(`${target.server}: ${outcome.message}`);
                         }
 
+                        // 这次写入的指纹要记下来，否则紧接着的下一次工具调用会再对账一遍。
+                        lastHostsFingerprint = hostsFingerprint();
                         // 缓存里还是旧的列表，紧接着的 remote_exec 会读不到刚写进去的条目。
                         await remoteToolset.load({force: true}).catch(() => {});
 
@@ -1804,16 +2060,38 @@ export default {
                             `共 ${result.total} 台`,
                         ];
                         if (pushed.length > 0) {
-                            const deployments = pushed.reduce(
-                                (sum, entry) => sum + entry.created + entry.updated + entry.unchanged, 0,
+                            const created = pushed.flatMap((entry) => entry.created);
+                            const updated = pushed.flatMap((entry) => entry.updated);
+                            const unchanged = pushed.flatMap((entry) => entry.unchanged);
+                            lines.push(
+                                `deployment：created ${created.length} / updated ${updated.length} / unchanged ${unchanged.length}`,
                             );
-                            lines.push(`deployment：已推 ${deployments} 条到 IDE`);
-                        } else if (result.deploymentCount === 0) {
+                            for (const [label, names] of [
+                                ['created', created],
+                                ['updated', updated],
+                                ['unchanged', unchanged],
+                            ]) {
+                                if (names.length === 0) continue;
+                                lines.push(`  ${label}: ${names.join('、')}`);
+                            }
+                        }
+                        const orphaned = pushed.flatMap((entry) =>
+                            entry.orphaned.map((name) => `${name} (${entry.server})`));
+                        if (orphaned.length > 0) {
+                            lines.push(
+                                `⚠ IDE 里有、hosts.json 没配的 deployment（不会自动删除，需要时在 Deployment 面板手动删）：`,
+                                ...orphaned.map((name) => `  - ${name}`),
+                            );
+                        }
+                        if (result.deploymentCount === 0 && result.invalid.length === 0) {
                             lines.push('deployment：hosts.json 里还没有配置');
                         }
                         if (failures.length > 0) {
-                            lines.push(`未推送 ${failures.length} 台：`, ...failures.map((line) => `  - ${line}`));
+                            lines.push(`⚠ 未推到 IDE ${failures.length} 项：`, ...failures.map((line) => `  - ${line}`));
                         }
+                        // 这次是用户主动发起的同步：把结果同步到 remote_list_servers 的提示，
+                        // 免得它继续显示上一次自动对账的旧结论。
+                        hostsReconcileFailure = failures.length > 0 ? failures.join('\n') : undefined;
                         await sendFeedback(input, {
                             status: failures.length > 0 ? 'sync-partial' : 'synced',
                             message: lines.join('\n'),
@@ -1821,7 +2099,8 @@ export default {
                     },
                 });
 
-                // 两条提示词命令：不执行任何东西，只把"用 remote_* 工具、别自己拼 ssh"这条规则注入会话。
+                // 三条提示词命令：不执行任何东西，只把"用 remote_* 工具、别自己拼 ssh"这条规则注入会话。
+                // hosts.json / deployment 的完整流程归 `remote-deployment` skill，不在这里再开一条命令。
                 // 参数原样附在末尾；没带参数时提示词会要求模型先问清楚。
                 editor.add({
                     name: 'remote-shell',
@@ -1851,9 +2130,28 @@ export default {
                 });
                 editor.add({
                     name: 'remote-deploy',
-                    description: '远程部署模式：引导 AI 用 deploy_remote_process 同步并启动，而不是手动拼 ssh / scp',
+                    description: `远程部署模式：引导 AI 用 ${ideTool('deploy_remote_process')} 同步并启动，而不是手动拼 ssh / scp`,
                     execute: async (input) => {
                         if (typeof ctx.session?.prompt !== 'function') return;
+                        // 正文点名的都是 `ide_*` 工具：此刻不存在时不要推荐，否则模型会去调一个
+                        // 没有的名字。只做文件同步 / 远程执行不需要 IDE，所以给出另一条路。
+                        let ideToolsReady = false;
+                        if (typeof ctx.tool?.list === 'function') {
+                            try {
+                                ideToolsReady = toolIds(await ctx.tool.list()).some((id) => id.startsWith('ide_'));
+                            } catch {
+                                // 工具目录读不到就按"没有"处理
+                            }
+                        }
+                        if (!ideToolsReady) {
+                            await sendFeedback(input, {
+                                status: 'sync-failed',
+                                message: '当前会话里没有 IDE 部署工具。先执行 /open-in-ide 接入 IDE'
+                                    + '（并要求安装 idea-mcp-enhance），再执行 /remote-deploy；'
+                                    + '只想传文件或跑命令时用 /remote-files 与 /remote-shell，它们不需要 IDE。',
+                            });
+                            return;
+                        }
                         const request = input?.prompt?.text ?? '';
                         try {
                             await ctx.session.prompt({
@@ -1898,31 +2196,6 @@ export default {
                         }
                     },
                 });
-                // 纯提示词命令：AI 只改 hosts.json，改完由指纹对账自动推到 IDE。
-                editor.add({
-                    name: 'remote-config-manage',
-                    description: '远程配置模式：引导 AI 修改 hosts.json（server / deployment / exclude）',
-                    execute: async (input) => {
-                        if (typeof ctx.session?.prompt !== 'function') return;
-                        const request = input?.prompt?.text ?? '';
-                        try {
-                            await ctx.session.prompt({
-                                ...input.prompt,
-                                sessionID: input.sessionID,
-                                text: remoteConfigManagePrompt(request),
-                                metadata: {
-                                    displayText: request.trim()
-                                        ? `【远程配置】${request.trim()}`
-                                        : REMOTE_CONFIG_MANAGE_DISPLAY,
-                                    comments: [],
-                                },
-                                delivery: input.delivery,
-                            });
-                        } catch {
-                            // 同上
-                        }
-                    },
-                });
             });
         }
 
@@ -1943,7 +2216,7 @@ export default {
         // IDE 里选的 JDK / Node / Go / Maven / Python 真的优先生效，同时不丢掉 OpenCode
         // 进程自己的 PATH。其余变量（GOROOT / MAVEN_HOME / VIRTUAL_ENV ...）直接覆盖。
         //
-        // 缓存命中不阻塞；过期时在同一次 hook 里同步重拉（3s 上限），拉不到就不注入 ——
+        // 缓存命中不阻塞；过期时在同一次 hook 里同步重拉（5s 上限），拉不到就不注入 ——
         // 一条命令不该因为 IDE 短暂不可用而失败。
         if (typeof ctx.shell?.hook === 'function') {
             shellRegistration = await ctx.shell.hook('create.before', async (event) => {
@@ -2006,7 +2279,7 @@ export default {
                         serving,
                         // 只有"确实试过并且放弃了"才说放弃。否则那句话是假的，而模型会
                         // 原样转给你（线上就是连续 5 轮一声不吭）。
-                        gaveUp: Boolean(config) && !serving && probeGaveUp(),
+                        gaveUp: Boolean(config) && !serving && launchGaveUp(),
                     });
                 }
                 if (!injectGuidance) return;
@@ -2026,8 +2299,8 @@ export default {
             //     或进程重启后新实例的样子。setup 故意不连接,没有这一步会话就会永久
             //     没有工具,只能靠用户手敲 `/open-in-ide`。
             //
-            // 探测本身走退避(见 `PROBE_COOLDOWN_MS`)：失败之后不是每条消息都重撞一次，
-            // 而是等冷却过去。拉起 IDE 放在后台(`void reviveIde()`)，不阻塞这条消息。
+            // 探测本身走统一的 1s → 2s → 4s 退避：失败之后不是每条消息都重撞一次。
+            // 拉起 IDE 放在后台(`void reviveIde()`)，不阻塞这条消息。
             promptRegistration = await ctx.session.hook('prompt', async (event) => {
                 if (disposed) return;
                 // hosts.json 可能被用户手改过：一次 stat，变了就静默对齐（不注入任何消息）。
@@ -2050,17 +2323,17 @@ export default {
                 try {
                     // 只有"连接完整"（工具 + env 都到位）才清 latch；env 没拉到必须继续重试，
                     // 否则会话会永久停在"工具有、环境是空的"这个中间态。
-                    const stage = await reconcile({probeIde: true});
+                    const stage = await reconcile({probeIde: true, budgetMs: Math.min(PROMPT_PROBE_BUDGET_MS, mcpProbeTimeoutMs)});
                     if (stage === 'ready') {
                         needsRebuild = false;
                         return;
                     }
                     if (stage !== 'offline') return;
-                    // 该连却连不上：端点不在、或者项目没在 IDE 里打开 —— 这两种 `open -a`
-                    // 才有用。`slow`（IDE 在、只是没答完）要等，不能重复拉起。
+                    // 该连却连不上：端点不在、或者项目没在 IDE 里打开 —— 这两种 `open -g`
+                    // 才有用。`busy`（IDE 在、只是没答完）已经在 reconcileOnce 里排了重试。
                     const why = probeFailures.state;
                     if (why !== PROBE_DOWN && why !== PROBE_NO_PROJECT) return;
-                    if (!launchEnabled || !autoLaunchSupported() || probeGaveUp()) return;
+                    if (!launchEnabled || !autoLaunchSupported() || launchGaveUp()) return;
                     void reviveIde();
                 } catch {
                     // best effort: the latch stays set, the cooldown decides when to retry
@@ -2096,15 +2369,17 @@ export default {
                     const input = event.input;
                     if (!input || typeof input.command !== 'string' || input.command === '') return;
                     if (!projectEnv || Date.now() - projectEnvAt > PROJECT_ENV_TTL_MS) {
-                        await loadProjectEnv().catch(() => false);
+                        // 刷新失败时不要拿旧 PATH 冒充当前环境（用户可能刚在 IDE 里换了 SDK）。
+                        const refreshed = await loadProjectEnv().catch(() => false);
+                        if (!refreshed) return;
                     }
                     const path = projectEnv?.PATH;
                     if (!path) return;
                     const quoted = path
-                        .split(':')
+                        .split(PATH_DELIMITER)
                         .filter(Boolean)
                         .map((entry) => `'${entry.replaceAll("'", `'\\''`)}'`)
-                        .join(':');
+                        .join(PATH_DELIMITER);
                     input.command = `export PATH=${quoted}:"$PATH"\n${input.command}`;
                 });
             }
@@ -2155,7 +2430,11 @@ export default {
                         const project = projectForTool(event.tool);
                         const app = project ? ideAppName() : undefined;
                         if (!project || !app) return;
-                        await openInIde(project.path, {app});
+                        const launched = await openInIde(project.path, {app, background: true});
+                        if (!launched) {
+                            logEvent('ide.launch.failed', {project: project.path});
+                            return;
+                        }
                         rewriteToolError(
                             event,
                             '该项目已在 IntelliJ IDEA 中重新打开,请重试刚才的操作。',
@@ -2174,6 +2453,12 @@ export default {
 
         return async () => {
             disposed = true;
+            clearBusyRetry(projectPath);
+            LAST_REVIVE_AT.delete(projectPath);
+            launchStates.delete(projectPath);
+            // 等在飞的 reconcile 落地：它已经过了 `disposed` 检查时仍会把 `ide` server
+            // 注册进去，而那个注册只能由这里清。不等就会留下一个没人管理的死连接。
+            await reconcileChain.catch(() => undefined);
             if (sessionRegistration) {
                 try {
                     await sessionRegistration.dispose();
@@ -2236,6 +2521,11 @@ export default {
                 } catch {
                     // best effort
                 }
+            }
+            try {
+                remoteToolset.dispose?.();
+            } catch {
+                // best effort
             }
             await deactivateIde();
         };

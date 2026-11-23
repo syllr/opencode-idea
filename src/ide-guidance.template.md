@@ -17,7 +17,8 @@
   不是失败。同步 / 上传 / 拉起都在后台跑，按 2s / 4s / 8s / 16s 退避查
   `ide_list_running_configurations` / `ide_list_remote_processes`，启动日志读 `fullOutputPath`。
 - **增删改 run configuration** 走 `idea-run-config-manager` skill：直接读写项目 `.run/*.run.xml`，
-  写完 `inspect` 检查、再真跑。
+  写完 `inspect` 检查、再真跑。`ide_list_remote_processes` 返回“没有配置”**不是死路**：按该 skill 的
+  remote-process 模板先建一条，再 inspect、再部署。
 - **Before launch 是独立 Run 会话**：构建 / 另一个配置先跑，通常几秒就结束，之后
   `ide_list_running_configurations` 里只剩父配置。**列表里看不到构建 ≠ 没执行** ——
   构建的日志与退出码直接在这些工具的返回里：`ide_rerun_run_configuration` /

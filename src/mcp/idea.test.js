@@ -6,7 +6,7 @@ import {
   PROBE_DOWN,
   PROBE_NO_PROJECT,
   PROBE_OK,
-  PROBE_SLOW,
+  PROBE_BUSY,
   probeProject,
   serverConfig,
 } from './idea.js';
@@ -51,6 +51,7 @@ describe('callTool', () => {
     const calls = [];
     const fetchImpl = vi.fn(async (url, options) => {
       calls.push({ url, options });
+      if (options.method === 'DELETE') return new Response(null, { status: 200 });
       const body = JSON.parse(options.body);
       if (body.method === 'initialize') {
         return json({ jsonrpc: '2.0', id: 1, result: {} }, sessionId ? { 'mcp-session-id': sessionId } : {});
@@ -70,10 +71,32 @@ describe('callTool', () => {
     // 两次 POST:先 initialize,再调用。IDE 的 Streamable-HTTP 端点会拿第二次
     // "Server not initialized" 拒掉,除非它带上第一次返回的 session id
     // (对着 IntelliJ IDEA 2026.2.3 实测过)。
-    expect(calls).toHaveLength(2);
-    expect(calls[0].options.headers['Mcp-Session-Id']).toBeUndefined();
-    expect(calls[1].options.headers['Mcp-Session-Id']).toBe('sess-1');
-    expect(calls[1].options.headers.IJ_MCP_SERVER_PROJECT_PATH).toBe('/project');
+    const posts = calls.filter((call) => call.options.method !== 'DELETE');
+    expect(posts).toHaveLength(2);
+    expect(posts[0].options.headers['Mcp-Session-Id']).toBeUndefined();
+    expect(posts[1].options.headers['Mcp-Session-Id']).toBe('sess-1');
+    expect(posts[1].options.headers.IJ_MCP_SERVER_PROJECT_PATH).toBe('/project');
+    // 用完要 DELETE，否则 IDEA 侧会留 abandoned session。
+    const close = calls.find((call) => call.options.method === 'DELETE');
+    expect(close?.options.headers['Mcp-Session-Id']).toBe('sess-1');
+  });
+
+  it('surfaces HTTP / JSON-RPC errors instead of silently returning undefined', async () => {
+    const httpError = vi.fn(async (_url, options) => {
+      const body = JSON.parse(options.body);
+      if (body.method === 'initialize') return json({ jsonrpc: '2.0', id: 1, result: {} });
+      return new Response('nope', { status: 500 });
+    });
+    await expect(callTool(64342, '/project', 'get_project_env', {}, { fetchImpl: httpError }))
+      .rejects.toThrow(/HTTP 500/);
+
+    const rpcError = vi.fn(async (_url, options) => {
+      const body = JSON.parse(options.body);
+      if (body.method === 'initialize') return json({ jsonrpc: '2.0', id: 1, result: {} });
+      return json({ jsonrpc: '2.0', id: 2, error: { message: 'tool not found' } });
+    });
+    await expect(callTool(64342, '/project', 'missing_tool', {}, { fetchImpl: rpcError }))
+      .rejects.toThrow(/tool not found/);
   });
 
   it('still calls without a session header when the server is stateless', async () => {
@@ -101,9 +124,14 @@ describe('probeProject', () => {
   /** 一个会正常应答的端点；`env` 决定 `get_project_env` 回什么。 */
   const servingIde = ({ env } = {}) => {
     const calls = [];
+    const deletedSessions = [];
     const fetchImpl = vi.fn(async (url, options) => {
-      calls.push(JSON.parse(options.body));
+      if (options?.method === 'DELETE') {
+        deletedSessions.push(options.headers?.['Mcp-Session-Id']);
+        return new Response(null, { status: 200 });
+      }
       const body = JSON.parse(options.body);
+      calls.push(body);
       if (body.method === 'initialize') {
         return json({ jsonrpc: '2.0', id: 1, result: {} }, { 'mcp-session-id': 's1' });
       }
@@ -113,15 +141,17 @@ describe('probeProject', () => {
         result: env ?? { structuredContent: { PATH: '/bin', variables: {}, projectPath: '/project' } },
       });
     });
-    return { calls, fetchImpl };
+    return { calls, deletedSessions, fetchImpl };
   };
 
   it('reports the project the IDE says it is serving', async () => {
-    const { fetchImpl } = servingIde();
+    const { fetchImpl, deletedSessions } = servingIde();
     await expect(probeProject(64342, '/project', { fetchImpl })).resolves.toMatchObject({
       state: PROBE_OK,
       projectPath: '/project',
     });
+    // 探测不是长期会话：确认真的把这条 session 关了，而不是只在 README 里写着。
+    expect(deletedSessions).toEqual(['s1']);
   });
 
   it('separates "server answered, this project is not open" from "server is gone"', async () => {
@@ -144,7 +174,7 @@ describe('probeProject', () => {
     });
   });
 
-  it('calls a connection that never answers slow, not gone', async () => {
+  it('calls a connection that never answers busy, not gone', async () => {
     // 端点接了连接但一直不答（IDE 卡住/索引中）。把它归成 down 会导致重复拉起。
     const hanging = vi.fn(
       (_url, options) =>
@@ -156,7 +186,32 @@ describe('probeProject', () => {
     );
     await expect(
       probeProject(64342, '/project', { fetchImpl: hanging, initializeTimeoutMs: 20, callTimeoutMs: 20 }),
-    ).resolves.toMatchObject({ state: PROBE_SLOW });
+    ).resolves.toMatchObject({ state: PROBE_BUSY });
+  });
+
+  it('treats HTTP / JSON-RPC / unknown isError as busy, not down or no-project', async () => {
+    const withCall = (callResult) => vi.fn(async (_url, options) => {
+      if (options.method === 'DELETE') return new Response(null, { status: 200 });
+      const body = JSON.parse(options.body);
+      if (body.method === 'initialize') return json({ jsonrpc: '2.0', id: 1, result: {} });
+      return callResult();
+    });
+
+    const httpError = withCall(() => new Response('nope', { status: 503 }));
+    await expect(probeProject(64342, '/project', { fetchImpl: httpError }))
+      .resolves.toMatchObject({ state: PROBE_BUSY });
+
+    const rpcError = withCall(() => json({ jsonrpc: '2.0', id: 2, error: { message: 'busy' } }));
+    await expect(probeProject(64342, '/project', { fetchImpl: rpcError }))
+      .resolves.toMatchObject({ state: PROBE_BUSY });
+
+    const unknownError = withCall(() => json({
+      jsonrpc: '2.0',
+      id: 2,
+      result: { isError: true, content: [{ type: 'text', text: 'index is not ready' }] },
+    }));
+    await expect(probeProject(64342, '/project', { fetchImpl: unknownError }))
+      .resolves.toMatchObject({ state: PROBE_BUSY });
   });
 
   it('gives the project call its own budget instead of the leftover from initialize', async () => {

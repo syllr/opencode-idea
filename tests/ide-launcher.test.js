@@ -36,6 +36,13 @@ describe('openInIde', () => {
     expect(calls[0].args).toEqual(['-a', 'IntelliJ IDEA', '/proj']);
   });
 
+  it('uses `open -g` for background project opening', async () => {
+    const { impl, calls } = fakeSpawn(0);
+    await expect(openInIde('/proj', { app: 'IntelliJ IDEA', background: true, spawnImpl: impl }))
+      .resolves.toBe(true);
+    expect(calls[0].args).toEqual(['-g', '-a', 'IntelliJ IDEA', '/proj']);
+  });
+
   it('resolves false when `open` fails', async () => {
     const { impl } = fakeSpawn(1);
     await expect(openInIde('/proj', { spawnImpl: impl })).resolves.toBe(false);

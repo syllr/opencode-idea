@@ -12,6 +12,7 @@
 // unavailable; this module only requests opening/activating the project.
 
 import { spawn } from 'node:child_process';
+import { LAUNCH_MAX_ATTEMPTS, RETRY_BACKOFF_MS } from './backoff.js';
 
 /** 唯一的 IDE：IntelliJ IDEA。macOS 应用名。 */
 export const DEFAULT_IDE_APP = 'IntelliJ IDEA';
@@ -46,16 +47,18 @@ export function autoLaunchSupported() {
  * Never throws; resolves `true` when `open` reported success.
  *
  * @param {string} directory
- * @param {{ spawnImpl?: typeof spawn }} [options]
+ * @param {{ spawnImpl?: typeof spawn, app?: string, background?: boolean }} [options]
+ *   `background` 给自动自愈用：`open -g` 只打开项目，不把 IDE 置前。
  * @returns {Promise<boolean>}
  */
 export function openInIde(directory, options = {}) {
-  const app = DEFAULT_IDE_APP;
+  const app = options.app || DEFAULT_IDE_APP;
   const spawnImpl = options.spawnImpl || spawn;
+  const args = options.background ? ['-g', '-a', app, directory] : ['-a', app, directory];
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawnImpl('open', ['-a', app, directory], { stdio: 'ignore' });
+      child = spawnImpl('open', args, { stdio: 'ignore' });
     } catch {
       resolve(false);
       return;
@@ -65,14 +68,8 @@ export function openInIde(directory, options = {}) {
   });
 }
 
-/**
- * 拉起冷却表：第 N 次拉起之后要等多久才允许下一次。
- *
- * 为什么要递增而不是固定值：固定 120s 对第一次失败太慢（IDE 明明 3 秒就起来了，却要
- * 干等两分钟），对第 5 次失败又太快（每两分钟反复 `open -a`，还每次都去碰一个明显起不
- * 来的 IDE）。前密后疏才是对的形状。
- */
-export const LAUNCH_COOLDOWNS_MS = [15000, 60000, 180000, 300000];
+/** 兼容旧名字：拉起冷却与探测共用同一套 1s → 2s → 4s。 */
+export const LAUNCH_COOLDOWNS_MS = RETRY_BACKOFF_MS;
 
 /**
  * Per-directory launch guard. Prevents a cold IDE (indexing / waiting for the
@@ -83,7 +80,7 @@ export const LAUNCH_COOLDOWNS_MS = [15000, 60000, 180000, 300000];
  */
 export function createLaunchGuard(options = {}) {
   const cooldowns = options.cooldownsMs ?? LAUNCH_COOLDOWNS_MS;
-  const maxAttempts = options.maxAttempts ?? cooldowns.length + 1;
+  const maxAttempts = options.maxAttempts ?? LAUNCH_MAX_ATTEMPTS;
   const now = options.now ?? Date.now;
   let lastSpawnAt = 0;
   let attempts = 0;

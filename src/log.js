@@ -10,6 +10,8 @@
 // 走 `console.warn` 而不是 `console.log`：OpenCode 会把插件的普通 stdout 当噪音过滤，
 // stderr 会留在终端/服务日志里。
 
+import {appendFileSync} from 'node:fs';
+
 const PREFIX = '[opencode-idea]';
 
 /**
@@ -25,12 +27,29 @@ export function logEvent(event, fields = {}) {
     const parts = [PREFIX, event];
     for (const [key, value] of Object.entries(fields)) {
         if (value === undefined || value === null || value === '') continue;
-        const text = typeof value === 'string' ? value : JSON.stringify(value);
+        let text;
+        try {
+            text = typeof value === 'string' ? value : JSON.stringify(value);
+        } catch {
+            // 循环引用 / BigInt：记日志不能把调用方弄挂。
+            text = '[unserializable]';
+        }
         parts.push(`${key}=${text}`);
     }
+    const line = parts.join(' ');
     try {
-        console.warn(parts.join(' '));
+        console.warn(line);
     } catch {
         // 记日志永远不能把插件弄挂
+    }
+    // 需要可检索的证据时设置 OPENCODE_IDEA_LOG=/path/to/file：console.warn 只在宿主
+    // 终端/服务日志里，排查“探测/拉起频率”不方便。
+    const file = process.env.OPENCODE_IDEA_LOG;
+    if (file) {
+        try {
+            appendFileSync(file, `${new Date().toISOString()} ${line}\n`);
+        } catch {
+            // 同上
+        }
     }
 }

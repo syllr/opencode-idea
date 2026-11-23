@@ -1,6 +1,6 @@
 ---
 name: idea-run-config-manager
-description: "管理本项目的 run configuration：新建 / 修改 / 删除 / 改名都直接读写项目 `.run/<名字>.run.xml`，写完用 `ide_inspect_run_configuration` 做静态检查，必要时再真跑一次。覆盖本地类型（shell / npm / node / maven / gradle / python / go）与远端 `RemoteProcess`。创建或修改配置、部署到远端、处理 Before launch 与构建产物时使用；同时把配置档案同步进项目根 `AGENTS.md` 的 `idea-run-config-manager` 标记块（本机与远端配置都在这唯一一块里）。"
+description: "管理本项目的 run configuration：新建 / 修改 / 删除 / 改名都直接读写项目 `.run/<名字>.run.xml`，写完用 `ide_inspect_run_configuration` 做静态检查，必要时再真跑一次。覆盖本地类型（shell / npm / node / maven / gradle / python / go）与远端 `RemoteProcess`。创建 / 修改 / 删除 run configuration、处理 Before launch 与构建产物时使用；`hosts.json` 的 server / deployment 归 `remote-deployment` skill，不在本 skill 里建。同时把配置档案同步进项目根 `AGENTS.md` 的 `idea-run-config-manager` 标记块（本机与远端配置都在这唯一一块里）。"
 ---
 
 # idea-run-config-manager — 读写 `.run/` + 维护配置档案
@@ -39,7 +39,8 @@ IDE 侧只有读和跑：`ide_get_run_configurations` 列出现有配置，`ide_
 
 1. **确认 server 与 deployment**。`server` 必须是 IDE SSH 配置里的名字，且出现在
    `.opencode/remote-shell/hosts.json`；`deployment` 是该 server 下 `deployments[].name` 的名字。
-   缺任何一项，`canRun` 就是 false。
+   缺任何一项，`canRun` 就是 false。**缺 server / deployment 时加载 `remote-deployment` skill 补**，
+   不要在这里编名字或路径。
 2. **产物型应用先建构建配置**。`{应用}-build@{env}`，类型 `NodeJSConfigurationType`，跑仓库里的 node 脚本，
    把产物铺到**该 deployment 的 `localPath`** —— 那才是同步的源目录。脚本要写成**与操作系统无关的一份代码**：
    不判断 `process.platform`、不为某个 OS 写分支，用 Node 标准 API 实现复制 / 删除 / 建目录；参数只走 argv
@@ -153,7 +154,7 @@ IDE 侧只有读和跑：`ide_get_run_configurations` 列出现有配置，`ide_
 | npm 的 `package-json`、node 的 `path-to-js-file` / `working-dir` | 本地 | `$PROJECT_DIR$/…` |
 | maven `workingDirPath`、gradle `externalProjectPath`、python `SCRIPT_NAME` / `WORKING_DIRECTORY`、go `filePath` / `working_directory` | 本地 | `$PROJECT_DIR$/…` |
 | Remote Process 的 `workingDirectory` / `logDir` / `command` | 服务端 | 绝对路径 |
-| `hosts.json` 的 `deployments[].localPath` | 本地 | **相对项目根**（IDE 部署的规则，不写绝对路径） |
+| `hosts.json` 的 `deployments[].localPath` | 本地 | **相对项目根，且只用 `/`**（IDE 部署的规则，不写绝对路径） |
 | `hosts.json` 的 `deployments[].deployPath` | 服务端 | 绝对路径 |
 
 ## 硬性契约

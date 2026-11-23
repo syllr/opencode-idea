@@ -35,7 +35,15 @@ export function projectHostsPath(projectPath) {
  *   privateKeyPath?: string,
  *   dockerCommand?: string,
  *   exclude?: string[],
- *   deployments: Array<{ name: string, localPath: string, deployPath: string, exclude?: string[] }>,
+ *   deployments: Array<{
+ *     name: string,
+ *     localPath: string,
+ *     deployPath: string,
+ *     exclude?: string[],
+ *     // deployment **自己**来自哪一层。合并后的 server.source 可能是更高优先级层的
+ *     // （例如项目级 deployment 挂到 IDE 的同名机器上），校验必须按这个字段，不能按 server。
+ *     source?: 'ide' | 'project' | 'global',
+ *   }>,
  *   source: 'ide' | 'project' | 'global',
  * }} RemoteServer
  */
@@ -50,23 +58,38 @@ export function projectHostsPath(projectPath) {
  * @returns {RemoteServer[]}
  */
 export function readHostsFile(path, source) {
-    if (!existsSync(path)) return [];
+    return readHostsFileReport(path, source).servers;
+}
+
+/**
+ * 读 hosts.json 并保留解析错误，供 `remote_list_servers` 显式告警。
+ *
+ * @param {string} path
+ * @param {'ide' | 'project' | 'global'} source
+ * @returns {{ servers: RemoteServer[], error?: string }}
+ */
+export function readHostsFileReport(path, source) {
+    if (!existsSync(path)) return {servers: []};
     let parsed;
     try {
         parsed = JSON.parse(readFileSync(path, 'utf8'));
-    } catch {
-        // 配置坏了不该让整个 remote_exec 不可用；跳过这一层，其它层照常合并。
-        return [];
+    } catch (error) {
+        return {
+            servers: [],
+            error: `${path} 不是合法 JSON：${error instanceof Error ? error.message : String(error)}`,
+        };
     }
     const hosts = parsed?.hosts;
-    if (!hosts || typeof hosts !== 'object') return [];
+    if (!hosts || typeof hosts !== 'object' || Array.isArray(hosts)) {
+        return {servers: [], error: `${path} 缺少 hosts 对象。`};
+    }
 
     const servers = [];
     for (const [name, entry] of Object.entries(hosts)) {
         const server = toServer(name, entry, source);
         if (server) servers.push(server);
     }
-    return servers;
+    return {servers};
 }
 
 /**
@@ -82,7 +105,7 @@ function toServer(name, entry, source) {
     const record = /** @type {Record<string, unknown>} */ (entry);
     const host = typeof record.host === 'string' ? record.host.trim() : '';
     const username = typeof record.username === 'string' ? record.username.trim() : '';
-    const deployments = parseDeployments(record.deployments);
+    const deployments = parseDeployments(record.deployments, source);
     // 允许"只补 mapping"的条目：没有 host、但带了 deployments 时也算一条补丁，合并时由
     // 低优先级层补上连接信息。没有 host 又没有 mapping 的条目没有任何用途，直接丢掉。
     if (!host && deployments.length === 0) return undefined;
@@ -96,14 +119,26 @@ function toServer(name, entry, source) {
     if (typeof record.port === 'number' && Number.isFinite(record.port) && record.port > 0) {
         server.port = record.port;
     }
-    const authType = stringOrUndefined(record.authType);
-    if (authType) server.authType = authType;
     const password = stringOrUndefined(record.password);
     if (password) server.password = password;
     const passphrase = stringOrUndefined(record.passphrase);
     if (passphrase) server.passphrase = passphrase;
     const privateKeyPath = stringOrUndefined(record.privateKeyPath);
     if (privateKeyPath) server.privateKeyPath = privateKeyPath;
+    // `authType` 可以不写：有密码就是 PASSWORD，有私钥就是 KEY_PAIR。两者都没有时
+    // 不推断成 OPEN_SSH —— 那可能是“凭据缺失”，直接报错比悄悄尝试 agent 更清楚；
+    // 用 ssh-agent 的机器请显式写 `"authType": "OPEN_SSH"`。只补 mapping 的条目
+    // （没有 host）不推断，否则它会把低优先级层的凭据当成“切换认证方式”清掉。
+    const explicitAuthType = stringOrUndefined(record.authType);
+    const authType = explicitAuthType
+        ?? (host
+            ? password
+                ? 'PASSWORD'
+                : privateKeyPath
+                    ? 'KEY_PAIR'
+                    : undefined
+            : undefined);
+    if (authType) server.authType = authType;
     const dockerCommand = stringOrUndefined(record.dockerCommand);
     if (dockerCommand) server.dockerCommand = dockerCommand;
     const exclude = parseExclude(record.exclude);
@@ -167,20 +202,45 @@ export function isExcluded(relative, patterns) {
  * 解析一个 server 上的路径映射。缺 name / localPath / deployPath 的条目直接丢掉 ——
  * 少了任何一头都传不了。
  *
+ * 每条 mapping 记下**自己这一层**的来源：合并后 `server.source` 会变成最高优先级层，
+ * 但 `localPath` 的校验口径应该跟着 mapping 走（项目级写绝对路径不会因为 IDE 也有
+ * 同名机器就变成合法）。
+ *
  * @param {unknown} raw
- * @returns {Array<{ name: string, localPath: string, deployPath: string, exclude: string[] }>}
+ * @param {'ide' | 'project' | 'global'} source
+ * @returns {Array<{ name: string, localPath: string, deployPath: string, exclude?: string[], source: 'ide' | 'project' | 'global' }>}
  */
-function parseDeployments(raw) {
+function parseDeployments(raw, source) {
     if (!Array.isArray(raw)) return [];
     return raw.flatMap((entry) => {
         if (!entry || typeof entry !== 'object') return [];
         const record = /** @type {Record<string, unknown>} */ (entry);
-        const name = typeof record.name === 'string' ? record.name : '';
-        const localPath = typeof record.localPath === 'string' ? record.localPath : '';
-        const deployPath = typeof record.deployPath === 'string' ? record.deployPath : '';
+        const name = typeof record.name === 'string' ? record.name.trim() : '';
+        const localPath = typeof record.localPath === 'string' ? record.localPath.trim() : '';
+        const deployPath = typeof record.deployPath === 'string' ? record.deployPath.trim() : '';
         if (!name || !localPath || !deployPath) return [];
-        return [{name, localPath, deployPath, exclude: parseExclude(record.exclude)}];
+        /** @type {{ name: string, localPath: string, deployPath: string, exclude?: string[], source: 'ide' | 'project' | 'global' }} */
+        const deployment = {name, localPath, deployPath, source};
+        // 不写 exclude 与写 `[]` 是两种语义：前者在合并时保留低优先级层的排除项，
+        // 后者明确表示“清空”。所以这里只在原字段存在时才带上它。
+        if (record.exclude !== undefined) deployment.exclude = parseExclude(record.exclude);
+        return [deployment];
     });
+}
+
+/**
+ * deployment 的校验口径：以它**自己来自哪一层**为准，而不是合并后 server 的来源。
+ *
+ * 项目级 hosts.json 的 deployment 合并到 IDE 的同名机器后，`server.source` 变成 `ide`；
+ * 若按它校验，项目级写的绝对路径就被绕过了 —— 同一份配置会得出两种结论。
+ * 早期 / 手工构造的 deployment 没有 `source`，退回 server 的来源。
+ *
+ * @param {{ source: 'ide' | 'project' | 'global' }} server
+ * @param {{ source?: 'ide' | 'project' | 'global' }} deployment
+ * @returns {'ide' | 'project' | 'global'}
+ */
+export function deploymentSource(server, deployment) {
+    return deployment?.source ?? server.source;
 }
 
 /**
@@ -193,16 +253,47 @@ function parseDeployments(raw) {
  * @param {{ name: string, localPath: string }} deployment
  */
 export function assertDeploymentLocalPath(source, deployment) {
-    const {name, localPath} = deployment;
-    if (source === 'project' && isAbsolute(localPath)) {
-        throw new Error(
-            `deployment "${name}" 的 localPath 必须是相对项目根目录的路径，不能是绝对路径：${localPath}`,
-        );
+    const name = typeof deployment.name === 'string' ? deployment.name.trim() : '';
+    const localPath = typeof deployment.localPath === 'string' ? deployment.localPath.trim() : '';
+    // 这里保持 `undefined`：校验 localPath 的调用方不会同时给 deployPath，
+    // 归一成空串会让它们反被 deployPath 规则拦下。
+    const rawDeployPath = deployment.deployPath;
+    if (source === 'project') {
+        if (localPath === '~' || localPath.startsWith('~/')) {
+            throw new Error(
+                `deployment "${name}" 的 localPath 不能用 ~ 表示家目录：${localPath}`,
+            );
+        }
+        // hosts.json 跟着仓库走：只用 `/`。不做 `\` → `/` 兼容，Windows 也一样。
+        if (/^[A-Za-z]:/.test(localPath) || /^[\\/]{2}/.test(localPath) || localPath.startsWith('/')) {
+            throw new Error(
+                `deployment "${name}" 的 localPath 必须是相对项目根目录的路径，不能是绝对路径：${localPath}`,
+            );
+        }
+        if (localPath.includes('\\')) {
+            throw new Error(
+                `deployment "${name}" 的 localPath 必须使用 "/"，不能用 "\\"：${localPath}`,
+            );
+        }
+        if (localPath.split('/').includes('..')) {
+            throw new Error(
+                `deployment "${name}" 的 localPath 不能包含 ".."，必须落在项目根目录内：${localPath}`,
+            );
+        }
     }
     if (source === 'global' && !isAbsolute(localPath)) {
         throw new Error(
             `全局配置里 deployment "${name}" 的 localPath 必须是绝对路径：${localPath}`,
         );
+    }
+    // 远端是 Linux / macOS：只接受 POSIX 绝对路径，不转换成 Windows 形式。
+    if (typeof rawDeployPath === 'string') {
+        const value = rawDeployPath.trim();
+        if (!value.startsWith('/') || value.includes('\\') || value === '/' || value.split('/').includes('..')) {
+            throw new Error(
+                `deployment "${name}" 的 deployPath 必须是远端绝对路径（/srv/app）：${rawDeployPath}`,
+            );
+        }
     }
 }
 
@@ -223,7 +314,7 @@ export function resolveLocalPath(projectPath, localPath) {
  * `exclude` 已经合并了 server 级与 deployment 级（并集、去重）。
  *
  * @param {ReadonlyArray<RemoteServer>} servers
- * @returns {Array<{ name: string, localPath: string, deployPath: string, exclude: string[], server: RemoteServer }>}
+ * @returns {Array<{ name: string, localPath: string, deployPath: string, exclude: string[], source?: 'ide' | 'project' | 'global', server: RemoteServer }>}
  */
 export function collectDeployments(servers) {
     const byName = new Map();
@@ -237,6 +328,30 @@ export function collectDeployments(servers) {
         }
     }
     return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * 找出跨 server 重名的 deployment。
+ *
+ * `collectDeployments` 按名字收敛成一条（后写覆盖），运行时不会报错；这个函数给展示层
+ * 和上传入口用，让“同名两条、到底传哪条”不再靠排序猜。
+ *
+ * @param {ReadonlyArray<RemoteServer>} servers
+ * @returns {Array<{ name: string, servers: string[] }>}
+ */
+export function deploymentConflicts(servers) {
+    /** @type {Map<string, string[]>} */
+    const byName = new Map();
+    for (const server of servers) {
+        for (const deployment of server.deployments ?? []) {
+            const owners = byName.get(deployment.name) ?? [];
+            owners.push(server.name);
+            byName.set(deployment.name, owners);
+        }
+    }
+    return [...byName.entries()]
+        .filter(([, owners]) => owners.length > 1)
+        .map(([name, owners]) => ({name, servers: owners}));
 }
 
 /**
@@ -282,10 +397,20 @@ function mergeServer(base, override) {
     }
 
     if (override.authType) {
+        // 认证方式**变了**才清掉另一套互斥凭据；同一种方式下高优先级层没给某个字段
+        // （例如 IDE 没返回 passphrase）时保留低优先级层的值，不要误删。
+        const baseAuthType = merged.authType
+            ?? (merged.password ? 'PASSWORD' : merged.privateKeyPath ? 'KEY_PAIR' : undefined);
+        const changed = baseAuthType !== undefined && baseAuthType !== override.authType;
         merged.authType = override.authType;
-        merged.password = override.password;
-        merged.passphrase = override.passphrase;
-        merged.privateKeyPath = override.privateKeyPath;
+        if (changed) {
+            delete merged.password;
+            delete merged.passphrase;
+            delete merged.privateKeyPath;
+        }
+        if (override.password !== undefined) merged.password = override.password;
+        if (override.passphrase !== undefined) merged.passphrase = override.passphrase;
+        if (override.privateKeyPath !== undefined) merged.privateKeyPath = override.privateKeyPath;
     }
 
     merged.deployments = mergeDeployments(base.deployments ?? [], override.deployments ?? []);

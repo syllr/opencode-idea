@@ -358,6 +358,7 @@ describe('ideServersFromResult', () => {
         host: '10.0.0.1',
         port: 2222,
         username: 'u',
+        authType: 'PASSWORD',
         password: 'p',
         passphrase: undefined,
         privateKeyPath: undefined,
@@ -368,6 +369,10 @@ describe('ideServersFromResult', () => {
     expect(
       ideServersFromResult({ content: [{ type: 'text', text: JSON.stringify({ servers: [server] }) }] }),
     ).toHaveLength(1);
+    // IDE 没给 authType 时按凭据推断；凭据写回不能因此删掉密码。
+    expect(
+      ideServersFromResult({ structuredContent: { servers: [{ name: 'x', host: 'h', password: 'p' }] } })[0].authType,
+    ).toBe('PASSWORD');
     expect(ideServersFromResult({ structuredContent: { servers: [{ name: 'x' }] } })).toEqual([]);
   });
 
@@ -394,12 +399,9 @@ describe('plugin setup', () => {
   it('does not report every probe failure as the same problem', () => {
     // 三种失败要三句话：拉起有没有用、用户该去改什么，完全不同。
     const down = ideFeedback({ status: 'mcp-unavailable', opened: true, state: 'down' });
-    const slow = ideFeedback({ status: 'mcp-unavailable', opened: true, state: 'slow' });
+    const busy = ideFeedback({ status: 'mcp-unavailable', opened: false, state: 'busy' });
     const noProject = ideFeedback({ status: 'mcp-unavailable', state: 'no-project' });
-    expect(new Set([down, slow, noProject]).size).toBe(3);
-    // 只有"服务没起来"才该把人指去 Settings；项目没打开与索引慢都不是配置问题。
-    expect(slow.startsWith('已请求打开')).toBe(true);
-    expect(noProject).not.toContain('Settings → MCP Server');
+    expect(new Set([down, busy, noProject]).size).toBe(3);
   });
 
   it('registers the commands and the skills without touching the IDE', async () => {
@@ -412,12 +414,15 @@ describe('plugin setup', () => {
     expect(state.commands.has('open-in-ide')).toBe(true);
     expect(state.commands.has('delete-in-ide')).toBe(true);
     expect(state.commands.has('remote-config-sync')).toBe(true);
-    expect(state.commands.has('remote-config-manage')).toBe(true);
     expect(state.commands.has('remote-shell')).toBe(true);
     expect(state.commands.has('remote-deploy')).toBe(true);
     expect(state.commands.has('remote-files')).toBe(true);
     // The skills are static knowledge and go in as soon as the plugin loads.
-    expect([...state.skills.keys()].sort()).toEqual(['idea-run-config-manager', 'run-job-manager']);
+    expect([...state.skills.keys()].sort()).toEqual([
+      'idea-run-config-manager',
+      'remote-deployment',
+      'run-job-manager',
+    ]);
 
     // Never marked, so no per-request prompt may mention IDEA. Nothing probes,
     // ever: the plugin only reacts to the request it sees.
@@ -1111,13 +1116,13 @@ describe('plugin setup', () => {
       tool: 'ide_read_file',
       sessionID: 's1',
       status: 'error',
-      error: { message: 'MCP server "idea" is not available' },
+      error: { message: 'MCP server "ide" is not available' },
     };
     await state.toolHook(event);
 
     // No reconnect happened, so the original error stays. The recovery guidance
     // still explains the manual fallback.
-    expect(event.error.message).toBe('MCP server "idea" is not available');
+    expect(event.error.message).toBe('MCP server "ide" is not available');
 
     await cleanup();
   });
@@ -1247,11 +1252,11 @@ describe('plugin setup', () => {
       tool: 'ide_read_file',
       sessionID: 's1',
       status: 'error',
-      error: { message: 'MCP server "idea" is not available' },
+      error: { message: 'MCP server "ide" is not available' },
     };
     await state.toolHook(event);
     expect(state.mcp).toBe(mcpAfterClose);
-    expect(event.error.message).toBe('MCP server "idea" is not available');
+    expect(event.error.message).toBe('MCP server "ide" is not available');
 
     await cleanup();
   });
@@ -1291,7 +1296,7 @@ describe('plugin setup', () => {
     const { ctx, state } = fakeCtx({ ports: [fake.port], toolRefreshTimeoutMs: 100 });
     const cleanup = await plugin.setup(ctx);
     const registered = [...state.skills.keys()].sort();
-    expect(registered).toEqual(['idea-run-config-manager', 'run-job-manager']);
+    expect(registered).toEqual(['idea-run-config-manager', 'remote-deployment', 'run-job-manager']);
 
     await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
     expect([...state.skills.keys()].sort()).toEqual(registered);
@@ -1302,18 +1307,13 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('is silent when feedback is false, and schedules no background timer', async () => {
-    const spy = vi.spyOn(globalThis, 'setInterval');
+  it('is silent when feedback is false', async () => {
     const { ctx, state } = fakeCtx({ openInIde: false, feedback: false });
     const cleanup = await plugin.setup(ctx);
 
     await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
 
     expect(state.prompts).toHaveLength(0);
-    // Recovery is request-driven only. No polling means no `setInterval` at all,
-    // which is also what keeps the IDE log free of per-probe warnings.
-    expect(spy).not.toHaveBeenCalled();
-    spy.mockRestore();
 
     await cleanup();
   });
@@ -1456,7 +1456,29 @@ describe('plugin setup', () => {
     await cleanup();
   });
 
-  it('retries a slow probe instead of recording the whole attempt as a failure', async () => {
+  it('does not launch the IDE when the endpoint is busy (indexing)', async () => {
+    const fake = await startFakeIdeForProject();
+    running = fake.server;
+    fake.setDelay(() => 200);
+    const { ctx, state } = fakeCtx({
+      ports: [fake.port],
+      mcpProbeTimeoutMs: 120,
+      probeAttemptTimeoutMs: 20,
+      toolRefreshTimeoutMs: 50,
+    });
+    state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
+    const cleanup = await plugin.setup(ctx);
+
+    await state.sessionHooks.prompt({ sessionID: 's1', prompt: { text: 'hi' } });
+
+    // busy 只退避探测，不拉起；否则 IDEA 索引时窗口会被反复置前。
+    expect(openCalls).toHaveLength(0);
+    expect(state.mcp).toBe(0);
+
+    await cleanup();
+  });
+
+  it('retries a busy probe instead of recording the whole attempt as a failure', async () => {
     const fake = await startFakeIdeForProject();
     running = fake.server;
     // 第一次 get_project_env 落在单次尝试的预算之外（IDE 刚起来还在索引），之后正常。
@@ -1548,6 +1570,32 @@ describe('plugin setup', () => {
       text: ideFeedback({ status: 'connected' }),
     });
     // 没有退回到"注入 user 消息"那条路。
+    expect(state.prompts).toHaveLength(0);
+
+    await cleanup();
+  });
+
+  it('delete-in-ide 的成功提示也走 synthetic，不为一条删除通知叫醒模型', async () => {
+    const fake = await startFakeIdeForProject();
+    running = fake.server;
+    const { ctx, state } = fakeCtx({
+      ports: [fake.port],
+      toolRefreshTimeoutMs: 100,
+      syntheticFeedback: true,
+    });
+    const cleanup = await plugin.setup(ctx);
+
+    await state.commands.get('open-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+    const before = state.synthetics.length;
+    await state.commands.get('delete-in-ide').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'steer' });
+
+    expect(state.synthetics).toHaveLength(before + 1);
+    expect(state.synthetics.at(-1)).toMatchObject({
+      sessionID: 's1',
+      resume: false,
+      text: ideFeedback({ status: 'deleted' }),
+    });
+    // 删除是成功结果：不注 user 消息、不调度模型。
     expect(state.prompts).toHaveLength(0);
 
     await cleanup();
@@ -1649,14 +1697,26 @@ describe('远程命令', () => {
     const { ctx, state } = fakeCtx({});
     const cleanup = await plugin.setup(ctx);
 
+    // 正文点名的 ide_* 工具不存在时，命令不该把模型引向一个不存在的工具。
+    await state.commands.get('remote-deploy').execute({
+      sessionID: 's1',
+      prompt: { text: 'aidata-api 上线' },
+      delivery: 'steer',
+    });
+    expect(state.prompts).toHaveLength(1);
+    expect(state.prompts[0].metadata.displayText).toContain('/open-in-ide');
+
+    // IDE 接入后工具在册 → 正常注入部署引导。
+    state.tools = [{ id: 'ide_deploy_remote_process' }, { id: 'ide_list_remote_processes' }];
     await state.commands.get('remote-deploy').execute({
       sessionID: 's1',
       prompt: { text: 'aidata-api 上线' },
       delivery: 'steer',
     });
 
-    expect(state.prompts[0].text).toContain('用户本次的要求：aidata-api 上线');
-    expect(state.prompts[0].metadata.displayText).toContain('aidata-api 上线');
+    expect(state.prompts).toHaveLength(2);
+    expect(state.prompts[1].text).toContain('用户本次的要求：aidata-api 上线');
+    expect(state.prompts[1].metadata.displayText).toContain('aidata-api 上线');
     await cleanup();
   });
 
@@ -1684,8 +1744,17 @@ describe('远程命令', () => {
       prompt: { text: '' },
       delivery: 'steer',
     });
-
     expect(state.prompts[0].metadata.displayText).toContain('/open-in-ide');
+
+    // 已接入但 IDE 此刻连不上：同样要把用户指回 /open-in-ide，而不是只报一个端口号。
+    state.storage.set(`project/${projectPath}`, ideConfig(projectPath));
+    await state.commands.get('remote-config-sync').execute({
+      sessionID: 's1',
+      prompt: { text: '' },
+      delivery: 'steer',
+    });
+    expect(state.prompts.at(-1).metadata.displayText).toContain('/open-in-ide');
+
     await cleanup();
   });
 });

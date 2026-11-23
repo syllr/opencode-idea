@@ -110,26 +110,6 @@ export function connect(server) {
 }
 
 /**
- * 在远程执行一条命令。
- *
- * 命令先 base64 编码再交给 `sh`：这样引号、换行、`$` 都不会被本地 shell 或传输层改写，
- * 远程拿到的就是调用方写的那条命令。
- *
- * @param {import('./hosts.js').RemoteServer} server
- * @param {string} command
- * @param {{ workingDirectory?: string }} [options]
- * @returns {Promise<{ exitCode: number | null, stdout: string, stderr: string }>}
- */
-export async function runRemoteCommand(server, command, options = {}) {
-    const conn = await connect(server);
-    try {
-        return await execOn(conn, withWorkingDirectory(command, options.workingDirectory));
-    } finally {
-        conn.end();
-    }
-}
-
-/**
  * 命令退出后等 `close` 收尾输出的宽限期（毫秒）。
  *
  * `exit` 表示远端命令本身退出了，`close` 表示 channel 关闭（输出管道全部释放）。
@@ -146,59 +126,16 @@ export const EXIT_GRACE_MS = 1000;
  */
 export function encodeExecCommand(command) {
     const encoded = Buffer.from(command, 'utf8').toString('base64');
-    return `printf '%s' '${encoded}' | (base64 -d 2>/dev/null || openssl base64 -d 2>/dev/null) | sh`;
-}
-
-/**
- * @param {import('ssh2').Client} conn
- * @param {string} command 已经包好 `cd` 的命令
- */
-export function execOn(conn, command) {
-    const execCommand = encodeExecCommand(command);
-
-    return new Promise((resolve, reject) => {
-        let settled = false;
-        let stdout = '';
-        let stderr = '';
-        /** 命令还没退出时一直是 null。 */
-        let exitCode = null;
-        /** @type {NodeJS.Timeout | undefined} */
-        let grace;
-
-        /** @param {Error} [error] @param {{ exitCode: number | null }} [value] */
-        const finish = (error, value) => {
-            if (settled) return;
-            settled = true;
-            if (grace) clearTimeout(grace);
-            if (error) reject(error);
-            else resolve({exitCode: value?.exitCode ?? null, stdout, stderr});
-        };
-
-        conn.exec(execCommand, (error, stream) => {
-            if (error) {
-                finish(error);
-                return;
-            }
-
-            stream.on('data', (chunk) => {
-                stdout += chunk.toString('utf8');
-            });
-            stream.stderr.on('data', (chunk) => {
-                stderr += chunk.toString('utf8');
-            });
-            // 命令自己退出了：先记下退出码，再给 close 一点时间把在途输出收完。
-            stream.on('exit', (code) => {
-                exitCode = typeof code === 'number' ? code : null;
-                grace = setTimeout(() => finish(undefined, {exitCode}), EXIT_GRACE_MS);
-            });
-            stream.on('close', (code) => {
-                finish(undefined, {exitCode: typeof code === 'number' ? code : exitCode});
-            });
-            stream.on('error', (streamError) => {
-                finish(streamError);
-            });
-        });
-    });
+    return [
+        "if command -v base64 >/dev/null 2>&1; then",
+        `  printf '%s' '${encoded}' | base64 -d | sh`,
+        "elif command -v openssl >/dev/null 2>&1; then",
+        `  printf '%s' '${encoded}' | openssl base64 -d | sh`,
+        "else",
+        "  echo 'opencode-idea: remote host has no base64 decoder (need base64 or openssl)' >&2",
+        '  exit 127',
+        'fi',
+    ].join('\n');
 }
 
 /**
@@ -274,13 +211,12 @@ export class TerminalText {
     }
 }
 
-const EXIT_MARKER = /^=== exited (-?\d+) ===$/;
 
 /**
  * 一次**可续等**的远程执行。
  *
- * 和 `runRemoteCommand` 的区别只有一条：它不把结果一次交出去，而是把输出攒在队列里，
- * 由调用方分次取走（`take()`）。命令照旧原样执行 —— 不包 `nohup`、不改 `cd` 语义。
+ * 它不把结果一次交出去，而是把输出攒在队列里，由调用方分次取走（`take()`）。
+ * 命令照旧原样执行 —— 不包 `nohup`、不改 `cd` 语义。
  *
  * @param {import('ssh2').Client} conn 已经建好的连接，run 结束时由这里关闭
  * @param {string} command 已经包好 `cd` 的命令
@@ -288,6 +224,20 @@ const EXIT_MARKER = /^=== exited (-?\d+) ===$/;
 export function createRemoteRun(conn, command) {
     const text = new TerminalText();
     let queue = '';
+    // 队列上限：`take()` 只在"取走时"截断，两次取之间跑一个 `cat 大文件` 能把
+    // 整个 OpenCode 进程的内存吃满。超限后保留头尾并记下丢弃量，出结果时说明。
+    const MAX_QUEUE_CHARS = 1024 * 1024;
+    let droppedChars = 0;
+    const append = (chunk) => {
+        if (!chunk) return;
+        queue += chunk;
+        if (queue.length <= MAX_QUEUE_CHARS) return;
+        const keep = Math.floor(MAX_QUEUE_CHARS / 2);
+        const head = queue.slice(0, keep);
+        const tail = queue.slice(-keep);
+        droppedChars += queue.length - keep * 2;
+        queue = head + tail;
+    };
     let exitCode = null;
     let ended = false;
     /** @type {Array<() => void>} */
@@ -299,7 +249,7 @@ export function createRemoteRun(conn, command) {
         if (ended) return;
         ended = true;
         if (grace) clearTimeout(grace);
-        queue += text.end();
+        append(text.end());
         conn.end();
         const pending = waiters;
         waiters = [];
@@ -308,16 +258,16 @@ export function createRemoteRun(conn, command) {
 
     conn.exec(encodeExecCommand(command), (error, stream) => {
         if (error) {
-            queue += `[${error.message}]`;
+            append(`[${error.message}]`);
             exitCode = null;
             settle();
             return;
         }
         stream.on('data', (chunk) => {
-            queue += text.write(chunk);
+            append(text.write(chunk));
         });
         stream.stderr.on('data', (chunk) => {
-            queue += text.write(chunk);
+            append(text.write(chunk));
         });
         stream.on('exit', (code) => {
             exitCode = typeof code === 'number' ? code : null;
@@ -325,7 +275,7 @@ export function createRemoteRun(conn, command) {
         });
         stream.on('close', () => settle());
         stream.on('error', (streamError) => {
-            queue += `[${streamError.message}]`;
+            append(`[${streamError.message}]`);
             settle();
         });
     });
@@ -344,9 +294,11 @@ export function createRemoteRun(conn, command) {
          * @returns {string}
          */
         take() {
-            queue += text.flushLine();
-            const out = queue;
+            append(text.flushLine());
+            const note = droppedChars > 0 ? `…[输出过长，已省略 ${droppedChars} 个字符]…\n` : '';
+            const out = note + queue;
             queue = '';
+            droppedChars = 0;
             return out;
         },
         /**
@@ -396,6 +348,12 @@ export function createRemoteRun(conn, command) {
 export function describeSshError(error, server) {
     const message = error instanceof Error ? error.message : String(error);
     const level = /** @type {{ level?: string }} */ (error)?.level;
+    // 先按认证方式分流：OPEN_SSH 的失败文本同样含 "authentication"，不能落到密码分支。
+    if (server.authType === 'OPEN_SSH'
+        && (level === 'client-authentication' || /authentication|agent|no auth/i.test(message))) {
+        return `这台的认证方式是 OpenSSH（ssh-agent / ~/.ssh/config），但本机没有可用的 agent 或私钥：` +
+            `确认 SSH_AUTH_SOCK 已设置、或 ~/.ssh/config 里配了 IdentityFile。`;
+    }
     if (level === 'client-authentication' || /authentication/i.test(message)) {
         return `认证失败（${server.username}@${server.host}:${server.port}）：密码/私钥可能已失效，` +
             `请在 IDE 的 Deployment 设置里更新后重试。`;
@@ -405,10 +363,6 @@ export function describeSshError(error, server) {
     }
     if (/ETIMEDOUT|timed out/i.test(message)) {
         return `连接超时（${server.host}:${server.port}）：网络不可达，或需要跳板机。`;
-    }
-    if (server.authType === 'OPEN_SSH' && /agent|no auth/i.test(message)) {
-        return `这台的认证方式是 OpenSSH（ssh-agent / ~/.ssh/config），但本机没有可用的 agent 或私钥：` +
-            `确认 SSH_AUTH_SOCK 已设置、或 ~/.ssh/config 里配了 IdentityFile。`;
     }
     return `SSH 执行失败（${server.name}）：${message}`;
 }

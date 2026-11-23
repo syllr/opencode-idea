@@ -113,6 +113,20 @@ async function readRemoteEntries(sftp, dir) {
     return result;
 }
 
+/** 同步的源目录不存在：不要把它当成空目录，更不要在 mirror 下删对端。 */
+export class SourceDirectoryMissing extends Error {
+    /**
+     * @param {'local' | 'remote'} side
+     * @param {string} path
+     */
+    constructor(side, path) {
+        super(side === 'local' ? `本地目录不存在：${path}` : `远端目录不存在：${path}`);
+        this.name = 'SourceDirectoryMissing';
+        this.side = side;
+        this.path = path;
+    }
+}
+
 /**
  * 打开一个 SFTP session。
  *
@@ -192,11 +206,15 @@ async function runBySize(tasks, worker) {
         const bucket = buckets.find((entry) => task.size < entry.maxSize) ?? buckets[buckets.length - 1];
         bucket.tasks.push(task);
     }
-    await Promise.all(
+    const settled = await Promise.allSettled(
         buckets
             .filter((bucket) => bucket.tasks.length > 0)
             .map((bucket) => runQueue(bucket.tasks, bucket.concurrency, worker)),
     );
+    // 等所有档位收尾再抛第一个错误：先 reject 会让 sync 立刻 end() 连接，
+    // 而其它档位还在往这条连接上写，留下半截远端文件和一次无意义的重试。
+    const failed = settled.find((result) => result.status === 'rejected');
+    if (failed) throw failed.reason;
 }
 
 /** 失败重试；用尽次数后把最后一次的错误抛出去。 */
@@ -228,7 +246,12 @@ async function planUpload(sftp, localDir, remoteDir, stats, options = {}) {
 
     const walk = async (local, remote, prefix, root) => {
         if (options.signal?.aborted) throw new Error('传输已取消');
-        if (root) await ensureRemoteDir(sftp, remote);
+        if (root) {
+            // 源都读不到就不是"空目录"：直接报错，避免 mirror 把远端当成应清空的对端。
+            const info = await fsStat(local).catch(() => undefined);
+            if (!info || !info.isDirectory()) throw new SourceDirectoryMissing('local', local);
+            await ensureRemoteDir(sftp, remote);
+        }
         // 先读远程目录：存在就顺带拿到名字 → attrs（差量判断用），不存在就建出来。
         // 一个目录只花一次往返，比逐级 stat 便宜得多。
         let remoteEntries = await readRemoteEntries(sftp, remote);
@@ -279,10 +302,8 @@ async function planUpload(sftp, localDir, remoteDir, stats, options = {}) {
  * @returns {Promise<{ path: string, dir: boolean }[]>}
  */
 async function listRemoteTree(sftp, remoteDir, prefix = '', exclude = []) {
-    const entries = await call(sftp.readdir.bind(sftp), remoteDir).catch((error) => {
-        if (error?.code === 2 || /No such file/i.test(String(error?.message))) return [];
-        throw error;
-    });
+    // 读失败就是失败：mirror 会拿这个结果删对端，不能把一次 readdir 错误当成空目录。
+    const entries = await call(sftp.readdir.bind(sftp), remoteDir);
     const result = [];
     for (const entry of entries) {
         const name = entry.filename;
@@ -307,7 +328,8 @@ async function listRemoteTree(sftp, remoteDir, prefix = '', exclude = []) {
  * @returns {Promise<{ path: string, dir: boolean }[]>}
  */
 async function listLocalTree(localDir, prefix = '', exclude = []) {
-    const entries = await readdir(localDir, {withFileTypes: true}).catch(() => []);
+    // 不要吞掉本地目录错误：mirror 会拿这个结果删远端，读不到源就不能当成“空目录”。
+    const entries = await readdir(localDir, {withFileTypes: true});
     const result = [];
     for (const entry of entries) {
         const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
@@ -360,8 +382,11 @@ export async function uploadDirectory(sftp, localDir, remoteDir, mode, options =
         }
         for (const entry of remoteEntries.filter((item) => item.dir).reverse()) {
             if (localSet.has(entry.path)) continue;
-            await call(sftp.rmdir.bind(sftp), posix.join(remoteDir, entry.path)).catch(() => {});
-            stats.deleted += 1;
+            // 非空目录删不掉是正常情况（远端有本地没有的文件时才会走到这里），
+            // 不计入 deleted，否则统计会比实际删掉的多。
+            const removed = await call(sftp.rmdir.bind(sftp), posix.join(remoteDir, entry.path))
+                .then(() => true, () => false);
+            if (removed) stats.deleted += 1;
         }
     }
     return stats;
@@ -382,12 +407,17 @@ async function planDownload(sftp, remoteDir, localDir, stats, options = {}) {
     /** @type {Array<{remotePath: string, localPath: string, size: number, remoteMs?: number}>} */
     const pending = [];
 
-    const walk = async (remote, local, prefix) => {
+    const walk = async (remote, local, prefix, root) => {
+        if (root) {
+            // 远端源目录不存在 / 不可读：下载没有内容可拉，也绝不能让 mirror 去删本地。
+            const info = await call(sftp.stat.bind(sftp), remote).catch((error) => {
+                if (error?.code === 2 || /No such file/i.test(String(error?.message))) return undefined;
+                throw error;
+            });
+            if (!info || !info.isDirectory()) throw new SourceDirectoryMissing('remote', remote);
+        }
         await mkdir(local, {recursive: true});
-        const entries = await call(sftp.readdir.bind(sftp), remote).catch((error) => {
-            if (error?.code === 2 || /No such file/i.test(String(error?.message))) return [];
-            throw error;
-        });
+        const entries = await call(sftp.readdir.bind(sftp), remote);
         for (const entry of entries) {
             if (options.signal?.aborted) throw new Error('传输已取消');
             const name = entry.filename;
@@ -401,7 +431,7 @@ async function planDownload(sftp, remoteDir, localDir, stats, options = {}) {
             const localPath = join(local, name);
             if (entry.attrs.isDirectory()) {
                 stats.dirs += 1;
-                await walk(remotePath, localPath, relative);
+                await walk(remotePath, localPath, relative, false);
             } else if (entry.attrs.isFile()) {
                 const localInfo = await fsStat(localPath).catch(() => undefined);
                 if (localInfo?.isFile() && sameFile(localInfo.size, localInfo.mtimeMs, entry.attrs)) {
@@ -420,7 +450,7 @@ async function planDownload(sftp, remoteDir, localDir, stats, options = {}) {
         }
     };
 
-    await walk(remoteDir, localDir, '');
+    await walk(remoteDir, localDir, '', true);
     return pending;
 }
 
@@ -460,8 +490,8 @@ export async function downloadDirectory(sftp, remoteDir, localDir, mode, options
         // 本地空目录也收掉；非空时 rmdir 会失败，忽略即可。
         for (const entry of (await listLocalTree(localDir, '', exclude)).filter((item) => item.dir).reverse()) {
             if (remoteSet.has(entry.path)) continue;
-            await rmdir(join(localDir, entry.path)).catch(() => {});
-            stats.deleted += 1;
+            const removed = await rmdir(join(localDir, entry.path)).then(() => true, () => false);
+            if (removed) stats.deleted += 1;
         }
     }
     return stats;

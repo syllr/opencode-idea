@@ -1,11 +1,9 @@
 // IDE MCP routing guidance injected into the model's system prompt.
 //
 // The TEXT lives in `ide-guidance.template.md`, not here. It is a prompt document
-// a human has to review as a document — plain Markdown, with only the per-project
-// command lists (`{{cmd_xxx}}`) generated — and building it by concatenating
-// arrays made the result impossible to read without running the code. The
-// template renders byte-for-byte to what the model receives; see `src/template.js`
-// for why the renderer is 60 lines here rather than an engine dependency.
+// a human has to review as a document — plain Markdown with no placeholders.
+// Building it by concatenating arrays made the result impossible to read without
+// running the code.
 //
 // Two rules for the document itself:
 //   1. Per tool: what it does, its parameters, and the positive flow for using

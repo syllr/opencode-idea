@@ -8,10 +8,18 @@
 // 为什么 server 只写连接字段：hosts.json 里的 deployment / exclude 是用户维护的，
 // IDE 不提供这些信息，整条覆盖会把它们冲掉。
 
-import {existsSync, mkdirSync, readFileSync, writeFileSync, renameSync} from 'node:fs';
+import {copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync} from 'node:fs';
 
 import {assertDeploymentLocalPath} from './hosts.js';
 import {join} from 'node:path';
+
+/** hosts.json 本身不合法：调用方应停止自动写回，等用户修文件。 */
+export class HostsConfigError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'HostsConfigError';
+    }
+}
 
 /** 项目级配置目录。 */
 export function remoteConfigDir(projectPath) {
@@ -38,18 +46,31 @@ export function toHostEntry(server, previous = {}) {
     if (server.host) entry.host = server.host;
     entry.port = server.port ?? (typeof entry.port === 'number' ? entry.port : 22);
     if (server.username) entry.username = server.username;
-    if (server.authType) entry.authType = server.authType;
     if (!entry.alias) entry.alias = server.alias ?? server.name;
 
-    // 认证方式决定哪几个凭据字段有意义：旧字段必须清掉，否则 KEY_PAIR 会带着一个
-    // 不该用的 password 去连接。
-    delete entry.password;
-    delete entry.passphrase;
-    delete entry.privateKeyPath;
-    if (server.authType === 'PASSWORD' && server.password) entry.password = server.password;
-    if (server.authType === 'KEY_PAIR') {
+    // IDE 是连接信息的源：有值就每次覆盖。但只有**认证方式真的变了**才清掉另一套
+    // 互斥凭据；同一种方式下 IDE 没返回某个字段（例如没有 passphrase）时保留原值。
+    const previousAuthType = typeof entry.authType === 'string' ? entry.authType : undefined;
+    const authType = server.authType
+        ?? (server.password ? 'PASSWORD' : server.privateKeyPath ? 'KEY_PAIR' : 'OPEN_SSH');
+    entry.authType = authType;
+    if (previousAuthType !== undefined && previousAuthType !== authType) {
+        delete entry.password;
+        delete entry.passphrase;
+        delete entry.privateKeyPath;
+    }
+    if (authType === 'PASSWORD') {
+        if (server.password) entry.password = server.password;
+        delete entry.privateKeyPath;
+    } else if (authType === 'KEY_PAIR') {
         if (server.privateKeyPath) entry.privateKeyPath = server.privateKeyPath;
         if (server.passphrase) entry.passphrase = server.passphrase;
+        delete entry.password;
+    } else {
+        // OPEN_SSH：凭据在 ~/.ssh/config 与 agent 里，配置里不该留密码 / 私钥。
+        delete entry.password;
+        delete entry.passphrase;
+        delete entry.privateKeyPath;
     }
     return entry;
 }
@@ -68,26 +89,47 @@ export function toHostEntry(server, previous = {}) {
  *   kept: number,
  *   total: number,
  *   deploymentCount: number,
+ *   changed: boolean,
+ *   invalid: Array<{ server: string, deployment: string, localPath: string, message: string }>,
  *   syncTargets: Array<{ server: string, deployments: Array<{ name: string, localPath: string, deployPath: string, exclude: string[] }> }>,
  * }}
  */
 export function syncRemoteConfig({projectPath, servers}) {
     const dir = remoteConfigDir(projectPath);
     const file = remoteConfigPath(projectPath);
-    mkdirSync(dir, {recursive: true});
 
+    const text = existsSync(file) ? readFileSync(file, 'utf8') : '';
     /** @type {Record<string, unknown>} */
-    let existing = {};
-    if (existsSync(file)) {
+    let document = {hosts: {}};
+    if (text.trim() !== '') {
+        const backup = () => {
+            const target = `${file}.bad`;
+            copyFileSync(file, target);
+            return target;
+        };
+        let parsed;
         try {
-            const parsed = JSON.parse(readFileSync(file, 'utf8'));
-            existing = parsed?.hosts && typeof parsed.hosts === 'object' ? parsed.hosts : {};
-        } catch {
-            // 文件坏了也要能覆盖：当成空的，重新写一份合法的。
-            existing = {};
+            parsed = JSON.parse(text);
+        } catch (error) {
+            const target = backup();
+            throw new HostsConfigError(
+                `${file} 不是合法 JSON（已备份到 ${target}，未覆盖）：` +
+                (error instanceof Error ? error.message : String(error)),
+            );
         }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            const target = backup();
+            throw new HostsConfigError(`${file} 顶层必须是对象（已备份到 ${target}，未覆盖）。`);
+        }
+        if (!parsed.hosts || typeof parsed.hosts !== 'object' || Array.isArray(parsed.hosts)) {
+            const target = backup();
+            throw new HostsConfigError(`${file} 缺少 hosts 对象（已备份到 ${target}，未覆盖）。`);
+        }
+        document = parsed;
     }
 
+    /** @type {Record<string, unknown>} */
+    const existing = /** @type {Record<string, unknown>} */ (document.hosts ?? {});
     const next = {...existing};
     let added = 0;
     let updated = 0;
@@ -100,29 +142,56 @@ export function syncRemoteConfig({projectPath, servers}) {
     const ideNames = new Set(servers.map((server) => server.name));
     const kept = Object.keys(existing).filter((name) => !ideNames.has(name)).length;
 
-    writeFileSync(file, `${JSON.stringify({hosts: next}, null, 2)}\n`, 'utf8');
+    const nextDocument = {...document, hosts: next};
+    const serialized = `${JSON.stringify(nextDocument, null, 2)}\n`;
+    // 内容没变就不落盘：写回会刷新 mtime，进而让指纹对账自己再次触发。
+    const changed = text !== serialized && !(text === '' && Object.keys(next).length === 0);
+    if (changed) {
+        mkdirSync(dir, {recursive: true});
+        writeJsonAtomic(file, nextDocument);
+    }
 
     const syncTargets = [];
+    const invalid = [];
     let deploymentCount = 0;
     for (const [serverName, raw] of Object.entries(next)) {
         const entry = /** @type {Record<string, unknown>} */ (raw ?? {});
         const deployments = Array.isArray(entry.deployments) ? entry.deployments : [];
+        const serverExclude = Array.isArray(entry.exclude)
+            ? entry.exclude.filter((item) => typeof item === 'string')
+            : [];
         if (deployments.length === 0) continue;
-        const valid = deployments.flatMap((deployment) => {
-            if (!deployment || typeof deployment !== 'object') return [];
+        /** @type {Array<{ name: string, localPath: string, deployPath: string, exclude: string[] }>} */
+        const valid = [];
+        for (const deployment of deployments) {
+            if (!deployment || typeof deployment !== 'object') continue;
             const record = /** @type {Record<string, unknown>} */ (deployment);
-            const name = typeof record.name === 'string' ? record.name : '';
-            const localPath = typeof record.localPath === 'string' ? record.localPath : '';
-            const deployPath = typeof record.deployPath === 'string' ? record.deployPath : '';
-            if (!name || !localPath || !deployPath) return [];
+            const name = typeof record.name === 'string' ? record.name.trim() : '';
+            const localPath = typeof record.localPath === 'string' ? record.localPath.trim() : '';
+            const deployPath = typeof record.deployPath === 'string' ? record.deployPath.trim() : '';
+            if (!name || !localPath || !deployPath) continue;
             const exclude = Array.isArray(record.exclude)
                 ? record.exclude.filter((item) => typeof item === 'string')
                 : [];
-            const parsed = {name, localPath, deployPath, exclude};
+            // IDE 的 Deployment 面板只认 deployment 级 excludes；server 级是在这里
+            // 合并进去的，否则 remote_upload 排除了、IDE Deploy 却没排除。
+            const mergedExclude = [...new Set([...serverExclude, ...exclude])];
+            const parsed = {name, localPath, deployPath, exclude: mergedExclude};
             // 项目级 hosts.json 跟着仓库走：只允许相对路径，否则换台电脑就传错目录。
-            assertDeploymentLocalPath('project', parsed);
-            return [parsed];
-        });
+            // 一条写错不能拖垮整份配置：记进 invalid 交给调用方点名，其它条目照常推。
+            try {
+                assertDeploymentLocalPath('project', parsed);
+            } catch (error) {
+                invalid.push({
+                    server: serverName,
+                    deployment: name,
+                    localPath,
+                    message: error instanceof Error ? error.message : String(error),
+                });
+                continue;
+            }
+            valid.push(parsed);
+        }
         if (valid.length === 0) continue;
         deploymentCount += valid.length;
         syncTargets.push({server: serverName, deployments: valid});
@@ -135,6 +204,8 @@ export function syncRemoteConfig({projectPath, servers}) {
         kept,
         total: Object.keys(next).length,
         deploymentCount,
+        changed,
+        invalid,
         syncTargets,
     };
 }

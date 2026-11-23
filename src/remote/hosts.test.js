@@ -56,6 +56,24 @@ describe('mergeServers', () => {
         expect(merged[0].source).toBe('project');
     });
 
+    it('deployment 级 exclude：高优先级没写时保留，显式写 [] 才清空', () => {
+        const base = [{
+            name: 'a', host: 'h', port: 22, username: 'u', source: 'global',
+            deployments: [{name: 'app', localPath: '/g/app', deployPath: '/r', exclude: ['cache']}],
+        }];
+        const preserve = mergeServers([base, [{
+            name: 'a', source: 'project',
+            deployments: [{name: 'app', localPath: 'apps/app', deployPath: '/r2'}],
+        }]]);
+        expect(preserve[0].deployments[0].exclude).toEqual(['cache']);
+
+        const clear = mergeServers([base, [{
+            name: 'a', source: 'project',
+            deployments: [{name: 'app', localPath: 'apps/app', deployPath: '/r2', exclude: []}],
+        }]]);
+        expect(clear[0].deployments[0].exclude).toEqual([]);
+    });
+
     it('高优先级层给了 authType 时以它的凭据为准（KEY_PAIR 能清掉旧的 password）', () => {
         const merged = mergeServers([
             [{name: 'a', host: 'h', username: 'u', password: 'p', source: 'global'}],
@@ -63,6 +81,33 @@ describe('mergeServers', () => {
         ]);
         expect(merged[0].password).toBeUndefined();
         expect(merged[0].privateKeyPath).toBe('/k');
+    });
+});
+
+describe('项目级路径规范', () => {
+    it('localPath 只允许 /，反斜杠直接报错', () => {
+        expect(() => assertDeploymentLocalPath('project', {name: 'app', localPath: '~/app'}))
+            .toThrow(/不能用 ~/);
+        // 前导空格会先被 trim：校验口径与 IDE 侧（也 trim）一致，不能让空格绕过绝对路径判断。
+        expect(() => assertDeploymentLocalPath('project', {name: 'app', localPath: ' /abs/app'}))
+            .toThrow(/必须是相对项目根目录/);
+        expect(() => assertDeploymentLocalPath('project', {name: 'app', localPath: 'apps\\app'}))
+            .toThrow(/必须使用/);
+        expect(() => assertDeploymentLocalPath('project', {name: 'app', localPath: 'C:\\work\\app'}))
+            .toThrow(/绝对路径/);
+    });
+
+    it('deployPath 必须是远端 POSIX 绝对路径', () => {
+        expect(() => assertDeploymentLocalPath('project', {name: 'app', localPath: 'apps/app', deployPath: 'srv/app'}))
+            .toThrow(/远端绝对路径/);
+        expect(() => assertDeploymentLocalPath('project', {name: 'app', localPath: 'apps/app', deployPath: 'C:\\srv\\app'}))
+            .toThrow(/远端绝对路径/);
+        expect(() => assertDeploymentLocalPath('project', {name: 'app', localPath: 'apps/app', deployPath: '/srv/app'}))
+            .not.toThrow();
+        expect(() => assertDeploymentLocalPath('project', {name: 'app', localPath: 'apps/app', deployPath: '/'}))
+            .toThrow(/远端绝对路径/);
+        expect(() => assertDeploymentLocalPath('project', {name: 'app', localPath: 'apps/app', deployPath: '/srv/../etc'}))
+            .toThrow(/远端绝对路径/);
     });
 });
 
@@ -112,6 +157,7 @@ describe('readHostsFile', () => {
                 host: '10.0.0.1',
                 port: 2222,
                 username: 'root',
+                authType: 'PASSWORD',
                 password: 'p',
                 deployments: [],
                 source: 'project',
@@ -149,7 +195,7 @@ describe('deployments', () => {
             },
         }));
         expect(readHostsFile(path, 'project')[0].deployments).toEqual([
-            {name: 'app', localPath: 'local/app', deployPath: '/srv/app', exclude: []},
+            {name: 'app', localPath: 'local/app', deployPath: '/srv/app', source: 'project'},
         ]);
     });
 

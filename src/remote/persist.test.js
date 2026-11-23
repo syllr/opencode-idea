@@ -1,6 +1,6 @@
 // `/remote-config-sync` 的纯函数测试：只更新连接字段、保留 deployment / exclude 等已有字段。
 
-import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
@@ -39,6 +39,15 @@ describe('toHostEntry', () => {
         expect(entry.password).toBe('p');
         expect(entry.deployments).toEqual(previous.deployments);
         expect(entry.customField).toEqual(previous.customField);
+    });
+
+    it('同一种认证方式下 IDE 没给密码时保留原密码', () => {
+        const entry = toHostEntry(
+            server('a', {authType: 'PASSWORD', password: undefined}),
+            {authType: 'PASSWORD', password: 'old'},
+        );
+        expect(entry.authType).toBe('PASSWORD');
+        expect(entry.password).toBe('old');
     });
 
     it('换认证方式时清掉上一种方式的凭据字段', () => {
@@ -106,16 +115,103 @@ describe('syncRemoteConfig', () => {
         expect(json.hosts.manual.host).toBe('manual-host');
     });
 
-    it('旧文件坏掉时仍能写入一份合法的配置', () => {
+    it('项目级绝对 localPath 记进 invalid，其余 deployment 照常推', () => {
         const projectPath = project();
         const file = remoteConfigPath(projectPath);
         mkdirSync(join(projectPath, '.opencode', 'remote-shell'), {recursive: true});
-        writeFileSync(file, '{not json');
+        writeFileSync(file, JSON.stringify({
+            hosts: {
+                a: {
+                    host: 'h',
+                    username: 'u',
+                    deployments: [
+                        {name: 'good', localPath: 'apps/good', deployPath: '/srv/good'},
+                        {name: 'bad', localPath: '/Users/me/apps/bad', deployPath: '/srv/bad'},
+                    ],
+                },
+            },
+        }));
 
         const result = syncRemoteConfig({projectPath, servers: [server('a')]});
 
-        expect(result.added).toBe(1);
-        expect(existsSync(`${file}.bak`)).toBe(false);
-        expect(JSON.parse(readFileSync(file, 'utf8')).hosts.a.host).toBe('10.0.0.1');
+        expect(result.invalid).toEqual([{
+            server: 'a',
+            deployment: 'bad',
+            localPath: '/Users/me/apps/bad',
+            message: expect.stringContaining('必须是相对项目根目录'),
+        }]);
+        // 一条写错不能拖垮整份配置：合规的那条仍在推送清单里。
+        expect(result.syncTargets).toEqual([{
+            server: 'a',
+            deployments: [{name: 'good', localPath: 'apps/good', deployPath: '/srv/good', exclude: []}],
+        }]);
+    });
+
+    it('前导空格不能绕过项目级的绝对路径校验', () => {
+        const projectPath = project();
+        const file = remoteConfigPath(projectPath);
+        mkdirSync(join(projectPath, '.opencode', 'remote-shell'), {recursive: true});
+        writeFileSync(file, JSON.stringify({
+            hosts: {
+                a: {
+                    host: 'h',
+                    username: 'u',
+                    deployments: [{name: 'spaced', localPath: ' /abs/app', deployPath: '/srv/app'}],
+                },
+            },
+        }));
+
+        const result = syncRemoteConfig({projectPath, servers: [server('a')]});
+
+        expect(result.invalid).toEqual([{
+            server: 'a',
+            deployment: 'spaced',
+            localPath: '/abs/app',
+            message: expect.stringContaining('必须是相对项目根目录'),
+        }]);
+        expect(result.syncTargets).toEqual([]);
+    });
+
+    it('旧文件坏掉时备份并报错，不覆盖原文件', () => {
+        const projectPath = project();
+        const file = remoteConfigPath(projectPath);
+        const dir = join(projectPath, '.opencode', 'remote-shell');
+        mkdirSync(dir, {recursive: true});
+        writeFileSync(file, '{not json');
+
+        expect(() => syncRemoteConfig({projectPath, servers: [server('a')]})).toThrow(/不是合法 JSON/);
+        expect(readFileSync(file, 'utf8')).toBe('{not json');
+        expect(readdirSync(dir)).toContain('hosts.json.bad');
+    });
+
+    it('内容没变时不重写（mtime 不变）', () => {
+        const projectPath = project();
+        const servers = [server('a')];
+        syncRemoteConfig({projectPath, servers});
+        const before = statSync(remoteConfigPath(projectPath)).mtimeMs;
+
+        const result = syncRemoteConfig({projectPath, servers});
+
+        expect(result.changed).toBe(false);
+        expect(statSync(remoteConfigPath(projectPath)).mtimeMs).toBe(before);
+    });
+
+    it('server 级 exclude 会合并进推给 IDE 的 deployment', () => {
+        const projectPath = project();
+        mkdirSync(join(projectPath, '.opencode', 'remote-shell'), {recursive: true});
+        writeFileSync(remoteConfigPath(projectPath), JSON.stringify({
+            hosts: {
+                a: {
+                    host: 'h',
+                    username: 'u',
+                    exclude: ['node_modules'],
+                    deployments: [{name: 'app', localPath: 'apps/app', deployPath: '/srv/app', exclude: ['target']}],
+                },
+            },
+        }));
+
+        const result = syncRemoteConfig({projectPath, servers: []});
+
+        expect(result.syncTargets[0].deployments[0].exclude).toEqual(['node_modules', 'target']);
     });
 });

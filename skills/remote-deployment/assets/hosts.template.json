@@ -1,0 +1,20 @@
+{
+  "hosts": {
+    "<IDE SSH 配置名>": {
+      "host": "10.0.0.1",
+      "port": 22,
+      "username": "user",
+      "authType": "PASSWORD",
+      "password": "<从 IDE 同步或手工填>",
+      "exclude": ["node_modules", "logs"],
+      "deployments": [
+        {
+          "name": "<deployment 名，全局唯一>",
+          "localPath": "apps/my-app",
+          "deployPath": "/srv/my-app",
+          "exclude": ["target"]
+        }
+      ]
+    }
+  }
+}
