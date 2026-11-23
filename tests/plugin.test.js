@@ -594,7 +594,9 @@ describe('plugin setup', () => {
     // Nothing to launch and nothing to connect to: the notice must point at the
     // manual path, and nothing may claim the IDE was opened.
     launcher.platform = 'win32';
-    const offline = fakeCtx({ ports: [await freePort()], mcpProbeTimeoutMs: 200, toolRefreshTimeoutMs: 100 });
+    // 端口 1 一定拒连：用 freePort() 拿到的端口会被同一次并行测试里的其它 worker
+    // 抢走（插件会把它探测成 busy/no-project），断言就会偶发地落到另一句文案上。
+    const offline = fakeCtx({ ports: [1], mcpProbeTimeoutMs: 200, toolRefreshTimeoutMs: 100 });
     const cleanupOffline = await plugin.setup(offline.ctx);
     await offline.state.commands
       .get('open-in-ide')
